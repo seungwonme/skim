@@ -125,7 +125,7 @@ class SheetsExporter:
             "timestamp": post.timestamp or "",
             "likes": post.likes or 0,
             "comments": post.comments or 0,
-            "shares": post.shares or 0,
+            "reposts": post.reposts or 0,
             "views": post.views or 0,
             "url": post.url or "",
             "platform": post.platform or "",

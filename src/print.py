@@ -200,8 +200,8 @@ def print_post_preview(post, platform: str) -> None:
     if hasattr(post, "comments") and post.comments:
         typer.echo(f"   💬 댓글: {post.comments}")
 
-    if hasattr(post, "shares") and post.shares:
-        typer.echo(f"   🔄 공유: {post.shares}")
+    if hasattr(post, "reposts") and post.reposts:
+        typer.echo(f"   🔄 리포스트: {post.reposts}")
 
     if hasattr(post, "views") and post.views:
         typer.echo(f"   👀 조회수: {post.views}")

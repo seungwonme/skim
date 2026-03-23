@@ -27,6 +27,7 @@
 import asyncio
 import re
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import List, Optional
 
 import typer
@@ -63,6 +64,36 @@ class BaseCrawler(ABC):
         self.base_url = base_url
         self.user_agent = user_agent or self._get_default_user_agent()
         self.debug_mode = debug_mode
+
+    async def _dump_dom(self, element, identifier: str) -> None:
+        """디버그 모드에서 게시글 element의 outerHTML을 파일로 저장"""
+        if not self.debug_mode:
+            return
+        try:
+            dump_dir = Path(f"./data/debug/{self.platform_name.lower()}/dom_dumps")
+            dump_dir.mkdir(parents=True, exist_ok=True)
+            outer_html = await element.evaluate("(el) => el.outerHTML")
+            dump_file = dump_dir / f"post_{identifier}.html"
+            with open(dump_file, "w", encoding="utf-8") as f:
+                f.write(outer_html)
+            typer.echo(f"   🐛 DOM 저장: {dump_file}")
+        except Exception as e:
+            typer.echo(f"   🐛 DOM 저장 실패: {e}")
+
+    async def _save_debug_html(self, page, filename: str) -> None:
+        """디버그 모드에서 페이지 전체 HTML을 파일로 저장"""
+        if not self.debug_mode:
+            return
+        try:
+            debug_dir = Path(f"./data/debug/{self.platform_name.lower()}")
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            full_path = debug_dir / filename
+            content = await page.content()
+            with open(full_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            typer.echo(f"   🐛 디버그 HTML 저장: {full_path}")
+        except Exception as e:
+            typer.echo(f"   🐛 디버그 HTML 저장 실패: {e}")
 
     def _get_default_user_agent(self) -> str:
         """플랫폼별 기본 User-Agent 반환"""

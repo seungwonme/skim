@@ -6,16 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Development Setup
 ```bash
-# Create and activate virtual environment
-python -m venv .venv
-source .venv/bin/activate  # Linux/Mac
-.venv\Scripts\activate  # Windows
-
-# Install dependencies
-uv pip install -r requirements.txt
+# Install dependencies (uv manages virtualenv automatically)
+uv sync
 
 # Install Playwright browser
-playwright install
+uv run playwright install
 ```
 
 ### Linting and Formatting

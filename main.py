@@ -29,10 +29,12 @@ from typing import List, Optional
 
 import typer
 
-from src.crawlers.linkedin import LinkedInCrawler
+from src.crawlers.geeknews import fetch_geeknews
+from src.crawlers.hackernews import fetch_hackernews
+from src.crawlers.linkedin import LinkedInAPICrawler
 from src.crawlers.reddit import RedditCrawler
-from src.crawlers.threads import ThreadsCrawler
-from src.crawlers.x import XCrawler
+from src.crawlers.threads_api import ThreadsAPICrawler
+from src.crawlers.x_api import XAPICrawler
 from src.exporters import SheetsExporter
 from src.models import Post
 from src.print import (
@@ -94,25 +96,28 @@ def threads(
     output: Optional[str] = typer.Option(
         None, "--output", "-o", help="출력 파일명 (기본: 자동 생성)"
     ),
-    debug: bool = typer.Option(
-        False, "--debug", "-d", help="디버그 모드 활성화 (브라우저 표시, 상세 로그, 스크린샷)"
-    ),
+    debug: bool = typer.Option(False, "--debug", "-d", help="디버그 모드 활성화 (상세 로그)"),
     sheets: bool = typer.Option(
         False, "--sheets", "-s", help="구글 시트에 저장 (GOOGLE_WEBAPP_URL 환경변수 필요)"
     ),
+    user_id: Optional[str] = typer.Option(
+        None, "--user-id", "-u", help="특정 사용자 ID로 피드 조회 (없으면 For You 타임라인)"
+    ),
 ):
     """
-    Threads에서 게시글을 크롤링합니다.
+    Threads에서 게시글을 크롤링합니다 (API 모드).
+
+    세션이 없으면 먼저 로그인하세요: python main.py login
 
     예시:
     python main.py threads --count 10
     python main.py threads -c 3 -o my_threads.json
-    python main.py threads --debug  # 디버그 모드로 실행
-    python main.py threads --sheets  # 구글 시트에 저장
-    python main.py threads -c 5 -s  # 5개 게시글을 구글 시트에 저장
+    python main.py threads --debug
+    python main.py threads --sheets
+    python main.py threads --user-id 314216  # 특정 사용자 피드
     """
-    crawler = ThreadsCrawler(debug_mode=debug)
-    posts = asyncio.run(crawler.crawl(count))
+    crawler = ThreadsAPICrawler(debug_mode=debug)
+    posts = asyncio.run(crawler.crawl(count, user_id=user_id))
 
     if not posts:
         print_no_posts_error("threads", debug)
@@ -154,24 +159,22 @@ def linkedin(
     output: Optional[str] = typer.Option(
         None, "--output", "-o", help="출력 파일명 (기본: 자동 생성)"
     ),
-    debug: bool = typer.Option(
-        False, "--debug", "-d", help="디버그 모드 활성화 (브라우저 표시, 상세 로그)"
-    ),
+    debug: bool = typer.Option(False, "--debug", "-d", help="디버그 모드 활성화 (상세 로그)"),
     sheets: bool = typer.Option(
         False, "--sheets", "-s", help="구글 시트에 저장 (GOOGLE_WEBAPP_URL 환경변수 필요)"
     ),
 ):
     """
-    LinkedIn에서 게시글을 크롤링합니다.
+    LinkedIn에서 게시글을 크롤링합니다 (API 모드).
+
+    세션이 없으면 먼저 로그인하세요: python main.py login linkedin
 
     예시:
     python main.py linkedin --count 10
-    python main.py linkedin -c 3 -o my_linkedin.json
-    python main.py linkedin --debug  # 디버그 모드로 실행
-    python main.py linkedin --sheets  # 구글 시트에 저장
-    python main.py linkedin -c 5 -s  # 5개 게시글을 구글 시트에 저장
+    python main.py linkedin --debug
+    python main.py linkedin --sheets
     """
-    crawler = LinkedInCrawler(debug_mode=debug)
+    crawler = LinkedInAPICrawler(debug_mode=debug)
     posts = asyncio.run(crawler.crawl(count))
 
     if not posts:
@@ -218,19 +221,23 @@ def x(
     sheets: bool = typer.Option(
         False, "--sheets", "-s", help="구글 시트에 저장 (GOOGLE_WEBAPP_URL 환경변수 필요)"
     ),
+    user: Optional[str] = typer.Option(
+        None, "--user", "-u", help="특정 사용자 screen name (없으면 For You 타임라인)"
+    ),
 ):
     """
-    X (Twitter)에서 게시글을 크롤링합니다.
+    X (Twitter)에서 게시글을 크롤링합니다 (API 모드).
+
+    세션이 없으면 먼저 로그인하세요: python main.py login x
 
     예시:
     python main.py x --count 10
-    python main.py x -c 5 -o my_x_posts.json
+    python main.py x --user elonmusk --count 5
     python main.py x --debug
-    python main.py x --sheets  # 구글 시트에 저장
-    python main.py x -c 5 -s  # 5개 게시글을 구글 시트에 저장
+    python main.py x --sheets
     """
-    crawler = XCrawler(debug_mode=debug)
-    posts = asyncio.run(crawler.crawl(count))
+    crawler = XAPICrawler(debug_mode=debug)
+    posts = asyncio.run(crawler.crawl(count, user_id=user))
 
     if not posts:
         print_no_posts_error("x", debug)
@@ -323,12 +330,113 @@ def reddit(
     print_post_preview(posts[0], "reddit")
 
 
+@app.command()
+@log_crawl_operation("hackernews")
+def hackernews(
+    count: int = typer.Option(10, "--count", "-c", help="수집할 게시글 수"),
+    output: Optional[str] = typer.Option(
+        None, "--output", "-o", help="출력 파일명 (기본: 자동 생성)"
+    ),
+    debug: bool = typer.Option(False, "--debug", "-d", help="디버그 모드"),
+    sheets: bool = typer.Option(False, "--sheets", "-s", help="구글 시트에 저장"),
+):
+    """
+    Hacker News에서 Top Stories를 가져옵니다. (API 사용, 브라우저 불필요)
+
+    예시:
+    python main.py hackernews --count 20
+    python main.py hackernews -c 5 -o my_hn.json
+    """
+    posts = fetch_hackernews(count)
+
+    if not posts:
+        print_no_posts_error("hackernews", debug)
+        raise typer.Exit(1)
+
+    ensure_data_directory("hackernews")
+    output_file = generate_output_filename("hackernews", output)
+    save_posts_to_file(posts, output_file)
+
+    sheets_success = False
+    if sheets:
+        try:
+            exporter = SheetsExporter()
+            sheets_success = exporter.export_posts(posts, "hackernews")
+        except Exception as e:
+            typer.echo(f"구글 시트 저장 실패: {e}")
+
+    print_crawl_summary("hackernews", len(posts), output_file, debug)
+    if sheets:
+        typer.echo(f"   구글 시트 저장: {'성공' if sheets_success else '실패'}")
+    print_post_preview(posts[0], "hackernews")
+
+
+@app.command()
+@log_crawl_operation("geeknews")
+def geeknews(
+    count: int = typer.Option(10, "--count", "-c", help="수집할 게시글 수"),
+    output: Optional[str] = typer.Option(
+        None, "--output", "-o", help="출력 파일명 (기본: 자동 생성)"
+    ),
+    debug: bool = typer.Option(False, "--debug", "-d", help="디버그 모드"),
+    sheets: bool = typer.Option(False, "--sheets", "-s", help="구글 시트에 저장"),
+):
+    """
+    GeekNews (news.hada.io)에서 게시글을 가져옵니다. (스크래핑, 브라우저 불필요)
+
+    예시:
+    python main.py geeknews --count 20
+    python main.py geeknews -c 5 -o my_geeknews.json
+    """
+    posts = fetch_geeknews(count)
+
+    if not posts:
+        print_no_posts_error("geeknews", debug)
+        raise typer.Exit(1)
+
+    ensure_data_directory("geeknews")
+    output_file = generate_output_filename("geeknews", output)
+    save_posts_to_file(posts, output_file)
+
+    sheets_success = False
+    if sheets:
+        try:
+            exporter = SheetsExporter()
+            sheets_success = exporter.export_posts(posts, "geeknews")
+        except Exception as e:
+            typer.echo(f"구글 시트 저장 실패: {e}")
+
+    print_crawl_summary("geeknews", len(posts), output_file, debug)
+    if sheets:
+        typer.echo(f"   구글 시트 저장: {'성공' if sheets_success else '실패'}")
+    print_post_preview(posts[0], "geeknews")
+
+
+# === Auth Commands ===
+@app.command()
+def login(
+    platform: str = typer.Argument("threads", help="로그인할 플랫폼 (threads, x)"),
+):
+    """SNS 플랫폼 로그인 (Chrome에서 수동 로그인 후 쿠키 자동 추출)
+
+    Chrome이 열리면 해당 플랫폼에 로그인하세요.
+    로그인이 완료되면 자동으로 쿠키가 추출되어 저장됩니다.
+
+    예시:
+    python main.py login threads
+    python main.py login x
+    """
+    from src.crawlers.cdp_auth import login as cdp_login  # pylint: disable=import-outside-toplevel
+
+    cdp_login(platform)
+
+
 # === Utility Commands ===
 @app.command()
 def version():
     """버전 정보를 출력합니다."""
     typer.echo(f"SNS Crawler v{__version__}")
-    typer.echo("Playwright 기반 크롤링 도구")
+    typer.echo("SNS 크롤링 도구 (API + Playwright)")
 
 
 @app.command()
@@ -339,6 +447,8 @@ def status():
     typer.echo("   ✅ LinkedIn 크롤러 - 구현 완료")
     typer.echo("   🔧 X 크롤러 - 구현 완료")
     typer.echo("   🔧 Reddit 크롤러 - 구현 완료")
+    typer.echo("   ✅ Hacker News 크롤러 - 구현 완료 (API)")
+    typer.echo("   ✅ GeekNews 크롤러 - 구현 완료 (스크래핑)")
 
 
 if __name__ == "__main__":

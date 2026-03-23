@@ -19,11 +19,15 @@ classifiers = [
 ]
 requires-python = ">=3.12"
 dependencies = [
-    "playwright>=1.52.0",
-    "pydantic>=2.11.5",
-    "typer>=0.15.4",
-    "python-dotenv>=1.0.0",
-    "requests>=2.32.3",
+    "playwright>=1.58.0",
+    "pydantic>=2.12.5",
+    "typer>=0.24.1",
+    "python-dotenv>=1.2.2",
+    "requests>=2.32.5",
+    "feedparser>=6.0.12",
+    "beautifulsoup4>=4.14.3",
+    "twitter-api-client>=0.10.22",
+    "websocket-client>=1.9.0",
 ]
 
 [project.scripts]
