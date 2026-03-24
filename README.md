@@ -1,72 +1,118 @@
 # skim
 
-멀티 플랫폼 정보 큐레이션 파이프라인.
+멀티 플랫폼 정보 큐레이션 파이프라인. 11개 소스에서 콘텐츠를 수집하고, enrichment를 거쳐 SQLite에 저장합니다.
 
-다양한 소스(HackerNews, GeekNews, Reddit, Threads, X, LinkedIn, YouTube, ProductHunt, ArXiv, HuggingFace 등)에서 콘텐츠를 수집하고, enrichment를 거쳐 SQLite에 저장합니다.
+## 지원 플랫폼
+
+| 유형 | 플랫폼 | 소스 |
+|------|--------|------|
+| Feed | HackerNews | hnrss.org (30+ points) |
+| Feed | GeekNews | news.hada.io Atom |
+| Feed | YouTube | RSS + yt-dlp (자막 추출) |
+| Feed | ProductHunt | RSS |
+| Feed | arXiv | Atom API (cs.AI) |
+| Feed | HuggingFace | Daily Papers JSON API |
+| Feed | Every.to | 6개 칼럼 RSS |
+| API | Threads | Instagram Private API |
+| API | X | GraphQL (twitter-api-client) |
+| API | LinkedIn | API |
+| Browser | Reddit | Playwright (비활성) |
 
 ## 설치
 
 ```bash
-# 의존성 설치
 uv sync
-
-# Playwright 브라우저 설치
 uv run playwright install
-```
-
-## 환경 설정
-
-`.env` 파일 생성:
-
-```bash
-THREADS_USERNAME=your_instagram_username
-THREADS_PASSWORD=your_instagram_password
-LINKEDIN_USERNAME=your_linkedin_email
-LINKEDIN_PASSWORD=your_linkedin_password
-X_USERNAME=your_x_username
-X_PASSWORD=your_x_password
-REDDIT_USERNAME=your_reddit_username
-REDDIT_PASSWORD=your_reddit_password
-GOOGLE_WEBAPP_URL=your_google_webapp_url
+cp .env.example .env  # 환경변수 설정
 ```
 
 ## 사용법
 
 ```bash
-# 단일 플랫폼 크롤링
+# 일일 배치 (최근 1일, enrichment 포함)
+python main.py crawl all --days 1
+
+# 단일 플랫폼
 python main.py crawl hackernews --count 10
 python main.py crawl threads --user-id 314216 --count 5
 
-# 일일 배치 (최근 1일, 콘텐츠 enrichment 포함)
-python main.py crawl all --days 1
-
-# 여러 플랫폼 지정
+# 여러 플랫폼 + 옵션
 python main.py crawl hackernews geeknews --days 1 --no-content
-
-# 디버그/미리보기
-python main.py crawl reddit --debug
 python main.py crawl all --days 1 --dry-run
+
+# SNS 로그인 (Chrome 브라우저에서 수동 로그인 후 쿠키 자동 추출)
+python main.py login threads
+python main.py login x
 
 # 지원 플랫폼 목록
 python main.py platforms
-
-# 로그인
-python main.py login threads
 ```
 
-## 지원 플랫폼
+### CLI 옵션
 
-| 유형 | 플랫폼 |
-|------|--------|
-| Feed (RSS/HTTP) | HackerNews, GeekNews, YouTube, ProductHunt, ArXiv, HuggingFace, EveryTo |
-| API | Threads, X, LinkedIn |
-| Browser | Reddit |
+| 옵션 | 설명 |
+|------|------|
+| `--count`, `-c` | 수집 개수 (SNS 기본값: 50) |
+| `--days` | 과거 N일 수집 (Feed 기본값: 1) |
+| `--output`, `-o` | JSON 출력 파일 경로 |
+| `--debug`, `-d` | 디버그 모드 |
+| `--sheets`, `-s` | Google Sheets 내보내기 |
+| `--no-content` | enrichment 건너뛰기 |
+| `--dry-run` | 미리보기 (저장 안 함) |
+| `--user-id`, `-u` | 특정 사용자 프로필 |
 
-## 데이터 저장
+## 아키텍처
 
+```
+main.py (Typer CLI)
+  ├── src/crawlers/         # 크롤러 (feed/, api/, browser/)
+  │   ├── base.py           # Crawler Protocol
+  │   ├── __init__.py       # REGISTRY (플랫폼 → 크롤러 매핑)
+  │   └── auth/cdp.py       # Chrome DevTools Protocol 로그인
+  ├── src/models.py         # Post Pydantic 모델
+  ├── src/db.py             # SQLite (WAL, 중복 제거)
+  ├── src/enrichment.py     # defuddle (본문 추출) + yt-dlp (자막)
+  ├── src/feed_utils.py     # RSS/Atom 파싱
+  └── feed_config.py        # URL/채널 설정
+```
+
+### 데이터 흐름
+1. CLI에서 플랫폼 지정 → `REGISTRY`에서 크롤러 조회
+2. `crawler.crawl(**options)` → `List[Post]` 반환
+3. (선택) enrichment: defuddle로 본문 마크다운 추출, yt-dlp로 자막 추출
+4. SQLite 저장 (`UNIQUE(platform, external_id)` 중복 제거)
+5. JSON 파일 저장 → `data/{platform}/{timestamp}.json`
+
+### 데이터 저장
 - **SQLite**: `data/skim.db` — posts, summaries, feedback, runs
-- **JSON**: `data/{platform}/{timestamp}.json` — 크롤링 결과
-- **Sessions**: `data/sessions/{platform}_session.json` — 로그인 세션
+- **JSON**: `data/{platform}/{timestamp}.json`
+- **Sessions**: `data/sessions/{platform}_session.json`
+
+## 자동 수집
+
+```bash
+# cron 등록 예시 (매일 09:00)
+0 9 * * * /path/to/skim/scripts/run_daily_feed.sh
+```
+
+## 환경 변수
+
+`.env` 파일에 설정:
+
+```bash
+# SNS 인증 (CDP 로그인에 사용)
+THREADS_USERNAME=...
+THREADS_PASSWORD=...
+X_USERNAME=...
+X_PASSWORD=...
+LINKEDIN_USERNAME=...
+LINKEDIN_PASSWORD=...
+REDDIT_USERNAME=...
+REDDIT_PASSWORD=...
+
+# Google Sheets 내보내기
+GOOGLE_WEBAPP_URL=...
+```
 
 ## 라이선스
 

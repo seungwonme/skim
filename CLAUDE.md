@@ -1,95 +1,74 @@
-# CLAUDE.md — skim
+# CLAUDE.md
 
-멀티 플랫폼 정보 큐레이션 파이프라인.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Commands
 
-### Development Setup
 ```bash
-# Install dependencies (uv manages virtualenv automatically)
+# 의존성 설치
 uv sync
-
-# Install Playwright browser
 uv run playwright install
-```
 
-### Linting and Formatting
-```bash
-# Run Black formatter
+# 린트/포맷 (pre-commit이 커밋 시 자동 실행)
+pre-commit run --all-files
+
+# 개별 도구
 black . --config pyproject.toml
-
-# Run isort for import sorting
 isort . --settings-path pyproject.toml
-
-# Run flake8 linter
 flake8
-
-# Run pylint
 pylint src/
 
-# Pre-commit hooks (if pre-commit is installed)
-pre-commit install
-pre-commit run --all-files
-```
-
-### Running the Crawler
-```bash
-# 단일 플랫폼 크롤링
+# 크롤링
 python main.py crawl hackernews --count 10
-python main.py crawl threads --user-id 314216 --count 5
-
-# 일일 배치 (최근 1일, 콘텐츠 enrichment 포함)
 python main.py crawl all --days 1
-
-# 여러 플랫폼 지정
 python main.py crawl hackernews geeknews --days 1 --no-content
-
-# 디버그/미리보기
-python main.py crawl reddit --debug
 python main.py crawl all --days 1 --dry-run
 
-# 지원 플랫폼 목록
-python main.py platforms
-
-# 로그인
-python main.py login threads
+# 기타
+python main.py platforms          # 지원 플랫폼 목록
+python main.py login threads      # CDP 로그인
 ```
 
-## Architecture Overview
+## Architecture
 
-### Core Structure
-- **main.py**: 통합 CLI (Typer). `crawl`, `login`, `platforms` 커맨드 제공
-- **src/crawlers/**: 유형별 크롤러 구현
-  - **base.py**: `Crawler` Protocol — 모든 크롤러의 공통 인터페이스
-  - **browser/**: 브라우저 기반 (Playwright) — reddit
-  - **api/**: API 기반 — threads, x, linkedin
-  - **feed/**: RSS/HTTP 피드 기반 — hackernews, geeknews, youtube, producthunt, arxiv, huggingface, everyto
-  - **auth/**: 인증 유틸리티 (CDP 로그인)
-  - **`__init__.py`**: `REGISTRY` dict — 플랫폼명 → 크롤러 클래스 매핑
-- **src/models.py**: Post Pydantic 모델 (title, summary, content_markdown 등 확장 필드 포함)
-- **src/db.py**: SQLite 저장 (posts, summaries, feedback, runs)
-- **src/enrichment.py**: 콘텐츠 enrichment (defuddle, YouTube transcript)
-- **src/feed_utils.py**: RSS/Atom 파싱 유틸리티
-- **src/exporters/**: Google Sheets 내보내기
-- **feed_config.py**: RSS URL, YouTube 채널, API URL 설정
+### Pipeline Flow
+```
+CLI (main.py) → REGISTRY lookup → crawler.crawl(**options) → List[Post]
+                                                                  ↓
+                                              enrichment (defuddle / yt-dlp)
+                                                                  ↓
+                                              SQLite 저장 + JSON 파일 + (Google Sheets)
+```
 
-### Key Design Patterns
-1. **Protocol Pattern**: 모든 크롤러가 `Crawler` Protocol 구현 (`async crawl(**options) -> List[Post]`)
-2. **Registry Pattern**: `REGISTRY` dict로 플랫폼명 기반 크롤러 조회
-3. **Dual Mode**: feed 크롤러는 `since` 유무에 따라 RSS/API 모드 자동 전환
-4. **BrowserCrawler ABC**: 브라우저 기반 크롤러용 Playwright 라이프사이클 관리
+### Crawler 유형과 패턴
+모든 크롤러는 `Crawler` Protocol (`src/crawlers/base.py`)을 구현하고, `REGISTRY` dict (`src/crawlers/__init__.py`)에 등록된다.
 
-### Crawler Flow
-1. `python main.py crawl [platforms] [options]`
-2. REGISTRY에서 크롤러 클래스 조회
-3. `crawler.crawl(**options)` 실행 → `List[Post]` 반환
-4. SQLite DB에 저장 (중복 자동 제거)
-5. JSON 파일 저장 + (선택) Google Sheets 내보내기
+| 유형 | 위치 | 옵션 기준 | 플랫폼 |
+|------|------|-----------|--------|
+| Feed | `src/crawlers/feed/` | `since` (날짜) | hackernews, geeknews, youtube, producthunt, arxiv, huggingface, everyto |
+| API | `src/crawlers/api/` | `count` (개수) | threads, x, linkedin |
+| Browser | `src/crawlers/browser/` | `count` | reddit (CAPTCHA로 비활성) |
 
-### Data Storage
-- **SQLite**: `data/skim.db` — posts, summaries, feedback, runs 테이블
-- **JSON**: `data/{platform}/{timestamp}.json` — 크롤링 결과 파일
-- **Sessions**: `data/sessions/{platform}_session.json` — 로그인 세션
+- Feed 크롤러: `since` 유무에 따라 RSS/API 모드 자동 전환
+- API 크롤러: CDP로 추출한 세션 쿠키 사용 (`data/sessions/{platform}_session.json`)
+- Browser 크롤러: `BrowserCrawler` ABC가 Playwright 라이프사이클 관리
+
+### 주요 모듈
+- **src/models.py**: `Post` Pydantic 모델. `extra = "allow"`로 플랫폼별 추가 필드 허용
+- **src/db.py**: SQLite WAL 모드. `UNIQUE(platform, external_id)`로 중복 제거. 테이블: posts, summaries, feedback, runs
+- **src/enrichment.py**: `defuddle` (bunx CLI)로 URL 본문 추출, `yt-dlp`로 YouTube 자막 추출
+- **src/feed_utils.py**: `fetch_feed()` — feedparser 기반 RSS/Atom 파싱, KST 변환
+- **feed_config.py**: RSS URL, YouTube 채널 ID, API 엔드포인트 설정
+
+### 새 크롤러 추가 방법
+1. `src/crawlers/{type}/` 아래에 크롤러 클래스 생성 (`async crawl(**options) -> List[Post]`)
+2. `src/crawlers/__init__.py`의 `REGISTRY`에 등록
+3. Feed 크롤러는 `feed_config.py`에 URL 추가
+
+## Git Convention
+- 브랜치: `type/[branch/]description[-#issue]` (GitFlow)
+- 커밋: `<type>(<scope>): <subject>` (Conventional Commits)
+- type: feat, fix, docs, style, refactor, test, chore
 
 ## Environment Variables
 `.env` 파일에 설정:
@@ -98,15 +77,3 @@ python main.py login threads
 - `X_USERNAME`, `X_PASSWORD`
 - `REDDIT_USERNAME`, `REDDIT_PASSWORD`
 - `GOOGLE_WEBAPP_URL` (Google Sheets export)
-
-<rules>
-The following rules should be considered foundational. Make sure you're familiar with them before working on this project:
-@.cursor/rules/memory-bank.mdc
-@.cursor/rules/vibe-coding.mdc
-
-Git convention defining branch naming, commit message format, and issue labeling based on GitFlow and Conventional Commits.:
-@.cursor/rules/git-convention.mdc
-
-threads 크롤러를 수정할 때 참고하세요:
-@.cursor/rules/threads-crawler.mdc
-</rules>
