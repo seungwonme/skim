@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 import requests
 import typer
 
-from ..models import Post
+from ...models import Post
 
 # Instagram Private API 설정
 IG_API_BASE = "https://i.instagram.com/api/v1"
@@ -39,6 +39,8 @@ class ThreadsAPICrawler:
     Instagram Private API를 사용하여 브라우저 없이 Threads 게시글을 수집합니다.
     CDP로 추출한 세션 쿠키를 재사용합니다.
     """
+
+    platform = "threads"
 
     def __init__(self, debug_mode: bool = False):
         self.platform_name = "Threads"
@@ -87,7 +89,12 @@ class ThreadsAPICrawler:
 
         return cookies
 
-    async def crawl(self, count: int = 5, user_id: Optional[str] = None) -> List[Post]:
+    async def crawl(self, **options) -> List[Post]:
+        count = options.get("count", 5)
+        user_id = options.get("user_id")
+        return await self._crawl_impl(count, user_id)
+
+    async def _crawl_impl(self, count: int = 5, user_id: Optional[str] = None) -> List[Post]:
         """
         Threads 게시글 크롤링
 

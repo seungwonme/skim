@@ -42,6 +42,12 @@ class Post(BaseModel):
         comments (Optional[int]): 댓글 수
         reposts (Optional[int]): 리포스트/공유 수
         views (Optional[int]): 조회수 (X 등 지원 플랫폼만)
+        title (Optional[str]): 게시글 제목 (HN, GeekNews, YouTube 등)
+        summary (Optional[str]): 요약 (RSS 피드 등)
+        content_markdown (Optional[str]): enrichment된 본문 마크다운
+        word_count (Optional[int]): 본문 단어 수
+        source (Optional[str]): 세부 소스 (YouTube 채널명, 서브레딧 등)
+        external_id (Optional[str]): 플랫폼 고유 ID
     """
 
     platform: str
@@ -53,6 +59,12 @@ class Post(BaseModel):
     comments: Optional[int] = None
     reposts: Optional[int] = None
     views: Optional[int] = None
+    title: Optional[str] = None
+    summary: Optional[str] = None
+    content_markdown: Optional[str] = None
+    word_count: Optional[int] = None
+    source: Optional[str] = None
+    external_id: Optional[str] = None
 
     class Config:
         extra = "allow"  # 플랫폼별 추가 필드 허용

@@ -22,7 +22,7 @@ from typing import Dict, List, Optional
 
 import typer
 
-from ..models import Post
+from ...models import Post
 
 SESSION_PATH = Path("./data/sessions/x_session.json")
 
@@ -34,6 +34,8 @@ class XAPICrawler:
     twitter-api-client를 사용하여 브라우저 없이 X 게시글을 수집합니다.
     CDP로 추출한 세션 쿠키를 재사용합니다.
     """
+
+    platform = "x"
 
     def __init__(self, debug_mode: bool = False):
         self.platform_name = "X"
@@ -91,7 +93,12 @@ class XAPICrawler:
 
         return cookies
 
-    async def crawl(self, count: int = 10, user_id: Optional[str] = None) -> List[Post]:
+    async def crawl(self, **options) -> List[Post]:
+        count = options.get("count", 10)
+        user_id = options.get("user_id")
+        return await self._crawl_impl(count, user_id)
+
+    async def _crawl_impl(self, count: int = 10, user_id: Optional[str] = None) -> List[Post]:
         """
         X 게시글 크롤링
 

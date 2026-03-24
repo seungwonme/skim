@@ -24,7 +24,7 @@ import typer
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 
-from ..models import Post
+from ...models import Post
 
 GRAPHQL_QUERY_ID = "voyagerFeedDashMainFeed.923020905727c01516495a0ac90bb475"
 GRAPHQL_BASE = "/voyager/api/graphql"
@@ -38,12 +38,18 @@ class LinkedInAPICrawler:
     LinkedIn Voyager GraphQL API를 직접 호출합니다.
     """
 
+    platform = "linkedin"
+
     def __init__(self, debug_mode: bool = False):
         self.platform_name = "LinkedIn"
         self.debug_mode = debug_mode
         self.session_path = Path("./data/sessions/linkedin_session.json")
 
-    async def crawl(self, count: int) -> List[Post]:
+    async def crawl(self, **options) -> List[Post]:
+        count = options.get("count", 5)
+        return await self._crawl_impl(count)
+
+    async def _crawl_impl(self, count: int) -> List[Post]:
         """LinkedIn 피드를 GraphQL API로 수집"""
         typer.echo(f"[API 모드] LinkedIn 크롤링 시작... (게시글 {count}개)")
 

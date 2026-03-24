@@ -26,7 +26,7 @@ from typing import Optional
 import requests
 import typer
 
-CHROME_PROFILE_DIR = Path.home() / ".sns_crawler" / "chrome-profile"
+CHROME_PROFILE_DIR = Path.home() / ".skim" / "chrome-profile"
 CDP_DEFAULT_PORT = 9222
 LOGIN_TIMEOUT = 300  # 5분
 

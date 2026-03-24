@@ -1,0 +1,67 @@
+[
+  {
+    "time": "13:32:35",
+    "user": "seungwonan",
+    "prompt": "오늘도 돌리고 싶어\n\n이거 명령어 뭐쓰면 되어씾?"
+  },
+  {
+    "time": "13:41:43",
+    "user": "seungwonan",
+    "prompt": "Last login: Tue Mar 24 11:24:59 on ttys009\n~/dev/3-tool/sns_crawler main* ⇡ ❯ uv run python main.py crawl all             01:32:54 오후\n[THREADS] 크롤링 시작...\n[API 모드] Threads 크롤링 시작 - For You 타임라인 (게시글 50개)\n^O총 50개의 게시글을 추출했습니다.\n  -> 50개 수집\n  -> DB 저장: 45개 (중복 제외)\n  -> 파일: data/threads/20260324_133319.json\n\n[LINKEDIN] 크롤링 시작...\n[API 모드] LinkedIn 크롤링 시작... (게시글 50개)\n✅ LinkedIn 피드 접근 성공\n📊 총 55개의 게시글을 추출했습니다.\n  -> 50개 수집\n  -> DB 저장: 44개 (중복 제외)\n  -> 파일: data/linkedin/20260324_133336.json\n\n[X] 크롤링 시작...\n[API 모드] X 크롤링 시작 - For You 타임라인 (게시글 50개)\n총 36개의 게시글을 추출했습니다.\n  -> 36개 수집\n  -> DB 저장: 31개 (중복 제외)\n  -> 파일: data/x/20260324_133337.json\n\n[HACKERNEWS] 크롤링 시작...\n\n[콘텐츠] 20개 항목의 원문을 추출합니다...\n  [1/20] Epoch confirms GPT5.4 Pro solved a frontier math o...\n  [2/20] I created my first AI-assisted pull request...\n  [3/20] No, Windows Start does not use React...\n  [4/20] AI boom risks widening wealth divide, says BlackRo...\n  [5/20] Minutes before Trump's announcement, $800M in trad...\n  [6/20] Pentagon Adopts New Limits for Journalists After C...\n  [7/20] Windows 3.1 tiled background .bmp archive...\n  [8/20] IRIX 3dfx Voodoo driver and glide2x IRIX port...\n  [9/20] The Resolv hack: How one compromised key printed $...\n  [10/20] Chat GPT 5.2 cannot explain the German word \"gesch...\n  [11/20] Claude Code Cheat Sheet...\n  [12/20] FCC updates covered list to include foreign-made c...\n  [13/20] How I'm Productive with Claude Code...\n  [14/20] The Treasury just declared the U.S. insolvent...\n  [15/20] A retro terminal music player inspired by Winamp...\n  [16/20] Bets on US-Iran ceasefire show signs of insider kn...\n  [17/20] American aviation is near collapse?...\n  [18/20] Firefox Adds Tab Notes...\n  [19/20] Local Stack Archived their GitHub repo and require...\n  [20/20] Autoresearch on an old research idea...\n  -> 18/20개 콘텐츠 추출 성공\n  -> 20개 수집\n  -> DB 저장: 20개 (중복 제외)\n  -> 파일: data/hackernews/20260324_133424.json\n\n[GEEKNEWS] 크롤링 시작...\n\n[콘텐츠] 50개 항목의 원문을 추출합니다...\n  [1/50] Show GN: Ship or Slop - 에이전트 사회로 아이디어 짜내기...\n    -> 원문: https://kr.shiporslop.xyz/\n  [2/50] 데이터만이 유일한 해자다...\n    -> 원문: https://thebootstrappedfounder.com/data-is-the-only-moat/\n  [3/50] 스타트업의 오프닝, 미드게임, 엔드게임...\n    -> 원문: https://sequoiacap.com/article/the-opening-midgame-and-endga\n  [4/50] AI 크레딧 가격의 미래...\n    -> 원문: https://www.growthunhinged.com/p/a-new-vision-for-ai-pricing\n  [5/50] RISC-V는 느려도 너무 느려요...\n    -> 원문: https://marcin.juszkiewicz.com.pl/2026/03/10/risc-v-is-slooo\n  [6/50] Show GN: TokFresh: 내 몰입시간에 맞게 클로드의 5시간 토큰 갱신 관리하기...\n    -> 원문: https://www.tokfresh.com/ko\n  [7/50] 자신의 사이트에 게시하고 다른 곳으로 배포하기(POSSE)...\n    -> 원문: https://indieweb.org/POSSE\n  [8/50] Claude, 컴퓨터의 마우스·키보드·화면 직접 제어 기능 출시...\n    -> 원문: https://x.com/felixrieseberg/status/2036193240509235452\n  [9/50] GitHub, 99.9% 가용성 유지에도 버거운 모습...\n    -> 원문: https://www.theregister.com/2026/02/10/github_outages/\n  [10/50] Walmart: ChatGPT 결제 전환율, 웹사이트의 1/3 수준...\n    -> 원문: https://searchengineland.com/walmart-chatgpt-checkout-conver\n  [11/50] Trivy가 다시 공격받다: 광범위한 GitHub Actions 태그 변조로 비밀정보 유출...\n    -> 원문: https://socket.dev/blog/trivy-under-attack-again-github-acti\n  [12/50] EU로 서비스 이전...\n    -> 원문: https://rz01.org/eu-migration/\n  [13/50] 오래된 연구 아이디어에 Autoresearch 수행하기...\n    -> 원문: https://ykumar.me/blog/eclip-autoresearch/\n  [14/50] iPhone 17 Pro에서 400B LLM 실행하기...\n    -> 원문: https://twitter.com/anemll/status/2035901335984611412\n  [15/50] OpenSquirrel - GPU 기반 AI 코드 에이전트 제어판...\n    -> 원문: https://github.com/Infatoshi/OpenSquirrel\n  [16/50] 당신은 당신이 하는 일이 아니다...\n    -> 원문: https://jry.io/writing/you-are-not-your-job/\n  [17/50] 1대1 RTS 게임으로 만든 LLM 벤치마크...\n    -> 원문: https://yare.io/ai-arena\n  [18/50] NixOS를 사랑하는 이유...\n    -> 원문: https://www.birkey.co/2026-03-22-why-i-love-nixos.html\n  [19/50] Show GN: GitHub Actions와 Telegram으로 만든 개인용 증시 리포트 ...\n    -> 원문: https://github.com/yeseoLee/Macro-Pulse\n  [20/50] Show GN: 도메인 지식을 기반으로 서비스를 구축하는 인간지능 주도형 개발 어플리케이션...\n    -> 원문: https://github.com/hang-in/tunaDish\n  [21/50] 81,000명이 말한 AI의 진짜 쓰임새 (Anthropic “81k Interviews”...\n    -> 원문: https://www.anthropic.com/81k-interviews\n  [22/50] 최적화의 정석: 롤러코스터 타이쿤 내부 들여다 보기...\n    -> 원문: https://larstofus.com/2026/03/22/the-gold-standard-of-optimi\n  [23/50] GrapheneOS는 개인 정보 없이 누구나 계속 사용할 수 있음...\n    -> 원문: https://grapheneos.social/@GrapheneOS/116261301913660830\n  [24/50] 코드의 죽음은 과장된 주장임...\n    -> 원문: https://stevekrouse.com/precision\n  [25/50] Pinterest가 AI에이전트를 위한 프로덕션 MCP 에코시스템을 구축한 방법...\n    -> 원문: https://medium.com/pinterest-engineering/building-an-mcp-eco\n  [26/50] Siri + Claude Code + Obsidian 으로 만든 AI 베이비시터...\n    -> 원문: https://medium.com/@snowwhale/i-built-an-ai-babysitter-with-\n  [27/50] Show GN: GPUtray - GPU tray 모니터링 툴...\n    -> 원문: https://github.com/kirinonakar/GPUtray\n  [28/50] 코드의 죽음은 과장되었다...\n    -> 원문: https://stevekrouse.com/precision\n  [29/50] 세 가지 유형의 나쁜 매니저...\n    -> 원문: https://randsinrepose.com/archives/three-bad-managers/\n  [30/50] 여백 만들기: 덜 하는 것이 위대함을 만드는 방법...\n    -> 원문: https://longform.asmartbear.com/focus/\n  [31/50] Show GN: 카카오톡 대화를 기반한 사람 말투 복제 서비스...\n    -> 원문: https://x.foa.wtf\n  [32/50] 코드의 죽음 보고는 크게 과장되었다...\n    -> 원문: https://stevekrouse.com/precision\n  [33/50] Show GN: Google CausalImpact R 패키지를 Python으로 포팅 (G...\n    -> 원문: https://github.com/YuminosukeSato/bsts-causalimpact\n  [34/50] Xiaomi mimo-v2-pro - 극가성비 샤오미 모델...\n    -> 원문: https://mimo.xiaomi.com/mimo-v2-pro\n  [35/50] PC Gamer가 37MB 용량의 계속 다운로드되는 기사에서 RSS 리더를 추천...\n    -> 원문: https://stuartbreckenridge.net/2026-03-19-pc-gamer-recommend\n  [36/50] Show GN: skills-cleaner - 설치된 Skills의 유사성을 비교하고, 중...\n    -> 원문: https://github.com/amebahead/skills-cleaner\n  [37/50] OpenClaw는 꿈처럼 보이지만 보안 악몽에 가까운 자율 에이전트...\n    -> 원문: https://composio.dev/content/openclaw-security-and-vulnerabi\n  [38/50] 도그푸딩에 지쳤다면, 자기 회사 고객센터에 직접 전화해 보세요...\n    -> 원문: https://shkspr.mobi/blog/2026/03/bored-of-eating-your-own-do\n  [39/50] Flash-MoE - 노트북에서 3,970억 파라미터 모델을 실행...\n    -> 원문: https://github.com/danveloper/flash-moe\n  [40/50] Windows 네이티브 앱 개발이 엉망인 이유...\n    -> 원문: https://domenic.me/windows-native-dev/\n  [41/50] gstack - Claude Code로 만드는 가상 엔지니어링 팀...\n    -> 원문: https://github.com/garrytan/gstack\n  [42/50] Project NOMAD - 오프라인에서도 끊기지 않는 지식과 AI 서버...\n    -> 원문: https://www.projectnomad.us\n  [43/50] Cloudflare가 archive.today를 &quot;C&amp;C/Botnet&qu...\n    -> 원문: https://radar.cloudflare.com/domains/domain/archive.today\n  [44/50] 버전 관리의 미래...\n    -> 원문: https://bramcohen.com/p/manyana\n  [45/50] JavaScript 비대화의 세 가지 축...\n    -> 원문: https://43081j.com/2026/03/three-pillars-of-javascript-bloat\n  [46/50] Hormuz Minesweeper – 이기는 게 지겹다고 느낄 때...\n    -> 원문: https://hormuz.pythonic.ninja/\n  [47/50] Impeccable - AI 하네스가 더 디자인 잘하게 만들기...\n    -> 원문: https://github.com/pbakaus/impeccable\n  [48/50] 헤드폰 사용 거부 승객, 이제 United 항공편에서 퇴출 가능...\n    -> 원문: https://www.cnn.com/2026/03/21/travel/travel-news-happiest-c\n  [49/50] 서구 자동차 제조사의 전기차 후퇴, 산업적 퇴보로 이어질 위험...\n    -> 원문: https://www.theguardian.com/business/2026/mar/21/west-carmak\n  [50/50] 대규모 연구, 대마초가 불안·우울·외상후스트레스장애(PTSD)에 효과 없음 확인...\n    -> 원문: https://www.sciencedaily.com/releases/2026/03/260319044656.h\n  -> 45/50개 콘텐츠 추출 성공\n  -> 50개 수집\n  -> DB 저장: 28개 (중복 제외)\n  -> 파일: data/geeknews/20260324_133553.json\n\n[YOUTUBE] 크롤링 시작...\n  -> 비즈니스캔버스 B_ZCF: 5개 새 영상\n  -> EO Korea: 5개 새 영상\n  -> EO Global: 5개 새 영상\n  -> a16z: 5개 새 영상\n  -> AI Jason: 5개 새 영상\n  -> Nate Herk: 5개 새 영상\n  -> Alex Hormozi: 5개 새 영상\n  -> Kallaway Marketing: 5개 새 영상\n  -> Liam Ottley: 5개 새 영상\n  -> Lex Fridman: 5개 새 영상\n  -> Andrej Karpathy: 5개 새 영상\n  -> Chester Roh: 5개 새 영상\n  -> Hugging Face: 5개 새 영상\n  -> LangChain: 5개 새 영상\n^O    -> 자막: 1741 words (en)\n  [2/80] \"일론에게 풀베팅 간다\" (테슬라 초기 투자자 론 바론)...\n    -> 자막: 2924 words (en)\n  [3/80] \"테슬라 반도체 만든다\"...\n    -> 자막: 2896 words (en-orig)\n  [4/80] \"방구석에서 듣는 딥마인드 대표 강의\"...\n    -> 자막: 7599 words (en)\n  [5/80] 반도체 이제 10% 왔다 (반도체 전설 짐켈러)...\n    -> 자막: 1418 words (en-orig)\n  [6/80] 하버드에서 가르치는 AI Native 강의 18분 요약 | HBS 렘 코닝 교수...\n    -> 자막: 4078 words (en)\n  [7/80] If You Want to Work Until 60 in the AI Era, You ...\n    -> 자막: 1853 words (ko)\n  [8/80] Silicon Valley Leadership Mentor Han Ki-yong's Imm...\n    -> 자막: 246 words (ko)\n  [9/80] How to Set Up the Environment That Creates $12M an...\n    -> 자막: 5432 words (ko)\n  [10/80] Investment Principles of a Silicon Valley Insider ...\n^O    -> 자막: 3681 words (en)\n  [12/80] \"50 AI Agents Running My Company\" Is a Lie. Here's...\n    -> 자막: 3904 words (en-orig)\n  [13/80] This Founder is Making 1B+ Excel Workers 20x Faste...\n    -> 자막: 2442 words (en-orig)\n  [14/80] He Built a $5.5B Legal AI Company by 26 | Legora, ...\n    -> 자막: 1922 words (en)\n  [15/80] How I Found a Winning Idea After 8 Pivots | Pensiv...\n    -> 자막: 2682 words (en-orig)\n  [16/80] Why Every Satellite Needs Earth | Northwood CEO on...\n    -> 자막: 7566 words (en-orig)\n  [17/80] Inside Palantir: Building Software That Matters | ...\n    -> 자막: 11474 words (en-orig)\n  [18/80] Inside the New Media Team with Marc Andreessen & B...\n    -> 자막: 10663 words (en)\n  [19/80] Why Scale Will Not Solve AGI | Vishal Misra - The ...\n    -> 자막: 8071 words (en)\n  [20/80] Emil Michael: The Department of War Is Moving Fast...\n    -> 자막: 5000 words (en)\n  [21/80] wtf is Harness Engineer & why is it important...\n    -> 자막: 3070 words (en-orig)\n  [22/80] How to prompt Gemini 3.1 for Epic animations...\n    -> 자막: 998 words (en-orig)\n  [23/80] Anthropic killed Tool calling...\n    -> 자막: 2809 words (en-orig)\n  [24/80] Agent memory resolved?...\n    -> 자막: 3039 words (en-orig)\n  [25/80] WebMCP - Why is awesome & How to use it...\n    -> 자막: 2318 words (en)\n  [26/80] Claude Code Just Got Another Huge Upgrade...\n    -> 자막: 2039 words (en-orig)\n  [27/80] This AI App Just Sold for $100M (and Anyone Can Bu...\n    -> 자막: 2330 words (en-orig)\n  [28/80] Master 95% of Claude Code Agent Teams in 16 Mins...\n    -> 자막: 4269 words (en)\n  [29/80] Stop Learning n8n in 2026...Learn THIS Instead...\n    -> 자막: 5076 words (en-orig)\n  [30/80] Generate Content for 9 Socials on Autopilot with C...\n    -> 자막: 4340 words (en)\n  [31/80] Watch This If You Have a Service Business...\n    -> 자막: 9793 words (en-orig)\n  [32/80] If I Wanted To Grow An Audience In 2026, I'd Do Th...\n    -> 자막: 33846 words (en-orig)\n  [33/80] The 6 Levels of Making Money...\n\n이거 맞아? 데일리?"
+  },
+  {
+    "time": "13:45:07",
+    "user": "seungwonan",
+    "prompt": "그렇게 해봐\n이거 항상 5개 가져오는 건 말이 안된다"
+  },
+  {
+    "time": "13:54:04",
+    "user": "seungwonan",
+    "prompt": "<task-notification>\n<task-id>boaha8t9l</task-id>\n<tool-use-id>toolu_01VayMjcuuao8BzaqAdkHM1V</tool-use-id>\n<output-file>/private/tmp/claude-501/-Users-seungwonan-Dev-3-tool-sns-crawler/5928341b-19f0-4b7e-b6c4-f53322501d0b/tasks/boaha8t9l.output</output-file>\n<status>failed</status>\n<summary>Background command \"Test YouTube with dateafter filtering\" failed with exit code 143</summary>\n</task-notification>\nRead the output file to retrieve the result: /private/tmp/claude-501/-Users-seungwonan-Dev-3-tool-sns-crawler/5928341b-19f0-4b7e-b6c4-f53322501d0b/tasks/boaha8t9l.output"
+  },
+  {
+    "time": "17:50:05",
+    "user": "seungwonan",
+    "prompt": "새로 생긴 DB 내용 가져와줘"
+  },
+  {
+    "time": "17:53:19",
+    "user": "seungwonan",
+    "prompt": "컨텍스트 커도 다 들어가잖아\n다 읽고 내게 알려줘 보고서 형식으로"
+  },
+  {
+    "time": "17:58:13",
+    "user": "seungwonan",
+    "prompt": "이 프로젝트의 이름은 뭘로 할까? sns_crawler는 좀 아쉽다"
+  },
+  {
+    "time": "17:59:18",
+    "user": "seungwonan",
+    "prompt": "/gog \n\n오늘 멋사 미팅 링크 알려줘"
+  },
+  {
+    "time": "18:18:10",
+    "user": "seungwonan",
+    "prompt": "inflow로 할까?"
+  },
+  {
+    "time": "18:19:01",
+    "user": "seungwonan",
+    "prompt": "이 형식을 메일 \n`/Users/seungwonan/Dev/1-project/blog` 블로그에 발행하고 싶어\n\nblog 어디에 넣어야 할까?"
+  },
+  {
+    "time": "18:19:10",
+    "user": "seungwonan",
+    "prompt": "1,2,3,4 ㄱㄱ"
+  },
+  {
+    "time": "18:19:53",
+    "user": "seungwonan",
+    "prompt": "post랑 별개로 가야할 거 같은데\n데일리 뉴스레터처럼"
+  },
+  {
+    "time": "20:39:59",
+    "user": "seungwonan",
+    "prompt": "커밋하고 푸시"
+  }
+]

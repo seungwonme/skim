@@ -1,13 +1,13 @@
 [project]
-name = "crawl-sns"
+name = "skim"
 version = "0.1.0"
-description = "SNS 플랫폼(Threads, LinkedIn, X, Reddit) 크롤링 도구"
+description = "멀티 플랫폼 정보 큐레이션 파이프라인"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
     {name = "Aiden Ahn", email = "senugw0u@gmail.com"}
 ]
-keywords = ["sns", "crawler", "social-media", "threads", "linkedin", "twitter", "reddit"]
+keywords = ["curation", "crawler", "feed", "aggregator", "hackernews", "reddit", "threads"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -31,12 +31,12 @@ dependencies = [
 ]
 
 [project.scripts]
-crawl-sns = "main:app"
+skim = "main:app"
 
 [project.urls]
-Homepage = "https://github.com/your-org/crawl-sns"
-Repository = "https://github.com/your-org/crawl-sns"
-Issues = "https://github.com/your-org/crawl-sns/issues"
+Homepage = "https://github.com/seungwonme/skim"
+Repository = "https://github.com/seungwonme/skim"
+Issues = "https://github.com/seungwonme/skim/issues"
 
 [build-system]
 requires = ["hatchling"]

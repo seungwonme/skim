@@ -21,14 +21,16 @@ import typer
 from dotenv import load_dotenv
 from playwright.async_api import Page
 
-from ..models import Post
-from .base import BaseCrawler
+from ...models import Post
+from .base import BrowserCrawler
 
 load_dotenv()
 
 
-class RedditCrawler(BaseCrawler):
+class RedditCrawler(BrowserCrawler):
     """Reddit 전용 크롤러"""
+
+    platform = "reddit"
 
     # CSS 선택자
     POST_SELECTORS = [
@@ -748,4 +750,4 @@ class RedditCrawler(BaseCrawler):
 
     # ========== 디버그 ==========
 
-    # _save_debug_html은 BaseCrawler에서 상속
+    # _save_debug_html은 BrowserCrawler에서 상속
