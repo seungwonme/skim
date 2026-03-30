@@ -73,7 +73,7 @@ async def run_single_crawler(platform: str, options: dict) -> List[Post]:
 
 
 @app.command()
-def crawl(
+def crawl(  # noqa: C901 — CLI 진입점으로 플랫폼별 분기가 불가피
     platforms: List[str] = typer.Argument(
         None,
         help="크롤링할 플랫폼 (all, threads, linkedin, x, reddit, hackernews, geeknews, youtube, producthunt, arxiv, huggingface, everyto)",
@@ -135,7 +135,14 @@ def crawl(
             options["count"] = count if count is not None else SNS_DEFAULT_COUNT
         else:
             # Feed: since 기반 (기본 전날 0시부터)
-            d = days if days is not None else 1
+            if days is not None:
+                d = days
+            elif platform == "arxiv":
+                # arXiv는 주말에 새 논문을 게시하지 않으므로 월/토/일은 4일 전까지 확인
+                weekday = now.weekday()  # 0=Mon ... 6=Sun
+                d = 4 if weekday in (0, 5, 6) else 2
+            else:
+                d = 1
             since = (now - timedelta(days=d)).replace(hour=0, minute=0, second=0, microsecond=0)
             options["since"] = since
             if count is not None:
