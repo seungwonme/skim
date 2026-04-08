@@ -1,0 +1,13 @@
+[workspace]
+members = ["apps/desktop/src-tauri"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+
+[profile.dev]
+incremental = true
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

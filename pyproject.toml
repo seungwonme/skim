@@ -1,64 +1,43 @@
 [project]
-name = "skim"
+name = "skim-workspace"
 version = "0.1.0"
-description = "멀티 플랫폼 정보 큐레이션 파이프라인"
-readme = "README.md"
-license = {text = "MIT"}
-authors = [
-    {name = "Aiden Ahn", email = "senugw0u@gmail.com"}
-]
-keywords = ["curation", "crawler", "feed", "aggregator", "hackernews", "reddit", "threads"]
-classifiers = [
-    "Development Status :: 4 - Beta",
-    "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.12",
-    "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
-    "Topic :: Software Development :: Libraries :: Python Modules",
-]
+description = "Skim monorepo workspace"
 requires-python = ">=3.12"
-dependencies = [
-    "playwright>=1.58.0",
-    "pydantic>=2.12.5",
-    "typer>=0.24.1",
-    "python-dotenv>=1.2.2",
-    "requests>=2.32.5",
-    "feedparser>=6.0.12",
-    "beautifulsoup4>=4.14.3",
-    "twitter-api-client>=0.10.22",
-    "websocket-client>=1.9.0",
+dependencies = ["skim-cli"]
+
+[dependency-groups]
+dev = [
+    "black>=25.1.0",
+    "flake8>=7.1.2",
+    "isort>=6.0.1",
+    "pylint>=3.3.4",
+    "pytest>=8.3.5",
 ]
 
-[project.scripts]
-skim = "main:app"
+[tool.uv]
+package = false
 
-[project.urls]
-Homepage = "https://github.com/seungwonme/skim"
-Repository = "https://github.com/seungwonme/skim"
-Issues = "https://github.com/seungwonme/skim/issues"
+[tool.uv.sources]
+skim-cli = { workspace = true }
+skim-core = { workspace = true }
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[tool.hatch.build.targets.wheel]
-packages = ["src"]
+[tool.uv.workspace]
+members = ["packages/*"]
 
 [tool.black]
-target-version = ['py313']
+target-version = ["py313"]
 line-length = 100
 include = '\.pyi?$'
 exclude = '''
 /(
     \.git
-| \.hg
-| \.mypy_cache
-| \.tox
-| \.venv
-| _build
-| buck-out
-| build
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | buck-out
+  | build
 )/
 '''
 preview = true
@@ -71,7 +50,7 @@ multi_line_output = 3
 include_trailing_comma = true
 force_grid_wrap = 0
 use_parentheses = true
-known_first_party = []
+known_first_party = ["skim_cli", "skim_core"]
 known_third_party = []
 
 [tool.pytest.ini_options]
@@ -80,4 +59,4 @@ python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
 addopts = "-v --tb=short"
-pythonpath = ["."]
+pythonpath = ["packages/skim-core/src", "packages/skim-cli/src"]

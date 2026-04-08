@@ -4,7 +4,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-from src.crawlers.auth import cdp
+from skim_core.crawlers.auth import cdp
 
 
 class CDPAutofillTests(unittest.TestCase):
@@ -29,7 +29,7 @@ class CDPAutofillTests(unittest.TestCase):
                 ("user@example.com", "super-secret"),
             )
 
-    @patch("src.crawlers.auth.cdp.execute_cdp_command")
+    @patch("skim_core.crawlers.auth.cdp.execute_cdp_command")
     def test_attempt_login_autofill_skips_when_credentials_are_missing(self, execute_cdp_command):
         result = cdp.attempt_login_autofill("ws://example", "threads", None, None)
 
@@ -44,7 +44,7 @@ class CDPAutofillTests(unittest.TestCase):
         )
         execute_cdp_command.assert_not_called()
 
-    @patch("src.crawlers.auth.cdp.execute_cdp_command")
+    @patch("skim_core.crawlers.auth.cdp.execute_cdp_command")
     def test_attempt_login_autofill_runs_runtime_evaluate_with_platform_script(
         self, execute_cdp_command
     ):
@@ -85,7 +85,7 @@ class CDPAutofillTests(unittest.TestCase):
         self.assertIn("super-secret", expression)
         self.assertTrue(execute_cdp_command.call_args.args[2]["awaitPromise"])
 
-    @patch("src.crawlers.auth.cdp.execute_cdp_command")
+    @patch("skim_core.crawlers.auth.cdp.execute_cdp_command")
     def test_attempt_login_autofill_uses_reddit_selectors(self, execute_cdp_command):
         execute_cdp_command.return_value = {
             "result": {

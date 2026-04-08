@@ -1,0 +1,23 @@
+{
+  "name": "@skim/workspace",
+  "private": true,
+  "packageManager": "pnpm@10.30.3",
+  "scripts": {
+    "prepare": "husky",
+    "dev": "turbo run dev --parallel",
+    "build": "turbo run build",
+    "lint": "uv run flake8 packages tests tooling/scripts && uv run pylint packages/skim-core/src/skim_core packages/skim-cli/src/skim_cli tooling/scripts && turbo run lint",
+    "test": "uv run pytest tests -q && turbo run test",
+    "typecheck": "turbo run typecheck",
+    "format": "uv run black packages tests tooling/scripts --config pyproject.toml && uv run isort packages tests tooling/scripts --settings-path pyproject.toml && turbo run format",
+    "desktop:dev": "pnpm --filter @skim/desktop tauri dev",
+    "desktop:build": "pnpm --filter @skim/desktop tauri build"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@commitlint/cli": "^19.8.1",
+    "@commitlint/config-conventional": "^19.8.1",
+    "husky": "^9.1.7",
+    "turbo": "^2.5.8"
+  }
+}

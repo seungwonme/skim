@@ -1,0 +1,17 @@
+[project]
+name = "skim-cli"
+version = "0.1.0"
+description = "Skim Typer CLI package"
+readme = "../../README.md"
+requires-python = ">=3.12"
+dependencies = ["skim-core", "typer>=0.24.1"]
+
+[project.scripts]
+skim = "skim_cli.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/skim_cli"]

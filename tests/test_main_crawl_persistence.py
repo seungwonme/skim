@@ -4,8 +4,8 @@ import inspect
 import unittest
 from unittest.mock import AsyncMock, patch
 
-import main
-from src.models import Post
+import skim_cli.cli as main
+from skim_core.models import Post
 
 
 class CrawlPersistenceTests(unittest.TestCase):
@@ -27,14 +27,14 @@ class CrawlPersistenceTests(unittest.TestCase):
         self.assertIn("subreddit", params)
         self.assertIn("sort", params)
 
-    @patch("main.typer.echo")
-    @patch("main.SheetsExporter")
-    @patch("main.save_posts_to_file")
-    @patch("main.finish_run")
-    @patch("main.save_posts")
-    @patch("main.save_run", return_value=99)
-    @patch("main.init_db")
-    @patch("main.run_single_crawler", new_callable=AsyncMock)
+    @patch("skim_cli.cli.typer.echo")
+    @patch("skim_cli.cli.SheetsExporter")
+    @patch("skim_cli.cli.save_posts_to_file")
+    @patch("skim_cli.cli.finish_run")
+    @patch("skim_cli.cli.save_posts")
+    @patch("skim_cli.cli.save_run", return_value=99)
+    @patch("skim_cli.cli.init_db")
+    @patch("skim_cli.cli.run_single_crawler", new_callable=AsyncMock)
     def test_crawl_always_persists_and_does_not_forward_removed_dry_run_option(
         self,
         run_single_crawler,
@@ -78,13 +78,13 @@ class CrawlPersistenceTests(unittest.TestCase):
             ),
         )
 
-    @patch("main.typer.echo")
-    @patch("main.save_posts_to_file")
-    @patch("main.finish_run")
-    @patch("main.save_posts")
-    @patch("main.save_run", return_value=100)
-    @patch("main.init_db")
-    @patch("main.run_single_crawler", new_callable=AsyncMock)
+    @patch("skim_cli.cli.typer.echo")
+    @patch("skim_cli.cli.save_posts_to_file")
+    @patch("skim_cli.cli.finish_run")
+    @patch("skim_cli.cli.save_posts")
+    @patch("skim_cli.cli.save_run", return_value=100)
+    @patch("skim_cli.cli.init_db")
+    @patch("skim_cli.cli.run_single_crawler", new_callable=AsyncMock)
     def test_crawl_forwards_reddit_subreddit_and_sort_options(
         self,
         run_single_crawler,

@@ -3,9 +3,9 @@
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from src.crawlers.api.linkedin import LinkedInAPICrawler
-from src.crawlers.api.threads import ThreadsAPICrawler
-from src.crawlers.api.x import XAPICrawler
+from skim_core.crawlers.api.linkedin import LinkedInAPICrawler
+from skim_core.crawlers.api.threads import ThreadsAPICrawler
+from skim_core.crawlers.api.x import XAPICrawler
 
 
 class SocialAPIMetadataTests(unittest.TestCase):

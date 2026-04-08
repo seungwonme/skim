@@ -7,7 +7,7 @@ from unittest.mock import Mock
 
 import typer
 
-from src.crawlers.api.reddit import RedditAPICrawler
+from skim_core.crawlers.api.reddit import RedditAPICrawler
 
 
 def make_response(
