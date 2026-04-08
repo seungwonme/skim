@@ -131,6 +131,8 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
 - 2026-04-08: 루트 `lint`/`format` 스크립트는 monorepo 소스 범위(`packages`, `tests`, `tooling/scripts`)만 검사하도록 좁혔고, `.venv`/`node_modules`/`target` 같은 외부 산출물은 Python lint 대상에서 제외했다.
 - 2026-04-08: desktop Tauri backend는 새 모노레포 경로 기준으로 workspace root를 다시 계산하고, 로그인/소스 import 명령도 새 CLI 및 `tooling/scripts/` 경로를 사용하도록 맞췄다.
 - 2026-04-08: desktop Tauri backend의 `ensure_database()`는 이제 `posts/summaries/feedback/runs`까지 포함한 전체 SQLite schema를 초기화한다. 덕분에 새 worktree처럼 `data/skim.db`가 비어 있는 환경에서도 앱 overview와 Explorer가 `no such table: posts` 없이 기동된다. 회귀는 `cargo test -p desktop`의 fresh workspace 테스트 2건으로 고정했다.
+- 2026-04-08: desktop frontend의 Tauri bridge 모듈 `apps/desktop/src/lib/api.ts`, `apps/desktop/src/lib/types.ts`는 필수 tracked 파일이다. merge 후 이 파일들이 빠지면 Vite가 `./lib/api` import를 해석하지 못해 앱이 즉시 깨진다.
+- 2026-04-08: 루트 `.gitignore`의 일반 `lib/` 패턴이 `apps/desktop/src/lib/`까지 무시하지 않도록 예외(`!apps/desktop/src/lib/**`)를 유지한다.
 - 2026-04-08: `threads`, `x`, `linkedin` API 크롤러는 `external_id`를 실제 플랫폼 식별자로 저장하고 `timestamp`를 ISO 8601으로 기록한다. `tests/test_social_api_metadata.py`로 회귀를 고정했다.
 - 2026-04-08: 저장된 credential 기반 자동 로그인은 `SKIM_LOGIN_IDENTIFIER`, `SKIM_LOGIN_PASSWORD` 환경변수를 통해 Python 로그인 프로세스에 전달되고, `packages/skim-core/src/skim_core/crawlers/auth/cdp.py`가 이를 사용해 auto-fill을 시도한다.
 - 2026-04-08: `dry-run` 모드는 제거된 상태다. `crawl`은 항상 DB 초기화, `runs` 기록, `posts` 저장, JSON 파일 저장을 수행하며, `tests/test_main_crawl_persistence.py`로 회귀를 고정했다.
