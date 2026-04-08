@@ -2,6 +2,8 @@
 
 멀티 플랫폼 정보 큐레이션 파이프라인 모노레포다. Python crawler/CLI, React/Tauri desktop app, Rust backend를 한 저장소에서 관리한다.
 
+현재 배포 버전은 `v0.2.0`이다.
+
 ## Workspace Layout
 
 ```text
@@ -25,6 +27,14 @@ uv sync
 uv run playwright install
 cp .env.example .env
 ```
+
+## Desktop Release
+
+macOS용 desktop 앱은 GitHub Releases에서 DMG로 배포한다.
+
+- 태그: `v0.2.0`
+- 대상 아티팩트: `Skim Desktop_<version>_aarch64.dmg`
+- 설치 흐름: DMG 다운로드 -> 앱을 `Applications`로 복사 -> 첫 실행
 
 ## Common Commands
 
@@ -53,6 +63,8 @@ uv run skim login threads
 pnpm desktop:dev
 pnpm desktop:build
 ```
+
+`pnpm desktop:build`는 Tauri bundle을 생성하며, macOS DMG는 기본적으로 `target/release/bundle/dmg/` 아래에 만들어진다.
 
 ## Supported Platforms
 
@@ -128,6 +140,21 @@ REDDIT_PASSWORD=
 - Python workspace tasks: `uv`
 - Git hooks: `husky`
 - Commit message validation: `commitlint`
+
+## Release Flow
+
+```bash
+pnpm desktop:build
+git tag v0.2.0
+gh release create v0.2.0 target/release/bundle/dmg/*.dmg
+```
+
+릴리즈 전에 최소한 아래 검증을 통과시키는 것을 기준으로 한다.
+
+- `pnpm lint`
+- `pnpm test`
+- `pnpm build`
+- `pnpm typecheck`
 
 ## License
 
