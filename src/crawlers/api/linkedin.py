@@ -17,6 +17,8 @@ page.evaluate(fetch())로 호출합니다. DOM 파싱 없이 피드 데이터를
 """
 
 import json
+import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -265,22 +267,22 @@ class LinkedInAPICrawler:
             if isinstance(name_obj, dict):
                 author = name_obj.get("text", "Unknown")
 
+        entity_urn = item.get("entityUrn", "")
+        activity_id = self._extract_activity_id(entity_urn)
+
         # 타임스탬프
-        timestamp = ""
-        if isinstance(actor, dict):
+        timestamp = self._coerce_linkedin_timestamp(item.get("createdAt"))
+        if not timestamp and isinstance(actor, dict):
             sub_desc = actor.get("subDescription", {})
             if isinstance(sub_desc, dict):
-                timestamp = sub_desc.get("text", "")
+                timestamp = self._parse_relative_timestamp(
+                    sub_desc.get("accessibilityText", "")
+                ) or self._parse_relative_timestamp(sub_desc.get("text", ""))
 
         # URL (entityUrn에서 activity ID 추출)
         url = None
-        entity_urn = item.get("entityUrn", "")
-        if "urn:li:activity:" in entity_urn:
-            import re  # pylint: disable=import-outside-toplevel
-
-            match = re.search(r"urn:li:activity:(\d+)", entity_urn)
-            if match:
-                url = f"https://www.linkedin.com/feed/update/urn:li:activity:{match.group(1)}/"
+        if activity_id:
+            url = f"https://www.linkedin.com/feed/update/urn:li:activity:{activity_id}/"
 
         # Engagement (URN 참조 resolve)
         likes, comments, shares = self._resolve_engagement(item, urn_index)
@@ -289,12 +291,94 @@ class LinkedInAPICrawler:
             platform="linkedin",
             author=author,
             content=content,
-            timestamp=timestamp,
+            timestamp=timestamp or "",
             url=url,
             likes=likes,
             comments=comments,
             reposts=shares,
+            external_id=activity_id,
         )
+
+    @staticmethod
+    def _extract_activity_id(entity_urn: str) -> Optional[str]:
+        """entityUrn에서 activity id를 추출합니다."""
+        match = re.search(r"urn:li:activity:(\d+)", entity_urn or "")
+        if match:
+            return match.group(1)
+        return None
+
+    def _coerce_linkedin_timestamp(self, raw_value) -> Optional[str]:
+        """LinkedIn createdAt 류 값을 ISO 8601 문자열로 변환합니다."""
+        if raw_value is None:
+            return None
+
+        if isinstance(raw_value, dict):
+            for key in ("time", "timestamp", "value", "epochMillis", "epoch"):
+                coerced = self._coerce_linkedin_timestamp(raw_value.get(key))
+                if coerced:
+                    return coerced
+            return None
+
+        if isinstance(raw_value, str):
+            stripped = raw_value.strip()
+            if stripped.isdigit():
+                raw_value = int(stripped)
+            else:
+                return None
+
+        if isinstance(raw_value, (int, float)):
+            seconds = raw_value / 1000 if raw_value > 10_000_000_000 else raw_value
+            return datetime.fromtimestamp(seconds, tz=timezone.utc).isoformat(timespec="seconds")
+
+        return None
+
+    def _parse_relative_timestamp(
+        self,
+        raw_text: str,
+        *,
+        reference_time: Optional[datetime] = None,
+    ) -> Optional[str]:
+        """LinkedIn 상대시간 문자열을 ISO 8601 문자열로 변환합니다."""
+        if not raw_text:
+            return None
+
+        text = raw_text.split("•", 1)[0].strip().lower()
+        if not text or text in {"알 수 없음", "unknown"}:
+            return None
+
+        base_time = reference_time or datetime.now().astimezone()
+        if base_time.tzinfo is None:
+            base_time = base_time.replace(tzinfo=timezone.utc)
+
+        if text in {"현재 시간", "just now", "now"}:
+            return base_time.isoformat(timespec="seconds")
+
+        normalized = text.replace("ago", "").strip()
+        patterns = (
+            (r"(\d+)\s*(s|sec|secs|second|seconds|초)$", "seconds"),
+            (r"(\d+)\s*(m|min|mins|minute|minutes|분)$", "minutes"),
+            (r"(\d+)\s*(h|hr|hrs|hour|hours|시간)$", "hours"),
+            (r"(\d+)\s*(d|day|days|일)$", "days"),
+            (r"(\d+)\s*(w|week|weeks|주)$", "weeks"),
+            (r"(\d+)\s*(mo|month|months|개월)$", "days"),
+            (r"(\d+)\s*(y|year|years|년)$", "days"),
+        )
+
+        for pattern, unit in patterns:
+            match = re.match(pattern, normalized)
+            if not match:
+                continue
+
+            amount = int(match.group(1))
+            if unit == "days" and match.group(2) in {"mo", "month", "months", "개월"}:
+                amount *= 30
+            elif unit == "days" and match.group(2) in {"y", "year", "years", "년"}:
+                amount *= 365
+
+            delta = timedelta(**{unit: amount})
+            return (base_time - delta).isoformat(timespec="seconds")
+
+        return None
 
     def _resolve_engagement(self, item: dict, urn_index: dict) -> tuple[int, int, int]:
         """URN 참조를 따라가서 engagement 데이터 추출"""

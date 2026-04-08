@@ -38,7 +38,7 @@ python main.py crawl threads --user-id 314216 --count 5
 
 # 여러 플랫폼 + 옵션
 python main.py crawl hackernews geeknews --days 1 --no-content
-python main.py crawl all --days 1 --dry-run
+python main.py crawl all --days 1
 
 # SNS 로그인 (Chrome 브라우저에서 수동 로그인 후 쿠키 자동 추출)
 python main.py login threads
@@ -47,6 +47,25 @@ python main.py login x
 # 지원 플랫폼 목록
 python main.py platforms
 ```
+
+## Desktop GUI
+
+`desktop/`에는 `Tauri + React + TypeScript` 기반의 macOS 우선 데스크톱 GUI가 들어 있다. 첫 릴리스 범위는 `설정 + 탐색`이다.
+
+```bash
+cd desktop
+pnpm install
+pnpm tauri dev
+```
+
+현재 GUI에서 가능한 작업:
+
+- YouTube / Threads / X / LinkedIn 추적 대상 등록
+- macOS Keychain 기반 자격 증명 저장
+- 세션 파일 상태 확인과 브라우저 로그인 트리거
+- `data/skim.db` 검색, 필터링, 상세 조회
+- `CSV`, `JSON`, `Markdown` 내보내기
+- `feed_config.py` 기반 YouTube 목록 import
 
 ### CLI 옵션
 
@@ -58,7 +77,6 @@ python main.py platforms
 | `--debug`, `-d` | 디버그 모드 |
 | `--sheets`, `-s` | Google Sheets 내보내기 |
 | `--no-content` | enrichment 건너뛰기 |
-| `--dry-run` | 미리보기 (저장 안 함) |
 | `--user-id`, `-u` | 특정 사용자 프로필 |
 
 ## 아키텍처
@@ -87,6 +105,12 @@ main.py (Typer CLI)
 - **SQLite**: `data/skim.db` — posts, summaries, feedback, runs
 - **JSON**: `data/{platform}/{timestamp}.json`
 - **Sessions**: `data/sessions/{platform}_session.json`
+
+GUI 추가 후 설정 관련 테이블도 함께 사용한다.
+
+- `tracked_sources`
+- `platform_credentials`
+- `app_settings`
 
 ## 자동 수집
 

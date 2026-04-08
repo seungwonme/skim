@@ -23,7 +23,6 @@ class Crawler(Protocol):
             since (datetime): 이 시점 이후의 게시글만 수집
             debug (bool): 디버그 모드
             no_content (bool): 콘텐츠 enrichment 스킵
-            dry_run (bool): 미리보기 모드
 
         Platform-specific options are passed as additional kwargs.
         """

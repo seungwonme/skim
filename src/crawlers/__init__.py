@@ -6,6 +6,7 @@
 """
 
 from .api.linkedin import LinkedInAPICrawler
+from .api.reddit import RedditAPICrawler
 from .api.threads import ThreadsAPICrawler
 from .api.x import XAPICrawler
 from .base import Crawler
@@ -21,7 +22,7 @@ REGISTRY: dict[str, type] = {
     "threads": ThreadsAPICrawler,
     "linkedin": LinkedInAPICrawler,
     "x": XAPICrawler,
-    # "reddit": RedditCrawler,  # CAPTCHA 이슈로 비활성화
+    "reddit": RedditAPICrawler,
     "hackernews": HackerNewsCrawler,
     "geeknews": GeekNewsCrawler,
     "youtube": YouTubeCrawler,

@@ -3,7 +3,7 @@
 @description CDP 기반 범용 로그인 모듈
 
 Chrome DevTools Protocol을 사용하여 SNS 플랫폼 로그인 쿠키를 추출합니다.
-지원 플랫폼: Threads, X (Twitter)
+지원 플랫폼: Threads, X (Twitter), LinkedIn, Reddit
 
 플로우:
 1. Chrome을 debugging port와 함께 실행
@@ -15,6 +15,7 @@ Chrome DevTools Protocol을 사용하여 SNS 플랫폼 로그인 쿠키를 추�
 """
 
 import json
+import os
 import platform
 import shutil
 import socket
@@ -37,20 +38,277 @@ PLATFORM_CONFIG = {
         "session_path": Path("./data/sessions/threads_session.json"),
         "cookie_domains": ["threads", "instagram"],
         "display_name": "Threads",
+        "identifier_selectors": [
+            'input[name="username"]',
+            'input[name="text"]',
+            'input[autocomplete="username"]',
+            'input[type="text"]',
+            'input[type="email"]',
+        ],
+        "password_selectors": ['input[type="password"]'],
+        "advance_selectors": [],
+        "advance_texts": [],
+        "submit_selectors": ['button[type="submit"]', 'button[role="button"]'],
+        "submit_texts": ["log in", "login", "로그인"],
     },
     "x": {
         "login_url": "https://x.com/i/flow/login",
         "session_path": Path("./data/sessions/x_session.json"),
         "cookie_domains": ["x.com", "twitter.com"],
         "display_name": "X (Twitter)",
+        "identifier_selectors": [
+            'input[autocomplete="username"]',
+            'input[name="text"]',
+            'input[data-testid="ocfEnterTextTextInput"]',
+        ],
+        "password_selectors": ['input[name="password"]', 'input[type="password"]'],
+        "advance_selectors": ['button[role="button"]', 'div[role="button"]'],
+        "advance_texts": ["next", "다음"],
+        "submit_selectors": [
+            'button[data-testid="LoginForm_Login_Button"]',
+            'button[role="button"]',
+        ],
+        "submit_texts": ["log in", "로그인", "sign in"],
     },
     "linkedin": {
         "login_url": "https://www.linkedin.com/login",
         "session_path": Path("./data/sessions/linkedin_session.json"),
         "cookie_domains": ["linkedin.com"],
         "display_name": "LinkedIn",
+        "identifier_selectors": [
+            "#username",
+            'input[name="session_key"]',
+            'input[autocomplete="username"]',
+            'input[type="email"]',
+            'input[name="username"]',
+        ],
+        "password_selectors": [
+            "#password",
+            'input[name="session_password"]',
+            'input[type="password"]',
+        ],
+        "advance_selectors": [],
+        "advance_texts": [],
+        "submit_selectors": ['button[type="submit"]', 'button[aria-label*="Sign in"]'],
+        "submit_texts": ["sign in", "로그인", "log in"],
+    },
+    "reddit": {
+        "login_url": "https://www.reddit.com/login/",
+        "session_path": Path("./data/sessions/reddit_session.json"),
+        "cookie_domains": ["reddit.com"],
+        "display_name": "Reddit",
+        "identifier_selectors": [
+            'input[name="username"]',
+            'input[autocomplete="username"]',
+            'input[name="loginUsername"]',
+        ],
+        "password_selectors": [
+            'input[name="password"]',
+            'input[type="password"]',
+            'input[name="loginPassword"]',
+        ],
+        "advance_selectors": [],
+        "advance_texts": [],
+        "submit_selectors": ['button[type="submit"]', "form button"],
+        "submit_texts": ["log in", "로그인", "continue"],
     },
 }
+
+
+def load_login_credentials_from_env() -> Optional[tuple[str, str]]:
+    """Tauri backend가 전달한 저장된 로그인 자격 증명을 읽습니다."""
+    login_identifier = os.getenv("SKIM_LOGIN_IDENTIFIER")
+    password = os.getenv("SKIM_LOGIN_PASSWORD")
+
+    if not login_identifier or not password:
+        return None
+
+    return login_identifier, password
+
+
+def build_autofill_expression(platform_name: str, login_identifier: str, password: str) -> str:
+    """로그인 폼 자동 입력용 Runtime.evaluate 스크립트를 생성합니다."""
+    config = PLATFORM_CONFIG[platform_name]
+    payload = json.dumps(
+        {
+            "loginIdentifier": login_identifier,
+            "password": password,
+            "identifierSelectors": config["identifier_selectors"],
+            "passwordSelectors": config["password_selectors"],
+            "advanceSelectors": config["advance_selectors"],
+            "advanceTexts": config["advance_texts"],
+            "submitSelectors": config["submit_selectors"],
+            "submitTexts": config["submit_texts"],
+        },
+        ensure_ascii=False,
+    )
+
+    return f"""
+(async () => {{
+  const payload = {payload};
+  const state = window.__skimAutoLoginState || (window.__skimAutoLoginState = {{ lastActionAt: 0 }});
+  const now = Date.now();
+  const wait = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
+
+  const normalize = (value) => (value || "").trim().toLowerCase();
+  const isVisible = (element) => {{
+    if (!element) return false;
+    const style = window.getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+  }};
+  const isInteractable = (element) => isVisible(element) && !element.disabled && element.getAttribute("aria-disabled") !== "true";
+  const findFirst = (selectors) => {{
+    for (const selector of selectors) {{
+      const element = Array.from(document.querySelectorAll(selector)).find(isVisible);
+      if (element) return element;
+    }}
+    return null;
+  }};
+  const setNativeValue = (element, value) => {{
+    if (!element) return false;
+    const prototype = element.tagName === "TEXTAREA"
+      ? window.HTMLTextAreaElement.prototype
+      : window.HTMLInputElement.prototype;
+    const descriptor = Object.getOwnPropertyDescriptor(prototype, "value");
+    if (descriptor && descriptor.set) {{
+      descriptor.set.call(element, value);
+    }} else {{
+      element.value = value;
+    }}
+    element.dispatchEvent(new Event("input", {{ bubbles: true }}));
+    element.dispatchEvent(new Event("change", {{ bubbles: true }}));
+    return true;
+  }};
+  const findAction = (selectors, texts) => {{
+    for (const selector of selectors) {{
+      const element = Array.from(document.querySelectorAll(selector)).find((candidate) => {{
+        if (!isInteractable(candidate)) return false;
+        if (!texts.length) return true;
+        const text = normalize(
+          candidate.innerText ||
+          candidate.textContent ||
+          candidate.getAttribute("aria-label") ||
+          candidate.value
+        );
+        return texts.some((target) => text.includes(target));
+      }});
+      if (element) return element;
+    }}
+    return null;
+  }};
+  const triggerClick = (element) => {{
+    if (!element) return false;
+    element.focus?.();
+    for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {{
+      element.dispatchEvent(new MouseEvent(type, {{ bubbles: true, cancelable: true, view: window }}));
+    }}
+    if (typeof element.click === "function") {{
+      element.click();
+    }}
+    return true;
+  }};
+  const submitForm = (action, fallbackField) => {{
+    const form = action?.form || fallbackField?.form || action?.closest?.("form") || fallbackField?.closest?.("form");
+    if (action && triggerClick(action)) {{
+      return true;
+    }}
+    if (form && typeof form.requestSubmit === "function") {{
+      form.requestSubmit(action || undefined);
+      return true;
+    }}
+    if (fallbackField) {{
+      for (const type of ["keydown", "keypress", "keyup"]) {{
+        fallbackField.dispatchEvent(new KeyboardEvent(type, {{
+          key: "Enter",
+          code: "Enter",
+          keyCode: 13,
+          which: 13,
+          bubbles: true,
+        }}));
+      }}
+      return true;
+    }}
+    return false;
+  }};
+
+  const identifierField = findFirst(payload.identifierSelectors);
+  const passwordField = findFirst(payload.passwordSelectors);
+  const result = {{
+    attempted: true,
+    identifierFilled: false,
+    passwordFilled: false,
+    actionClicked: false,
+  }};
+
+  if (identifierField && payload.loginIdentifier) {{
+    if (identifierField.value !== payload.loginIdentifier) {{
+      setNativeValue(identifierField, payload.loginIdentifier);
+    }}
+    result.identifierFilled = identifierField.value === payload.loginIdentifier;
+  }}
+
+  if (passwordField && payload.password) {{
+    if (passwordField.value !== payload.password) {{
+      setNativeValue(passwordField, payload.password);
+    }}
+    result.passwordFilled = passwordField.value === payload.password;
+  }}
+
+  if (result.identifierFilled || result.passwordFilled) {{
+    await wait(180);
+  }}
+
+  const action = !passwordField && payload.advanceSelectors.length
+    ? findAction(payload.advanceSelectors, payload.advanceTexts)
+    : findAction(payload.submitSelectors, payload.submitTexts);
+
+  if (action && now - state.lastActionAt > 1500) {{
+    result.actionClicked = submitForm(action, passwordField || identifierField);
+    state.lastActionAt = now;
+  }} else if (!action && passwordField && now - state.lastActionAt > 1500) {{
+    result.actionClicked = submitForm(null, passwordField);
+    state.lastActionAt = now;
+  }}
+
+  return result;
+}})();
+""".strip()
+
+
+def attempt_login_autofill(
+    ws_url: str,
+    platform_name: str,
+    login_identifier: Optional[str],
+    password: Optional[str],
+) -> dict:
+    """저장된 자격 증명으로 로그인 폼 자동 입력을 시도합니다."""
+    if not login_identifier or not password:
+        return {
+            "attempted": False,
+            "identifierFilled": False,
+            "passwordFilled": False,
+            "actionClicked": False,
+        }
+
+    expression = build_autofill_expression(platform_name, login_identifier, password)
+    result = execute_cdp_command(
+        ws_url,
+        "Runtime.evaluate",
+        {
+            "expression": expression,
+            "returnByValue": True,
+            "awaitPromise": True,
+        },
+    )
+
+    value = result.get("result", {}).get("value", {})
+    return {
+        "attempted": True,
+        "identifierFilled": bool(value.get("identifierFilled")),
+        "passwordFilled": bool(value.get("passwordFilled")),
+        "actionClicked": bool(value.get("actionClicked")),
+    }
 
 
 def get_chrome_path() -> Optional[str]:
@@ -130,6 +388,8 @@ def is_logged_in(url: str, platform_name: str) -> bool:
 
     elif platform_name == "linkedin":
         return "linkedin.com/feed" in url
+    elif platform_name == "reddit":
+        return "reddit.com" in url and "/login" not in url
 
     return False
 
@@ -166,6 +426,11 @@ def login(platform_name: str = "threads"):  # noqa: C901
 
     typer.echo(f"Chrome을 실행합니다... {config['display_name']}에 로그인해주세요.")
     typer.echo(f"(최대 {LOGIN_TIMEOUT // 60}분 대기)")
+    credentials = load_login_credentials_from_env()
+    if credentials:
+        typer.echo(
+            "저장된 credential로 자동 입력을 시도합니다. 필요하면 수동으로 이어서 로그인하세요."
+        )
 
     process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     time.sleep(3)
@@ -211,8 +476,30 @@ def login(platform_name: str = "threads"):  # noqa: C901
 
         # 로그인 대기
         start_time = time.time()
+        autofill_reported = False
         while time.time() - start_time < LOGIN_TIMEOUT:
             try:
+                if credentials:
+                    autofill_result = attempt_login_autofill(
+                        pages_ws_url,
+                        platform_name,
+                        credentials[0],
+                        credentials[1],
+                    )
+                    if (
+                        not autofill_reported
+                        and autofill_result["attempted"]
+                        and (
+                            autofill_result["identifierFilled"]
+                            or autofill_result["passwordFilled"]
+                            or autofill_result["actionClicked"]
+                        )
+                    ):
+                        typer.echo(
+                            "자동 입력을 적용했습니다. 추가 인증이 필요하면 브라우저에서 계속 진행하세요."
+                        )
+                        autofill_reported = True
+
                 current_url = get_current_url(pages_ws_url)
                 if is_logged_in(current_url, platform_name):
                     typer.echo("로그인 감지! 쿠키를 추출합니다...")

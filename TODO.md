@@ -10,6 +10,11 @@
 - https://news.ycombinator.com/
 - https://www.producthunt.com/
 
+링크드인
+
+- https://www.linkedin.com/in/kjh941213/
+- https://www.linkedin.com/in/gb-jeong/
+
 유튜브
 
 - https://www.youtube.com/@B_ZCF
@@ -41,3 +46,9 @@
 
 - https://huggingface.co/papers
 - https://arxiv.org/list/cs.AI/recent
+
+## 260326 추가
+
+- Anthropic
+- OpenAI
+- Google

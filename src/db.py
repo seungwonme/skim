@@ -65,11 +65,50 @@ CREATE TABLE IF NOT EXISTS runs (
     summary     TEXT
 );
 
+CREATE TABLE IF NOT EXISTS tracked_sources (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform      TEXT NOT NULL,
+    source_type   TEXT NOT NULL,
+    display_name  TEXT NOT NULL,
+    canonical_id  TEXT NOT NULL,
+    handle_or_url TEXT,
+    is_enabled    INTEGER NOT NULL DEFAULT 1,
+    focus_level   INTEGER NOT NULL DEFAULT 0,
+    notes         TEXT,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(platform, canonical_id)
+);
+
+CREATE TABLE IF NOT EXISTS platform_credentials (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform        TEXT NOT NULL,
+    account_label   TEXT NOT NULL,
+    login_identifier TEXT NOT NULL,
+    secret_service  TEXT NOT NULL,
+    secret_account  TEXT NOT NULL,
+    session_path    TEXT,
+    session_status  TEXT NOT NULL DEFAULT 'missing',
+    last_verified_at TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(platform, login_identifier)
+);
+
+CREATE TABLE IF NOT EXISTS app_settings (
+    key         TEXT PRIMARY KEY,
+    value       TEXT NOT NULL,
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_posts_platform    ON posts(platform);
 CREATE INDEX IF NOT EXISTS idx_posts_crawled_at  ON posts(crawled_at);
 CREATE INDEX IF NOT EXISTS idx_summaries_post_id ON summaries(post_id);
 CREATE INDEX IF NOT EXISTS idx_feedback_post_id  ON feedback(post_id);
 CREATE INDEX IF NOT EXISTS idx_feedback_action   ON feedback(action);
+CREATE INDEX IF NOT EXISTS idx_tracked_sources_platform ON tracked_sources(platform);
+CREATE INDEX IF NOT EXISTS idx_tracked_sources_enabled  ON tracked_sources(is_enabled);
+CREATE INDEX IF NOT EXISTS idx_credentials_platform     ON platform_credentials(platform);
 """
 
 

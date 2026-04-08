@@ -36,7 +36,7 @@ class Post(BaseModel):
         platform (str): SNS 플랫폼 이름 (threads, linkedin, x, geeknews, reddit)
         author (str): 게시글 작성자 이름 또는 핸들
         content (str): 게시글 본문 내용
-        timestamp (str): 게시 시간 (플랫폼별 형식)
+        timestamp (str): 게시 시간 (ISO 8601 문자열)
         url (Optional[str]): 게시글 직접 링크
         likes (Optional[int]): 좋아요/추천 수
         comments (Optional[int]): 댓글 수

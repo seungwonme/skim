@@ -267,7 +267,7 @@ class ThreadsAPICrawler:
         # 타임스탬프 (첫 번째 포스트 기준)
         taken_at = first_post.get("taken_at", 0)
         timestamp = (
-            datetime.fromtimestamp(taken_at, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            datetime.fromtimestamp(taken_at, tz=timezone.utc).isoformat(timespec="seconds")
             if taken_at
             else ""
         )
@@ -275,6 +275,7 @@ class ThreadsAPICrawler:
         # URL (첫 번째 포스트 기준)
         code = first_post.get("code", "")
         url = f"https://www.threads.net/@{author}/post/{code}" if code else None
+        external_id = code or first_post.get("pk") or first_post.get("id")
 
         # 상호작용 (첫 번째 포스트 기준)
         text_post_info = first_post.get("text_post_app_info", {})
@@ -291,4 +292,5 @@ class ThreadsAPICrawler:
             likes=like_count,
             comments=reply_count,
             reposts=repost_count,
+            external_id=str(external_id) if external_id else None,
         )

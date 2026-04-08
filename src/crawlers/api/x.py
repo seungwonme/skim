@@ -265,7 +265,7 @@ class XAPICrawler:
             timestamp = self._parse_timestamp(created_at)
 
             # URL
-            tweet_id = legacy.get("id_str", "")
+            tweet_id = legacy.get("id_str") or ""
             url = f"https://x.com/{author}/status/{tweet_id}" if tweet_id else None
 
             # 상호작용
@@ -301,6 +301,7 @@ class XAPICrawler:
                 comments=comments,
                 reposts=reposts,
                 views=views,
+                external_id=tweet_id or None,
             )
 
         except Exception as e:
@@ -314,6 +315,6 @@ class XAPICrawler:
             return ""
         try:
             dt = datetime.strptime(created_at, "%a %b %d %H:%M:%S %z %Y")
-            return dt.strftime("%Y-%m-%d %H:%M:%S")
+            return dt.isoformat(timespec="seconds")
         except ValueError:
             return created_at
