@@ -125,6 +125,9 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
 
 ## Project Notes
 
+- 2026-04-09: `runs` 테이블에 `current_platform`, `runner_pid`, `runner_host`를 추가하고, 새 crawl 시작 시 죽은 PID의 stale `running` run을 `interrupted`로 자동 정리하도록 보강했다. `crawl`은 플랫폼 시작/완료를 `runs.summary`와 `current_platform`에 계속 기록한다.
+- 2026-04-09: `save_posts()`는 동일 `(platform, external_id)` 충돌 시 비어 있던 `content_markdown`/`word_count`/기본 메타데이터를 보강하도록 변경했다. YouTube에서 `subtitle_lang="summary"` fallback으로 저장된 행은 나중에 실제 transcript가 오면 덮어쓸 수 있게 처리했다.
+- 2026-04-09: YouTube 자막 추출은 `yt-dlp --list-subs` 결과의 실제 자막 코드(`ko-...`, `en-US-...`)를 골라 요청하도록 수정했고, 자막이 끝내 없으면 `summary`를 fallback 본문으로 저장해 digest 전수 분석에서 누락되지 않게 했다.
 - 2026-04-08: 저장소를 표준 모노레포로 재구성했다. `desktop/`은 `apps/desktop/`, 루트 `src/`는 `packages/skim-core/src/skim_core/`, 루트 `main.py`는 `packages/skim-cli/src/skim_cli/cli.py`, `scripts/`는 `tooling/scripts/`로 이동했다.
 - 2026-04-08: 루트 `pyproject.toml`은 `uv` workspace root로 전환했고, Python 코드는 `skim-core`와 `skim-cli` 패키지로 분리했다. 새 CLI 진입점은 `uv run skim ...`이다.
 - 2026-04-08: 루트 JS tooling은 `pnpm workspace + turbo + biome + husky + commitlint` 기준으로 재구성했다.

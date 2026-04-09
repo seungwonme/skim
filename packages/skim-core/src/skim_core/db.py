@@ -10,6 +10,8 @@
 
 import hashlib
 import json
+import os
+import socket
 import sqlite3
 from pathlib import Path
 from typing import Optional
@@ -64,7 +66,10 @@ CREATE TABLE IF NOT EXISTS runs (
     finished_at TEXT,
     status      TEXT NOT NULL DEFAULT 'running',
     posts_count INTEGER DEFAULT 0,
-    summary     TEXT
+    summary     TEXT,
+    current_platform TEXT,
+    runner_pid  INTEGER,
+    runner_host TEXT
 );
 
 CREATE TABLE IF NOT EXISTS tracked_sources (
@@ -129,12 +134,92 @@ def init_db(db_path: Optional[Path] = None) -> None:
     """스키마를 초기화합니다. 이미 존재하면 무시."""
     conn = get_connection(db_path)
     conn.executescript(SCHEMA)
+    _ensure_runs_columns(conn)
     conn.close()
 
 
-def save_posts(posts: list, platform: str, source: Optional[str] = None) -> int:
+def _ensure_runs_columns(conn: sqlite3.Connection) -> None:
+    """기존 DB의 runs 테이블에 누락된 컬럼을 추가합니다."""
+    existing = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(runs)").fetchall()
+    }
+    required = {
+        "current_platform": "TEXT",
+        "runner_pid": "INTEGER",
+        "runner_host": "TEXT",
+    }
+    for name, definition in required.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE runs ADD COLUMN {name} {definition}")
+    conn.commit()
+
+
+def _pid_is_alive(pid: Optional[int]) -> bool:
+    """현재 호스트에서 PID가 살아 있는지 확인합니다."""
+    if not pid or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def cleanup_stale_runs(db_path: Optional[Path] = None) -> int:
+    """비정상 종료로 남은 running run을 interrupted로 정리합니다."""
+    conn = get_connection(db_path)
+    _ensure_runs_columns(conn)
+    host = socket.gethostname()
+    stale_ids: list[int] = []
+
+    rows = conn.execute(
+        """
+        SELECT id, current_platform, runner_pid, runner_host
+        FROM runs
+        WHERE status = 'running' AND finished_at IS NULL
+        """
+    ).fetchall()
+
+    for row in rows:
+        runner_host = row["runner_host"]
+        runner_pid = row["runner_pid"]
+        if runner_host and runner_host != host:
+            continue
+        if _pid_is_alive(runner_pid):
+            continue
+        stale_ids.append(row["id"])
+        current_platform = row["current_platform"]
+        detail = (
+            f"프로세스 비정상 종료로 stale run 정리"
+            f"{f' (중단 지점: {current_platform})' if current_platform else ''}"
+        )
+        conn.execute(
+            """
+            UPDATE runs
+            SET finished_at = datetime('now'),
+                status = 'interrupted',
+                summary = ?
+            WHERE id = ?
+            """,
+            (detail, row["id"]),
+        )
+
+    conn.commit()
+    conn.close()
+    return len(stale_ids)
+
+
+def save_posts(
+    posts: list,
+    platform: str,
+    source: Optional[str] = None,
+    db_path: Optional[Path] = None,
+) -> int:
     """Post 객체 리스트를 DB에 저장합니다. 중복은 무시. 저장된 건수 반환."""
-    conn = get_connection()
+    conn = get_connection(db_path)
     saved = 0
     for post in posts:
         data = post.model_dump() if hasattr(post, "model_dump") else post
@@ -167,11 +252,64 @@ def save_posts(posts: list, platform: str, source: Optional[str] = None) -> int:
 
         try:
             conn.execute(
-                """INSERT OR IGNORE INTO posts
+                """INSERT INTO posts
                    (platform, source, external_id, author, title, content,
                     url, timestamp, likes, comments, reposts, views,
                     summary, content_markdown, word_count, extra)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(platform, external_id) DO UPDATE SET
+                       title = CASE
+                           WHEN posts.title IS NULL OR TRIM(posts.title) = '' THEN excluded.title
+                           ELSE posts.title
+                       END,
+                       summary = CASE
+                           WHEN posts.summary IS NULL OR TRIM(posts.summary) = '' THEN excluded.summary
+                           ELSE posts.summary
+                       END,
+                       content_markdown = CASE
+                           WHEN (
+                                posts.content_markdown IS NULL
+                                OR TRIM(posts.content_markdown) = ''
+                                OR json_extract(posts.extra, '$.subtitle_lang') = 'summary'
+                           )
+                                AND excluded.content_markdown IS NOT NULL
+                                AND TRIM(excluded.content_markdown) != ''
+                           THEN excluded.content_markdown
+                           ELSE posts.content_markdown
+                       END,
+                       word_count = CASE
+                           WHEN (
+                                posts.content_markdown IS NULL
+                                OR TRIM(posts.content_markdown) = ''
+                                OR json_extract(posts.extra, '$.subtitle_lang') = 'summary'
+                           )
+                                AND excluded.content_markdown IS NOT NULL
+                                AND TRIM(excluded.content_markdown) != ''
+                           THEN excluded.word_count
+                           ELSE posts.word_count
+                       END,
+                       extra = CASE
+                           WHEN (
+                                posts.extra IS NULL
+                                OR TRIM(posts.extra) = ''
+                                OR json_extract(posts.extra, '$.subtitle_lang') = 'summary'
+                           )
+                           THEN excluded.extra
+                           ELSE posts.extra
+                       END
+                   WHERE
+                       (posts.title IS NULL OR TRIM(posts.title) = '')
+                       OR (posts.summary IS NULL OR TRIM(posts.summary) = '')
+                       OR (
+                           (
+                               posts.content_markdown IS NULL
+                               OR TRIM(posts.content_markdown) = ''
+                               OR json_extract(posts.extra, '$.subtitle_lang') = 'summary'
+                           )
+                           AND excluded.content_markdown IS NOT NULL
+                           AND TRIM(excluded.content_markdown) != ''
+                       )
+                       OR (posts.extra IS NULL OR TRIM(posts.extra) = '')""",
                 (
                     platform,
                     source or data.get("source"),
@@ -200,22 +338,62 @@ def save_posts(posts: list, platform: str, source: Optional[str] = None) -> int:
     return saved
 
 
-def save_run(status: str = "running") -> int:
+def save_run(status: str = "running", db_path: Optional[Path] = None) -> int:
     """실행 기록을 생성하고 run_id를 반환합니다."""
-    conn = get_connection()
-    cursor = conn.execute("INSERT INTO runs (status) VALUES (?)", (status,))
+    cleanup_stale_runs(db_path)
+    conn = get_connection(db_path)
+    _ensure_runs_columns(conn)
+    cursor = conn.execute(
+        """
+        INSERT INTO runs (status, runner_pid, runner_host)
+        VALUES (?, ?, ?)
+        """,
+        (status, os.getpid(), socket.gethostname()),
+    )
     run_id = cursor.lastrowid
     conn.commit()
     conn.close()
     return run_id
 
 
-def finish_run(run_id: int, status: str, posts_count: int, summary: Optional[str] = None) -> None:
+def update_run_progress(
+    run_id: int,
+    current_platform: str,
+    summary: Optional[str] = None,
+    db_path: Optional[Path] = None,
+) -> None:
+    """현재 처리 중인 플랫폼과 진행 상황을 기록합니다."""
+    conn = get_connection(db_path)
+    _ensure_runs_columns(conn)
+    conn.execute(
+        """
+        UPDATE runs
+        SET current_platform = ?, summary = COALESCE(?, summary)
+        WHERE id = ?
+        """,
+        (current_platform, summary, run_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def finish_run(
+    run_id: int,
+    status: str,
+    posts_count: int,
+    summary: Optional[str] = None,
+    db_path: Optional[Path] = None,
+) -> None:
     """실행 기록을 완료 상태로 업데이트합니다."""
-    conn = get_connection()
+    conn = get_connection(db_path)
+    _ensure_runs_columns(conn)
     conn.execute(
         """UPDATE runs
-           SET finished_at = datetime('now'), status = ?, posts_count = ?, summary = ?
+           SET finished_at = datetime('now'),
+               status = ?,
+               posts_count = ?,
+               summary = COALESCE(?, summary),
+               current_platform = NULL
            WHERE id = ?""",
         (status, posts_count, summary, run_id),
     )

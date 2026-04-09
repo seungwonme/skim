@@ -31,6 +31,7 @@ class CrawlPersistenceTests(unittest.TestCase):
     @patch("skim_cli.cli.SheetsExporter")
     @patch("skim_cli.cli.save_posts_to_file")
     @patch("skim_cli.cli.finish_run")
+    @patch("skim_cli.cli.update_run_progress")
     @patch("skim_cli.cli.save_posts")
     @patch("skim_cli.cli.save_run", return_value=99)
     @patch("skim_cli.cli.init_db")
@@ -41,6 +42,7 @@ class CrawlPersistenceTests(unittest.TestCase):
         init_db_mock,
         save_run_mock,
         save_posts,
+        update_run_progress_mock,
         finish_run_mock,
         save_posts_to_file_mock,
         sheets_exporter,
@@ -67,7 +69,9 @@ class CrawlPersistenceTests(unittest.TestCase):
         init_db_mock.assert_called_once()
         save_run_mock.assert_called_once_with()
         save_posts.assert_called_once_with(self.sample_posts, "threads")
-        finish_run_mock.assert_called_once_with(99, "success", 1)
+        update_run_progress_mock.assert_any_call(99, "threads", "threads 크롤링 시작")
+        update_run_progress_mock.assert_any_call(99, "threads", "threads 처리 완료: 1개 DB 반영")
+        finish_run_mock.assert_called_once_with(99, "success", 1, "전체 플랫폼 처리 완료")
         save_posts_to_file_mock.assert_called_once()
         sheets_exporter.assert_called_once()
         self.assertTrue(
@@ -81,6 +85,7 @@ class CrawlPersistenceTests(unittest.TestCase):
     @patch("skim_cli.cli.typer.echo")
     @patch("skim_cli.cli.save_posts_to_file")
     @patch("skim_cli.cli.finish_run")
+    @patch("skim_cli.cli.update_run_progress")
     @patch("skim_cli.cli.save_posts")
     @patch("skim_cli.cli.save_run", return_value=100)
     @patch("skim_cli.cli.init_db")
@@ -91,6 +96,7 @@ class CrawlPersistenceTests(unittest.TestCase):
         init_db_mock,
         save_run_mock,
         save_posts,
+        update_run_progress_mock,
         finish_run_mock,
         save_posts_to_file_mock,
         typer_echo_mock,
@@ -117,7 +123,9 @@ class CrawlPersistenceTests(unittest.TestCase):
         init_db_mock.assert_called_once()
         save_run_mock.assert_called_once_with()
         save_posts.assert_called_once_with(self.sample_posts, "reddit")
-        finish_run_mock.assert_called_once_with(100, "success", 1)
+        update_run_progress_mock.assert_any_call(100, "reddit", "reddit 크롤링 시작")
+        update_run_progress_mock.assert_any_call(100, "reddit", "reddit 처리 완료: 1개 DB 반영")
+        finish_run_mock.assert_called_once_with(100, "success", 1, "전체 플랫폼 처리 완료")
         save_posts_to_file_mock.assert_called_once()
         self.assertTrue(
             any(

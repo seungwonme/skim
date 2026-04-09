@@ -54,7 +54,10 @@ CREATE TABLE IF NOT EXISTS runs (
     finished_at TEXT,
     status      TEXT NOT NULL DEFAULT 'running',
     posts_count INTEGER DEFAULT 0,
-    summary     TEXT
+    summary     TEXT,
+    current_platform TEXT,
+    runner_pid  INTEGER,
+    runner_host TEXT
 );
 
 CREATE TABLE IF NOT EXISTS tracked_sources (
@@ -296,7 +299,36 @@ fn ensure_database() -> Result<Connection, String> {
     .map_err(|error| format!("SQLite PRAGMA 초기화 실패: {error}"))?;
     conn.execute_batch(APP_SCHEMA)
         .map_err(|error| format!("앱 스키마 초기화 실패: {error}"))?;
+    ensure_runs_columns(&conn)?;
     Ok(conn)
+}
+
+fn ensure_runs_columns(conn: &Connection) -> Result<(), String> {
+    let mut statement = conn
+        .prepare("PRAGMA table_info(runs)")
+        .map_err(|error| format!("runs 스키마 조회 실패: {error}"))?;
+    let column_iter = statement
+        .query_map([], |row| row.get::<_, String>("name"))
+        .map_err(|error| format!("runs 컬럼 조회 실패: {error}"))?;
+
+    let columns = column_iter
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("runs 컬럼 변환 실패: {error}"))?;
+
+    for (name, definition) in [
+        ("current_platform", "TEXT"),
+        ("runner_pid", "INTEGER"),
+        ("runner_host", "TEXT"),
+    ] {
+        if columns.iter().any(|column| column == name) {
+            continue;
+        }
+        let sql = format!("ALTER TABLE runs ADD COLUMN {name} {definition}");
+        conn.execute(&sql, [])
+            .map_err(|error| format!("runs 컬럼 `{name}` 추가 실패: {error}"))?;
+    }
+
+    Ok(())
 }
 
 fn count_rows(conn: &Connection, table: &str) -> Result<i64, String> {

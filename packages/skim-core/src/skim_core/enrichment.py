@@ -4,6 +4,7 @@
 """
 
 import json
+import re
 import subprocess
 from pathlib import Path
 from typing import List, Optional
@@ -55,14 +56,8 @@ def extract_youtube_transcript(  # pylint: disable=import-outside-toplevel
             check=False,
         )
 
-        # 언어 우선순위 결정
         info = subs_info.stdout + subs_info.stderr
-        if "en-orig" in info:
-            lang = "en-orig,en,ko"
-        elif "ko-orig" in info:
-            lang = "ko-orig,ko,en"
-        else:
-            lang = "en,ko"
+        lang = _select_youtube_subtitle_languages(info)
 
         # 수동 자막 시도
         subprocess.run(
@@ -142,6 +137,84 @@ def extract_youtube_transcript(  # pylint: disable=import-outside-toplevel
         }
 
 
+def _parse_subtitle_codes(section_text: str) -> List[str]:
+    """yt-dlp --list-subs 출력에서 자막 코드 목록을 추출합니다."""
+    codes: List[str] = []
+    for line in section_text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("["):
+            continue
+        if stripped.startswith("Language") or stripped.startswith("Name") or stripped.startswith("Formats"):
+            continue
+        match = re.match(r"^([A-Za-z0-9-]+)\s{2,}", stripped)
+        if match:
+            codes.append(match.group(1))
+    return codes
+
+
+def _extract_subtitle_sections(info: str) -> tuple[List[str], List[str]]:
+    """수동/자동 자막 코드를 분리합니다."""
+    manual_lines: List[str] = []
+    auto_lines: List[str] = []
+    current: Optional[str] = None
+
+    for line in info.splitlines():
+        if line.startswith("[info] Available subtitles"):
+            current = "manual"
+            continue
+        if line.startswith("[info] Available automatic captions"):
+            current = "auto"
+            continue
+        if current == "manual":
+            manual_lines.append(line)
+        elif current == "auto":
+            auto_lines.append(line)
+
+    return _parse_subtitle_codes("\n".join(manual_lines)), _parse_subtitle_codes("\n".join(auto_lines))
+
+
+def _resolve_preferred_subtitle_codes(available_codes: List[str]) -> List[str]:
+    """선호 언어 prefix를 실제 yt-dlp 자막 코드로 매핑합니다."""
+    if not available_codes:
+        return []
+
+    if any(code == "en-orig" or code.startswith("en-orig-") for code in available_codes):
+        prefixes = ["en-orig", "en", "ko"]
+    elif any(code == "ko-orig" or code.startswith("ko-orig-") for code in available_codes):
+        prefixes = ["ko-orig", "ko", "en"]
+    else:
+        prefixes = ["en", "ko"]
+
+    selected: List[str] = []
+    for prefix in prefixes:
+        for code in available_codes:
+            if code == prefix or code.startswith(f"{prefix}-"):
+                if code not in selected:
+                    selected.append(code)
+                break
+    return selected
+
+
+def _select_youtube_subtitle_languages(info: str) -> str:
+    """yt-dlp가 실제로 인식한 자막 코드 중 우선순위가 높은 값을 반환합니다."""
+    manual_codes, auto_codes = _extract_subtitle_sections(info)
+    selected = _resolve_preferred_subtitle_codes(manual_codes)
+    if not selected:
+        selected = _resolve_preferred_subtitle_codes(auto_codes)
+    return ",".join(selected) if selected else "en,ko"
+
+
+def _apply_youtube_summary_fallback(item: dict) -> bool:
+    """자막 추출이 실패하면 description 요약을 digest용 본문으로 사용합니다."""
+    summary = (item.get("summary") or "").strip()
+    if not summary:
+        return False
+    item["content_markdown"] = summary
+    item["word_count"] = len(summary.split())
+    item["subtitle_lang"] = "summary"
+    return True
+
+
 def resolve_geeknews_original_url(topic_url: str) -> Optional[str]:
     """긱뉴스 토픽 페이지에서 원문 URL을 추출"""
     try:
@@ -181,14 +254,19 @@ def enrich_with_content(items: List[dict]) -> List[dict]:
                     print(
                         f"    -> 자막: {data['word_count']} words ({data.get('subtitle_lang', '')})"
                     )
+                elif _apply_youtube_summary_fallback(item):
+                    print(f"    -> 요약 fallback: {item['word_count']} words")
                 else:
                     item["content_markdown"] = ""
                     item["word_count"] = 0
                     print("    -> 자막 없음")
             except Exception as e:
-                item["content_markdown"] = ""
-                item["word_count"] = 0
-                print(f"    [!] 자막 추출 실패: {e}")
+                if _apply_youtube_summary_fallback(item):
+                    print(f"    [!] 자막 추출 실패, 요약 fallback 사용: {e}")
+                else:
+                    item["content_markdown"] = ""
+                    item["word_count"] = 0
+                    print(f"    [!] 자막 추출 실패: {e}")
             continue
 
         # GeekNews: 토픽 페이지에서 원문 URL을 추출한 뒤 원문에 defuddle
