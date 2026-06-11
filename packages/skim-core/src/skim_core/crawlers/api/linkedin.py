@@ -346,9 +346,11 @@ class LinkedInAPICrawler:
         if not text or text in {"알 수 없음", "unknown"}:
             return None
 
-        base_time = reference_time or datetime.now().astimezone()
+        base_time = reference_time or datetime.now(timezone.utc)
         if base_time.tzinfo is None:
             base_time = base_time.replace(tzinfo=timezone.utc)
+        else:
+            base_time = base_time.astimezone(timezone.utc)
 
         if text in {"현재 시간", "just now", "now"}:
             return base_time.isoformat(timespec="seconds")

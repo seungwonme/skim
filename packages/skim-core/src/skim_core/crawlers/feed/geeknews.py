@@ -3,7 +3,6 @@
 @description GeekNews 크롤러 (HTML scraping + RSS)
 """
 
-import re
 from typing import Any, List
 
 import requests
@@ -14,6 +13,7 @@ from ...enrichment import enrich_with_content
 from ...feed_config import GEEKNEWS_RSS
 from ...feed_utils import fetch_feed
 from ...models import Post
+from ...timestamp import _REL_KO, relative_ko_to_iso
 
 GEEKNEWS_URL = "https://news.hada.io/"
 
@@ -86,12 +86,12 @@ class GeekNewsCrawler:
                     if user_link:
                         author = user_link.get_text(strip=True)
 
-                    # 시간: topicinfo의 직접 텍스트에서 추출
+                    # 시간: topicinfo의 직접 텍스트에서 추출 → UTC ISO 8601 정규화
                     info_text = topicinfo.get_text(" ", strip=True)
 
-                    time_match = re.search(r"(\d+\s*[시분일주달개월년]\S*전)", info_text)
-                    if time_match:
-                        timestamp = time_match.group(1)
+                    rel_match = _REL_KO.search(info_text)
+                    if rel_match:
+                        timestamp = relative_ko_to_iso(rel_match.group(0)) or ""
 
                     # 댓글
                     comment_link = topicinfo.select_one('a[href*="go=comments"]')

@@ -4,7 +4,7 @@
 """
 
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, List
 
 import feedparser
@@ -47,7 +47,7 @@ class ArxivCrawler:
                     "title": re.sub(r"\s+", " ", entry.get("title", "")).strip(),
                     "url": entry.get("link", ""),
                     "author": authors,
-                    "published": entry_dt.astimezone(KST).isoformat(),
+                    "published": entry_dt.astimezone(timezone.utc).isoformat(),
                     "summary": re.sub(r"\s+", " ", entry.get("summary", "")).strip()[:500],
                 }
             )

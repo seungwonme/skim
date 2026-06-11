@@ -8,8 +8,18 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 import feedparser
+import requests
 
+# Backward-compat export: 다른 크롤러가 입력 측 윈도우 계산에 KST 사용.
+# 저장 측은 UTC ISO 8601 로 강제 (fetch_feed `published` 필드).
 KST = timezone(timedelta(hours=9))
+FEED_TIMEOUT_SECONDS = 15
+FEED_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    )
+}
 
 
 def parse_entry_date(entry) -> Optional[datetime]:
@@ -28,7 +38,15 @@ def is_within_range(entry_dt: Optional[datetime], since: datetime) -> bool:
 
 def fetch_feed(url: str, source_name: str, since: datetime, quiet: bool = False) -> List[dict]:
     """RSS/Atom 피드를 가져와서 since 이후 항목만 반환"""
-    feed = feedparser.parse(url)
+    try:
+        response = requests.get(url, headers=FEED_HEADERS, timeout=FEED_TIMEOUT_SECONDS)
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        if not quiet:
+            print(f"  [!] {source_name}: 피드 요청 실패 - {exc}")
+        return []
+
+    feed = feedparser.parse(response.content)
 
     if feed.bozo and not feed.entries:
         if not quiet:
@@ -54,7 +72,7 @@ def fetch_feed(url: str, source_name: str, since: datetime, quiet: bool = False)
                         else ""
                     )
                 ),
-                "published": entry_dt.astimezone(KST).isoformat() if entry_dt else "",
+                "published": entry_dt.isoformat() if entry_dt else "",
                 "summary": (
                     re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", entry.get("summary") or "")).strip()[
                         :300

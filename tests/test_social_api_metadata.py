@@ -136,7 +136,8 @@ class SocialAPIMetadataTests(unittest.TestCase):
             reference_time=reference_time,
         )
 
-        self.assertEqual(timestamp, "2026-04-08T16:00:00+09:00")
+        # reference_time KST 18:00 → 2h ago = KST 16:00 → UTC 07:00
+        self.assertEqual(timestamp, "2026-04-08T07:00:00+00:00")
 
 
 if __name__ == "__main__":

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-
 from pathlib import Path
 
 from skim_core.db import DB_PATH, get_connection, init_db
@@ -117,11 +116,7 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
 
-    result = (
-        preview_import(args.db)
-        if args.preview
-        else run_import(args.db)
-    )
+    result = preview_import(args.db) if args.preview else run_import(args.db)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 

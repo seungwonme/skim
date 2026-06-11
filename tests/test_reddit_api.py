@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock
 
+import requests
 import typer
 
 from skim_core.crawlers.api.reddit import RedditAPICrawler
@@ -172,6 +173,43 @@ class RedditAPICrawlerTests(unittest.TestCase):
                 "https://www.reddit.com/r/python/hot.json?limit=1&raw_json=1",
                 "https://www.reddit.com/r/python/hot.json?limit=1&raw_json=1&solution=seed42seed42&js_challenge=1&token=token-42",
                 "https://www.reddit.com/r/python/hot.json?limit=1&raw_json=1",
+            ],
+        )
+
+    def test_crawl_subreddit_falls_back_to_rss_on_403(self):
+        blocked = make_response(status_code=403)
+        blocked_error = requests.HTTPError("403 Client Error", response=blocked)
+        blocked.raise_for_status = Mock(side_effect=blocked_error)
+        rss = make_response(
+            content_type="application/atom+xml; charset=UTF-8",
+            url="https://www.reddit.com/r/python/.rss?limit=1",
+        )
+        rss.content = b"""
+        <feed xmlns="http://www.w3.org/2005/Atom">
+          <entry>
+            <author><name>/u/aiden</name></author>
+            <id>t3_abc123</id>
+            <link href="https://www.reddit.com/r/Python/comments/abc123/example/" />
+            <published>2026-06-11T09:03:02+00:00</published>
+            <title>RSS fallback post</title>
+            <content type="html">&lt;p&gt;Body from RSS&lt;/p&gt;</content>
+          </entry>
+        </feed>
+        """
+        self.crawler.session.get = Mock(side_effect=[blocked, rss])
+
+        posts = self.crawler.fetch_listing(count=1, subreddit="python", sort="hot")
+
+        self.assertEqual(len(posts), 1)
+        self.assertEqual(posts[0].external_id, "abc123")
+        self.assertEqual(posts[0].author, "aiden")
+        self.assertEqual(posts[0].content, "Body from RSS")
+        request_urls = [call.args[0] for call in self.crawler.session.get.call_args_list]
+        self.assertEqual(
+            request_urls,
+            [
+                "https://www.reddit.com/r/python/hot.json?limit=1&raw_json=1",
+                "https://www.reddit.com/r/python/.rss?limit=1",
             ],
         )
 

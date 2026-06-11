@@ -10,7 +10,9 @@ from .api.reddit import RedditAPICrawler
 from .api.threads import ThreadsAPICrawler
 from .api.x import XAPICrawler
 from .base import Crawler
+from .feed.ailabs import AILabsCrawler
 from .feed.arxiv import ArxivCrawler
+from .feed.blogs import BlogsCrawler
 from .feed.everyto import EveryToCrawler
 from .feed.geeknews import GeekNewsCrawler
 from .feed.hackernews import HackerNewsCrawler
@@ -30,6 +32,8 @@ REGISTRY: dict[str, type] = {
     "arxiv": ArxivCrawler,
     "huggingface": HuggingFaceCrawler,
     "everyto": EveryToCrawler,
+    "blogs": BlogsCrawler,
+    "ailabs": AILabsCrawler,
 }
 
 __all__ = ["Crawler", "REGISTRY"]

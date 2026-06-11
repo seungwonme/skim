@@ -4,14 +4,13 @@
 """
 
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, List
 
 import requests
 
 from ...enrichment import enrich_papers_with_content
 from ...feed_config import HUGGINGFACE_PAPERS_URL
-from ...feed_utils import KST
 from ...models import Post
 
 
@@ -27,7 +26,7 @@ class HuggingFaceCrawler:
         papers = resp.json()
 
         items: List[dict] = []
-        now = datetime.now(KST)
+        now = datetime.now(timezone.utc)
 
         for p in papers:
             paper_id = p.get("paper", {}).get("id", "")
@@ -40,7 +39,7 @@ class HuggingFaceCrawler:
             pub = p.get("publishedAt", "")
             try:
                 entry_dt = datetime.fromisoformat(pub.replace("Z", "+00:00"))
-                published = entry_dt.astimezone(KST).isoformat()
+                published = entry_dt.astimezone(timezone.utc).isoformat()
             except (ValueError, AttributeError):
                 published = now.isoformat()
 

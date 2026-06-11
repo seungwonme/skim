@@ -47,6 +47,30 @@ EVERY_TO_FEEDS = {
     "Guides": "https://every.to/guides/feed",
 }
 
+# 개인 블로그 구독 (이름 → RSS URL)
+PERSONAL_BLOGS = {
+    "Addy Osmani": "https://addyosmani.com/rss.xml",
+    "Phil Schmid": "https://www.philschmid.de/rss",
+    "Tidy First (Kent Beck)": "https://tidyfirst.substack.com/feed",
+}
+
+# AI 빅테크 블로그/뉴스 (RSS + HTML 스크래핑 혼합)
+AI_LABS_SOURCES = [
+    {"name": "OpenAI News", "type": "rss", "url": "https://openai.com/news/rss.xml"},
+    {"name": "Anthropic News", "type": "anthropic", "url": "https://www.anthropic.com/news"},
+    {
+        "name": "Anthropic Research",
+        "type": "anthropic",
+        "url": "https://www.anthropic.com/research",
+    },
+    {
+        "name": "Anthropic Engineering",
+        "type": "anthropic",
+        "url": "https://www.anthropic.com/engineering",
+    },
+    {"name": "LangChain Blog", "type": "langchain", "url": "https://www.langchain.com/blog"},
+]
+
 # arXiv cs.AI - Atom API (최신 50개)
 ARXIV_API_URL = "http://export.arxiv.org/api/query?search_query=cat:cs.AI&sortBy=submittedDate&sortOrder=descending&max_results=50"
 

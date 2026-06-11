@@ -100,13 +100,11 @@ class RunTrackingTests(unittest.TestCase):
         saved_enriched = save_posts([enriched], "youtube", db_path=self.db_path)
 
         conn = get_connection(self.db_path)
-        row = conn.execute(
-            """
+        row = conn.execute("""
             SELECT content_markdown, word_count
             FROM posts
             WHERE platform = 'youtube' AND external_id = 'video-1'
-            """
-        ).fetchone()
+            """).fetchone()
         conn.close()
 
         self.assertEqual(saved_initial, 1)
@@ -144,13 +142,11 @@ class RunTrackingTests(unittest.TestCase):
         saved_transcript = save_posts([transcript], "youtube", db_path=self.db_path)
 
         conn = get_connection(self.db_path)
-        row = conn.execute(
-            """
+        row = conn.execute("""
             SELECT content_markdown, word_count, extra
             FROM posts
             WHERE platform = 'youtube' AND external_id = 'video-2'
-            """
-        ).fetchone()
+            """).fetchone()
         conn.close()
 
         self.assertEqual(saved_fallback, 1)

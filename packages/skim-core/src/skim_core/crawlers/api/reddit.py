@@ -10,10 +10,12 @@
 import json
 import re
 from datetime import datetime, timezone
+from html import unescape
 from pathlib import Path
 from typing import Dict, List, Optional
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
+import feedparser
 import requests
 import typer
 
@@ -87,7 +89,17 @@ class RedditAPICrawler:
                 limit=min(remaining, 100),
                 after=after,
             )
-            listing = self.fetch_listing_page(url)
+            try:
+                listing = self.fetch_listing_page(url)
+            except requests.HTTPError as exc:
+                status_code = exc.response.status_code if exc.response is not None else None
+                if normalized_subreddit and status_code == 403:
+                    return self.fetch_subreddit_rss(
+                        count=count,
+                        subreddit=normalized_subreddit,
+                        sort=normalized_sort,
+                    )
+                raise
             page_posts, after = self.parse_listing(listing)
             posts.extend(page_posts)
 
@@ -116,6 +128,12 @@ class RedditAPICrawler:
 
         return f"{REDDIT_BASE_URL}{path}?{urlencode(query_items)}"
 
+    def build_subreddit_rss_url(self, *, subreddit: str, sort: str, limit: int) -> str:
+        """Reddit JSON listing이 막힐 때 사용할 subreddit Atom feed URL."""
+        sort_path = "" if sort == "hot" else f"/{sort}"
+        path = f"/r/{subreddit}{sort_path}/.rss"
+        return f"{REDDIT_BASE_URL}{path}?{urlencode([('limit', str(limit))])}"
+
     def fetch_listing_page(self, url: str) -> dict:
         """verification challenge 처리까지 포함해 listing JSON을 가져옵니다."""
         response = self.session.get(url, timeout=15)
@@ -130,6 +148,20 @@ class RedditAPICrawler:
             raise ValueError(f"Reddit listing JSON 응답을 받지 못했습니다: {response.url}")
 
         return response.json()
+
+    def fetch_subreddit_rss(self, *, count: int, subreddit: str, sort: str) -> List[Post]:
+        """비로그인 subreddit JSON endpoint가 403일 때 Atom feed로 fallback."""
+        url = self.build_subreddit_rss_url(subreddit=subreddit, sort=sort, limit=count)
+        response = self.session.get(url, timeout=15)
+        response.raise_for_status()
+        feed = feedparser.parse(response.content)
+
+        posts: List[Post] = []
+        for entry in feed.entries[:count]:
+            post = self.parse_rss_entry(entry, subreddit)
+            if post:
+                posts.append(post)
+        return posts
 
     @staticmethod
     def is_verification_page(html: str) -> bool:
@@ -228,6 +260,45 @@ class RedditAPICrawler:
             is_self=post_data.get("is_self"),
             over_18=post_data.get("over_18"),
         )
+
+    def parse_rss_entry(self, entry: dict, subreddit: str) -> Optional[Post]:
+        """Reddit Atom entry를 Post로 변환합니다."""
+        raw_id = entry.get("id", "")
+        external_id = raw_id.removeprefix("t3_") if raw_id else ""
+        title = (entry.get("title") or "").strip()
+        content_html = entry.get("summary") or entry.get("content", [{}])[0].get("value", "")
+        content = self.strip_html(content_html) or title
+        link = entry.get("link") or ""
+
+        if not external_id or not content:
+            return None
+
+        timestamp = ""
+        parsed = entry.get("published_parsed") or entry.get("updated_parsed")
+        if parsed:
+            timestamp = datetime(*parsed[:6], tzinfo=timezone.utc).isoformat()
+
+        author = entry.get("author", "unknown").removeprefix("/u/")
+
+        return Post(
+            platform="reddit",
+            author=author,
+            title=title or None,
+            content=content,
+            timestamp=timestamp,
+            url=link,
+            source=f"r/{subreddit}",
+            external_id=external_id,
+            subreddit=subreddit,
+            subreddit_name_prefixed=f"r/{subreddit}",
+        )
+
+    @staticmethod
+    def strip_html(value: str) -> str:
+        """HTML content를 검색 가능한 plain text로 축약합니다."""
+        text = unescape(value or "")
+        text = re.sub(r"<[^>]+>", " ", text)
+        return re.sub(r"\s+", " ", text).strip()
 
     @staticmethod
     def build_post_url(permalink: str) -> str:

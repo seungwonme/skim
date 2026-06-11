@@ -25,7 +25,7 @@ skim-core = { workspace = true }
 members = ["packages/*"]
 
 [tool.black]
-target-version = ["py313"]
+target-version = ["py312"]
 line-length = 100
 include = '\.pyi?$'
 exclude = '''
@@ -43,7 +43,7 @@ exclude = '''
 preview = true
 
 [tool.isort]
-py_version = 313
+py_version = 312
 line_length = 100
 atomic = true
 multi_line_output = 3

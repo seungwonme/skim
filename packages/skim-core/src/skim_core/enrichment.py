@@ -6,19 +6,25 @@
 import json
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import List, Optional
 
 import requests
 from bs4 import BeautifulSoup
 
+try:
+    import trafilatura  # pylint: disable=import-error
+except ImportError:  # pragma: no cover — optional dependency
+    trafilatura = None  # type: ignore[assignment]
+
 from .paths import workspace_root
 
 SRT_TO_TXT = str(workspace_root() / "tooling" / "scripts" / "srt_to_txt.sh")
 
 
-def defuddle(url: str, timeout: int = 15) -> Optional[dict]:
-    """defuddle CLI로 URL의 본문 콘텐츠를 추출"""
+def defuddle(url: str, timeout: int = 45) -> Optional[dict]:
+    """defuddle CLI로 URL의 본문 콘텐츠를 추출 (bunx 콜드스타트 + 원격 fetch 고려)"""
     try:
         result = subprocess.run(
             ["bunx", "defuddle", "parse", url, "--json", "--markdown"],
@@ -40,12 +46,191 @@ def defuddle(url: str, timeout: int = 15) -> Optional[dict]:
     return None
 
 
-def extract_youtube_transcript(  # pylint: disable=import-outside-toplevel
-    url: str, timeout: int = 60
-) -> Optional[dict]:
-    """yt-dlp로 YouTube 자막을 추출하고 srt_to_txt.sh로 정리"""
-    import tempfile
+def _defuddle_html_file(html_path: str, timeout: int = 45) -> Optional[dict]:
+    """미리 렌더링된 HTML 파일에 defuddle 적용 (bunx 콜드스타트 고려)."""
+    try:
+        result = subprocess.run(
+            ["bunx", "defuddle", "parse", html_path, "--json", "--markdown"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            data = json.loads(result.stdout)
+            return {
+                "content_markdown": data.get("content", ""),
+                "word_count": data.get("wordCount", 0),
+                "description": data.get("description", ""),
+                "image": data.get("image", ""),
+            }
+    except Exception as e:
+        print(f"    [!] defuddle(file) 실패 ({html_path}): {e}")
+    return None
 
+
+def _fetch_rendered_html(url: str, timeout_ms: int = 30000) -> Optional[str]:
+    """Playwright headless Chromium으로 JS 렌더링된 최종 HTML을 반환."""
+    try:
+        # pylint: disable=import-outside-toplevel
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return None
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            try:
+                context = browser.new_context(
+                    user_agent=(
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/124.0.0.0 Safari/537.36"
+                    )
+                )
+                page = context.new_page()
+                page.goto(url, wait_until="load", timeout=timeout_ms)
+                page.wait_for_timeout(1500)
+                return page.content()
+            finally:
+                browser.close()
+    except Exception as e:
+        print(f"    [!] playwright 렌더링 실패 ({url[:50]}...): {e}")
+        return None
+
+
+_UA_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,*/*",
+}
+
+
+def _trafilatura_extract(html: str, url: str) -> Optional[dict]:
+    """trafilatura로 HTML → markdown 본문 추출. subprocess 없이 Python 내부 처리."""
+    if trafilatura is None:
+        return None
+    try:
+        md = trafilatura.extract(
+            html,
+            url=url,
+            output_format="markdown",
+            include_comments=False,
+            include_tables=True,
+            no_fallback=False,
+        )
+    except Exception as e:  # pylint: disable=broad-except
+        print(f"    [!] trafilatura 실패 ({url[:60]}...): {e}")
+        return None
+    if not md:
+        return None
+    md = md.strip()
+    return {
+        "content_markdown": md,
+        "word_count": len(md.split()),
+        "description": "",
+        "image": "",
+    }
+
+
+def _http_fetch_html(url: str, timeout: int = 20) -> Optional[str]:
+    try:
+        resp = requests.get(url, headers=_UA_HEADERS, timeout=timeout)
+    except requests.RequestException as e:
+        print(f"    [!] HTTP fetch 실패 ({url[:60]}...): {e}")
+        return None
+    if resp.status_code != 200:
+        print(f"    [!] HTTP {resp.status_code} ({url[:60]}...)")
+        return None
+    return resp.text
+
+
+def _is_content_usable(data: Optional[dict], title: str, min_words: int = 150) -> bool:
+    """defuddle 결과가 실제 본문으로 쓸만한지 판정."""
+    if not data:
+        return False
+    content = (data.get("content_markdown") or "").strip()
+    if not content:
+        return False
+    word_count = data.get("word_count") or len(content.split())
+    if word_count < min_words:
+        return False
+    title_clean = (title or "").strip()
+    if title_clean and content == title_clean:
+        return False
+    return True
+
+
+def extract_article_content(url: str, title: str) -> tuple[Optional[dict], str, Optional[str]]:
+    """
+    품질 게이트가 붙은 본문 추출 — Python 내부에서 전부 처리.
+
+    순서:
+      1) HTTP fetch + trafilatura
+      2) 얇으면 Playwright 렌더 + trafilatura
+      3) 둘 다 실패하면 defuddle (subprocess, 외부 노드 CLI; 최후의 수단)
+
+    defuddle이 일부 사이트(Anthropic)에서 Node fetch 내부 hang을 일으키는 경우가 있어
+    기본 경로에서는 제외했다.
+    """
+    # 1) HTTP + trafilatura
+    html = _http_fetch_html(url)
+    data = _trafilatura_extract(html, url) if html else None
+    if _is_content_usable(data, title):
+        return data, "trafilatura", None
+    thin_reason_1 = (
+        "http fetch failed"
+        if not html
+        else "trafilatura empty" if not data else f"thin (words={data.get('word_count', 0)})"
+    )
+
+    # 2) Playwright 렌더 + trafilatura
+    rendered_html = _fetch_rendered_html(url)
+    rendered_data = _trafilatura_extract(rendered_html, url) if rendered_html else None
+    if _is_content_usable(rendered_data, title):
+        return rendered_data, "playwright+trafilatura", None
+    thin_reason_2 = (
+        "playwright fetch failed"
+        if not rendered_html
+        else (
+            "trafilatura empty (rendered)"
+            if not rendered_data
+            else f"thin after playwright (words={rendered_data.get('word_count', 0)})"
+        )
+    )
+
+    # 3) defuddle 최후 시도 (실패해도 무관)
+    try:
+        defuddle_data = defuddle(url)
+        if _is_content_usable(defuddle_data, title):
+            return defuddle_data, "defuddle", None
+        if rendered_html:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", suffix=".html", delete=False
+            ) as tmp:
+                tmp.write(rendered_html)
+                tmp_path = tmp.name
+            try:
+                defuddle_file_data = _defuddle_html_file(tmp_path)
+            finally:
+                try:
+                    Path(tmp_path).unlink()
+                except OSError:
+                    pass
+            if _is_content_usable(defuddle_file_data, title):
+                return defuddle_file_data, "playwright+defuddle", None
+    except Exception as e:  # pylint: disable=broad-except
+        print(f"    [!] defuddle fallback 예외: {e}")
+
+    fallback = rendered_data or data
+    best_method = "playwright+trafilatura" if rendered_data else "trafilatura" if data else "failed"
+    return fallback, best_method, f"{thin_reason_1}; {thin_reason_2}"
+
+
+def extract_youtube_transcript(url: str, timeout: int = 60) -> Optional[dict]:
+    """yt-dlp로 YouTube 자막을 추출하고 srt_to_txt.sh로 정리"""
     with tempfile.TemporaryDirectory() as tmpdir:
         # 1) 자막 목록 확인 → 수동 자막 시도 → 자동 자막 폴백
         subs_info = subprocess.run(
@@ -144,7 +329,11 @@ def _parse_subtitle_codes(section_text: str) -> List[str]:
         stripped = line.strip()
         if not stripped or stripped.startswith("["):
             continue
-        if stripped.startswith("Language") or stripped.startswith("Name") or stripped.startswith("Formats"):
+        if (
+            stripped.startswith("Language")
+            or stripped.startswith("Name")
+            or stripped.startswith("Formats")
+        ):
             continue
         match = re.match(r"^([A-Za-z0-9-]+)\s{2,}", stripped)
         if match:
@@ -170,7 +359,9 @@ def _extract_subtitle_sections(info: str) -> tuple[List[str], List[str]]:
         elif current == "auto":
             auto_lines.append(line)
 
-    return _parse_subtitle_codes("\n".join(manual_lines)), _parse_subtitle_codes("\n".join(auto_lines))
+    return _parse_subtitle_codes("\n".join(manual_lines)), _parse_subtitle_codes(
+        "\n".join(auto_lines)
+    )
 
 
 def _resolve_preferred_subtitle_codes(available_codes: List[str]) -> List[str]:
@@ -278,12 +469,27 @@ def enrich_with_content(items: List[dict]) -> List[dict]:
                 data = defuddle(original_url)
             else:
                 data = defuddle(url)
+        elif item["platform"].startswith("ailabs") or item["platform"].startswith("blogs"):
+            # ailabs/blogs: trafilatura 기반 파이썬 본문 추출 (defuddle hang 회피)
+            data, method, error = extract_article_content(url, item.get("title", ""))
+            if error:
+                item["enrichment_error"] = error
+                print(f"    [!] enrichment 경고: {error}")
+            # 품질 게이트(default 150 words)를 통과 못하면 본문을 채우지 않고
+            # enrichment_method="failed"로 표시. DB upsert는 이 마커를 "재시도 가능"으로
+            # 해석해 다음 크롤링에서 더 좋은 본문이 오면 덮어쓴다.
+            if not _is_content_usable(data, item.get("title", "")):
+                data = None
+                method = "failed"
+                item.setdefault("enrichment_error", "content not usable")
+            item["enrichment_method"] = method
+            print(f"    -> method={method}")
         else:
             data = defuddle(url)
 
         if data:
-            item["content_markdown"] = data["content_markdown"]
-            item["word_count"] = data["word_count"]
+            item["content_markdown"] = data.get("content_markdown", "")
+            item["word_count"] = data.get("word_count", 0)
             item["description"] = data.get("description", "")
             item["image"] = data.get("image", "")
         else:

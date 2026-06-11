@@ -12,6 +12,7 @@ from ...enrichment import enrich_with_content
 from ...feed_config import HACKERNEWS_RSS
 from ...feed_utils import fetch_feed
 from ...models import Post
+from ...timestamp import epoch_to_iso
 
 HN_API_BASE = "https://hacker-news.firebaseio.com/v0"
 
@@ -53,14 +54,17 @@ class HackerNewsCrawler:
                 if not item or item.get("type") != "story":
                     continue
 
+                time_value = item.get("time")
+                ts = epoch_to_iso(time_value) if time_value else ""
                 post = Post(
                     platform="hackernews",
                     author=item.get("by", "unknown"),
                     content=item.get("title", ""),
-                    timestamp=str(item.get("time", "")),
+                    timestamp=ts,
                     url=item.get("url") or f"https://news.ycombinator.com/item?id={story_id}",
                     likes=item.get("score", 0),
                     comments=item.get("descendants", 0),
+                    external_id=str(story_id),
                 )
                 posts.append(post)
                 typer.echo(f"   [{i + 1}/{count}] {post.content[:60]}")

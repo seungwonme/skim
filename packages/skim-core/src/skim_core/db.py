@@ -118,6 +118,34 @@ CREATE INDEX IF NOT EXISTS idx_tracked_sources_enabled  ON tracked_sources(is_en
 CREATE INDEX IF NOT EXISTS idx_credentials_platform     ON platform_credentials(platform);
 """
 
+# Phase 2 — research_runs 테이블 (auto refresh attempt log).
+# `posts` 변경 금지. v1 schema 진입 시 PRAGMA user_version=1.
+RESEARCH_RUNS_CREATE_SQL = """
+CREATE TABLE IF NOT EXISTS research_runs (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  topic             TEXT NOT NULL,
+  tokens_key        TEXT NOT NULL,
+  sources_key       TEXT NOT NULL,
+  refresh_mode      TEXT NOT NULL,
+  days_requested    INTEGER NOT NULL,
+  days_per_platform TEXT NOT NULL DEFAULT '{}',
+  window_expanded   INTEGER NOT NULL DEFAULT 0,
+  result_count      INTEGER NOT NULL DEFAULT 0,
+  newly_fetched     INTEGER NOT NULL DEFAULT 0,
+  crawled_platforms TEXT NOT NULL DEFAULT '[]',
+  started_at        TEXT NOT NULL,
+  finished_at       TEXT,
+  status            TEXT NOT NULL,
+  runner_pid        INTEGER,
+  runner_host       TEXT,
+  error_message     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_research_runs_topic       ON research_runs(topic);
+CREATE INDEX IF NOT EXISTS idx_research_runs_started_at  ON research_runs(started_at);
+CREATE INDEX IF NOT EXISTS idx_research_runs_backoff     ON research_runs(tokens_key, sources_key, started_at);
+CREATE INDEX IF NOT EXISTS idx_research_runs_status      ON research_runs(status);
+"""
+
 
 def get_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
     """SQLite 연결을 반환합니다. WAL 모드 + foreign keys 활성화."""
@@ -135,15 +163,36 @@ def init_db(db_path: Optional[Path] = None) -> None:
     conn = get_connection(db_path)
     conn.executescript(SCHEMA)
     _ensure_runs_columns(conn)
+    _migrate_research_runs(conn)
     conn.close()
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    """SQLite ADD COLUMN IF NOT EXISTS 대체 (3.43 까지도 미지원).
+
+    `row_factory` 와 무관하게 동작 (PRAGMA table_info 의 인덱스 1 이 name).
+    """
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _migrate_research_runs(conn: sqlite3.Connection) -> None:
+    """research_runs 멱등 migration. fresh DB / v0 / v1 모두 안전."""
+    conn.executescript(RESEARCH_RUNS_CREATE_SQL)
+    _ensure_column(conn, "research_runs", "days_per_platform", "TEXT NOT NULL DEFAULT '{}'")
+    _ensure_column(conn, "research_runs", "window_expanded", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "research_runs", "newly_fetched", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "research_runs", "runner_pid", "INTEGER")
+    _ensure_column(conn, "research_runs", "runner_host", "TEXT")
+    if conn.execute("PRAGMA user_version").fetchone()[0] < 1:
+        conn.execute("PRAGMA user_version = 1")
+    conn.commit()
 
 
 def _ensure_runs_columns(conn: sqlite3.Connection) -> None:
     """기존 DB의 runs 테이블에 누락된 컬럼을 추가합니다."""
-    existing = {
-        row["name"]
-        for row in conn.execute("PRAGMA table_info(runs)").fetchall()
-    }
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(runs)").fetchall()}
     required = {
         "current_platform": "TEXT",
         "runner_pid": "INTEGER",
@@ -175,13 +224,11 @@ def cleanup_stale_runs(db_path: Optional[Path] = None) -> int:
     host = socket.gethostname()
     stale_ids: list[int] = []
 
-    rows = conn.execute(
-        """
+    rows = conn.execute("""
         SELECT id, current_platform, runner_pid, runner_host
         FROM runs
         WHERE status = 'running' AND finished_at IS NULL
-        """
-    ).fetchall()
+        """).fetchall()
 
     for row in rows:
         runner_host = row["runner_host"]
@@ -271,6 +318,7 @@ def save_posts(
                                 posts.content_markdown IS NULL
                                 OR TRIM(posts.content_markdown) = ''
                                 OR json_extract(posts.extra, '$.subtitle_lang') = 'summary'
+                                OR json_extract(posts.extra, '$.enrichment_method') = 'failed'
                            )
                                 AND excluded.content_markdown IS NOT NULL
                                 AND TRIM(excluded.content_markdown) != ''
@@ -282,6 +330,7 @@ def save_posts(
                                 posts.content_markdown IS NULL
                                 OR TRIM(posts.content_markdown) = ''
                                 OR json_extract(posts.extra, '$.subtitle_lang') = 'summary'
+                                OR json_extract(posts.extra, '$.enrichment_method') = 'failed'
                            )
                                 AND excluded.content_markdown IS NOT NULL
                                 AND TRIM(excluded.content_markdown) != ''
@@ -293,6 +342,7 @@ def save_posts(
                                 posts.extra IS NULL
                                 OR TRIM(posts.extra) = ''
                                 OR json_extract(posts.extra, '$.subtitle_lang') = 'summary'
+                                OR json_extract(posts.extra, '$.enrichment_method') = 'failed'
                            )
                            THEN excluded.extra
                            ELSE posts.extra
@@ -305,11 +355,13 @@ def save_posts(
                                posts.content_markdown IS NULL
                                OR TRIM(posts.content_markdown) = ''
                                OR json_extract(posts.extra, '$.subtitle_lang') = 'summary'
+                               OR json_extract(posts.extra, '$.enrichment_method') = 'failed'
                            )
                            AND excluded.content_markdown IS NOT NULL
                            AND TRIM(excluded.content_markdown) != ''
                        )
-                       OR (posts.extra IS NULL OR TRIM(posts.extra) = '')""",
+                       OR (posts.extra IS NULL OR TRIM(posts.extra) = '')
+                       OR json_extract(posts.extra, '$.enrichment_method') = 'failed'""",
                 (
                     platform,
                     source or data.get("source"),
