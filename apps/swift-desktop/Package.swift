@@ -12,6 +12,9 @@ let package = Package(
         .executable(name: "SkimDesktopSmoke", targets: ["SkimDesktopSmoke"]),
         .library(name: "SkimDesktopCore", targets: ["SkimDesktopCore"])
     ],
+    dependencies: [
+        .package(url: "https://github.com/johnxnguyen/Down.git", from: "0.9.5")
+    ],
     targets: [
         .target(
             name: "SkimDesktopCore",
@@ -22,7 +25,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "SkimDesktopApp",
-            dependencies: ["SkimDesktopCore"]
+            dependencies: [
+                "SkimDesktopCore",
+                .product(name: "Down", package: "Down")
+            ]
         ),
         .executableTarget(
             name: "SkimDesktopSmoke",

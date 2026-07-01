@@ -1,4 +1,5 @@
 import AppKit
+import Down
 import SkimDesktopCore
 import SwiftUI
 import WebKit
@@ -1019,7 +1020,9 @@ private struct ReaderMarkdownWebView: NSViewRepresentable {
 
 private enum MarkdownHTMLRenderer {
     static func document(_ markdown: String) -> String {
-        """
+        let normalizedMarkdown = promoteImageLinks(markdown)
+        let body = (try? Down(markdownString: normalizedMarkdown).toHTML()) ?? fallbackHTML(markdown)
+        return """
         <!doctype html>
         <html>
           <head>
@@ -1048,138 +1051,36 @@ private enum MarkdownHTMLRenderer {
               img { display: block; max-width: 100%; height: auto; margin: 1em 0; border-radius: 8px; }
             </style>
           </head>
-          <body>\(renderBlocks(markdown))</body>
+          <body>\(body)</body>
         </html>
         """
     }
 
-    private static func renderBlocks(_ markdown: String) -> String {
-        let lines = markdown.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
-        var html = ""
-        var inCode = false
-        var listTag: String?
-
-        func closeList() {
-            if let tag = listTag {
-                html += "</\(tag)>"
-                listTag = nil
-            }
+    private static func promoteImageLinks(_ markdown: String) -> String {
+        guard let expression = try? NSRegularExpression(pattern: #"(?<!!)\[([^\]]+)\]\(([^)]+)\)"#) else {
+            return markdown
         }
 
-        for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-
-            if trimmed.hasPrefix("```") {
-                closeList()
-                html += inCode ? "</code></pre>" : "<pre><code>"
-                inCode.toggle()
-                continue
-            }
-            if inCode {
-                html += escape(line) + "\n"
-                continue
-            }
-            if trimmed.isEmpty {
-                closeList()
-                continue
-            }
-            if let heading = heading(trimmed) {
-                closeList()
-                html += heading
-            } else if let item = unorderedItem(trimmed) {
-                if listTag != "ul" {
-                    closeList()
-                    html += "<ul>"
-                    listTag = "ul"
-                }
-                html += "<li>\(inline(item))</li>"
-            } else if let item = orderedItem(trimmed) {
-                if listTag != "ol" {
-                    closeList()
-                    html += "<ol>"
-                    listTag = "ol"
-                }
-                html += "<li>\(inline(item))</li>"
-            } else {
-                closeList()
-                html += trimmed.hasPrefix("> ")
-                    ? "<blockquote>\(inline(String(trimmed.dropFirst(2))))</blockquote>"
-                    : "<p>\(inline(trimmed))</p>"
-            }
-        }
-
-        closeList()
-        if inCode {
-            html += "</code></pre>"
-        }
-        return html
-    }
-
-    private static func heading(_ text: String) -> String? {
-        let level = text.prefix { $0 == "#" }.count
-        guard (1...3).contains(level), text.dropFirst(level).first == " " else {
-            return nil
-        }
-        return "<h\(level)>\(inline(String(text.dropFirst(level + 1))))</h\(level)>"
-    }
-
-    private static func unorderedItem(_ text: String) -> String? {
-        (text.hasPrefix("- ") || text.hasPrefix("* ")) ? String(text.dropFirst(2)) : nil
-    }
-
-    private static func orderedItem(_ text: String) -> String? {
-        guard let marker = text.range(of: #"^\d+[.)]\s+"#, options: .regularExpression) else {
-            return nil
-        }
-        return String(text[marker.upperBound...])
-    }
-
-    private static func inline(_ text: String) -> String {
-        var html = text.range(of: #"</?[A-Za-z][^>]*>"#, options: .regularExpression) == nil ? escape(text) : sanitize(text)
-        html = replace(#"`([^`]+)`"#, in: html, with: "<code>$1</code>")
-        html = replace(#"\*\*([^*]+)\*\*"#, in: html, with: "<strong>$1</strong>")
-        html = replace(#"\*([^*]+)\*"#, in: html, with: "<em>$1</em>")
-        html = replaceImages(in: html)
-        html = replaceLinks(in: html)
-        return html
-    }
-
-    private static func replaceImages(in text: String) -> String {
-        replaceMarkdownLink(#"!\[([^\]]*)\]\(([^)]+)\)"#, in: text) { alt, url in
-            imageTag(alt: alt, url: url)
-        }
-    }
-
-    private static func replaceLinks(in text: String) -> String {
-        replaceMarkdownLink(#"\[([^\]]+)\]\(([^)]+)\)"#, in: text) { label, url in
-            if isImageReference(label: label, url: url) {
-                return imageTag(alt: label, url: url)
-            }
-            return #"<a href="\#(safeURL(url))">\#(label)</a>"#
-        }
-    }
-
-    private static func replaceMarkdownLink(
-        _ pattern: String,
-        in text: String,
-        replacement: (String, String) -> String
-    ) -> String {
-        guard let expression = try? NSRegularExpression(pattern: pattern) else {
-            return text
-        }
-
-        var result = text
-        let source = text as NSString
-        let matches = expression.matches(in: text, range: NSRange(text.startIndex..<text.endIndex, in: text))
+        var result = markdown
+        let source = markdown as NSString
+        let matches = expression.matches(
+            in: markdown,
+            range: NSRange(markdown.startIndex..<markdown.endIndex, in: markdown)
+        )
         for match in matches.reversed() {
             guard match.numberOfRanges == 3,
                   let range = Range(match.range, in: result)
             else {
                 continue
             }
+
             let label = source.substring(with: match.range(at: 1))
             let url = source.substring(with: match.range(at: 2))
-            result.replaceSubrange(range, with: replacement(label, url))
+            guard isImageReference(label: label, url: url) else {
+                continue
+            }
+
+            result.replaceSubrange(range, with: "![\(label)](\(url))")
         }
         return result
     }
@@ -1188,45 +1089,22 @@ private enum MarkdownHTMLRenderer {
         let value = "\(label) \(url)"
             .replacingOccurrences(of: "&amp;", with: "&")
             .lowercased()
-        return [".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".svg", ".fpng"].contains { value.contains($0) }
-    }
-
-    private static func imageTag(alt: String, url: String) -> String {
-        #"<img src="\#(safeURL(url))" alt="\#(attributeEscape(alt))">"#
-    }
-
-    private static func safeURL(_ url: String) -> String {
-        let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.lowercased().hasPrefix("javascript:") else {
-            return "#"
+        return [".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".svg", ".fpng"].contains {
+            value.contains($0)
         }
-        return trimmed.replacingOccurrences(of: "\"", with: "%22")
     }
 
-    private static func attributeEscape(_ text: String) -> String {
-        escape(text).replacingOccurrences(of: "\"", with: "&quot;")
-    }
-
-    private static func sanitize(_ text: String) -> String {
-        replace(#"(?is)<script\b[^>]*>.*?</script>"#, in: text, with: "")
+    private static func fallbackHTML(_ markdown: String) -> String {
+        "<pre><code>\(escape(markdown))</code></pre>"
     }
 
     private static func escape(_ text: String) -> String {
-        text.replacingOccurrences(of: "&", with: "&amp;")
+        text
+            .replacingOccurrences(of: "&", with: "&amp;")
             .replacingOccurrences(of: "<", with: "&lt;")
             .replacingOccurrences(of: ">", with: "&gt;")
     }
 
-    private static func replace(_ pattern: String, in text: String, with template: String) -> String {
-        guard let expression = try? NSRegularExpression(pattern: pattern) else {
-            return text
-        }
-        return expression.stringByReplacingMatches(
-            in: text,
-            range: NSRange(text.startIndex..<text.endIndex, in: text),
-            withTemplate: template
-        )
-    }
 }
 
 private enum CredentialField: Hashable {
