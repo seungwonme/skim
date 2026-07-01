@@ -24,7 +24,7 @@ Skim collects posts from multiple public feeds and session-based social sources,
 |---|---|
 | `packages/skim-core/` | Crawlers, models, enrichment, SQLite persistence, research/search |
 | `packages/skim-cli/` | Typer CLI exposed as `uv run skim ...` |
-| `apps/swift-desktop/` | SwiftUI macOS desktop app |
+| `apps/desktop/` | SwiftUI macOS desktop app |
 | `scripts/` | Import, cron, and maintenance scripts |
 | `images/` | README and project images |
 | `docs/` | Design notes, crawler notes, source backlog, generated implementation plans |
@@ -92,8 +92,8 @@ printf '%s\n' "$PASSWORD" | uv run skim login threads --identifier user@example.
 ## Desktop App
 
 ```bash
-swift run --package-path apps/swift-desktop SkimDesktop
-swift build --package-path apps/swift-desktop
+swift run --package-path apps/desktop SkimDesktop
+swift build --package-path apps/desktop
 ```
 
 The desktop app reads the same local workspace as the CLI. It can manage tracked sources and credentials, then browse `data/skim.db`.

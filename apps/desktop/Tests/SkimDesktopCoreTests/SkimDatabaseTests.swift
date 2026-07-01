@@ -181,7 +181,7 @@ func parsedYouTubeChannelInputPersistsAsTrackedSource() throws {
 
 private func withFixtureDatabase(_ body: (SkimDatabase) throws -> Void) throws {
     let directory = FileManager.default.temporaryDirectory.appending(
-        path: "skim-swift-desktop-\(UUID().uuidString)",
+        path: "skim-desktop-\(UUID().uuidString)",
         directoryHint: .isDirectory
     )
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

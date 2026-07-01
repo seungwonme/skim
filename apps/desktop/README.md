@@ -1,4 +1,4 @@
-# Skim Swift Desktop
+# Skim Desktop
 
 SwiftUI macOS app for reading the local Skim workspace.
 
@@ -14,7 +14,7 @@ Crawlers stay in the Python packages.
 ## Commands
 
 ```bash
-swift test --package-path apps/swift-desktop
-swift build --package-path apps/swift-desktop
-swift run --package-path apps/swift-desktop SkimDesktopSmoke --fixture
+swift test --package-path apps/desktop
+swift build --package-path apps/desktop
+swift run --package-path apps/desktop SkimDesktopSmoke --fixture
 ```

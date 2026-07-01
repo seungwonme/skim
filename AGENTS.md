@@ -42,8 +42,8 @@ uv run skim login threads       # CDP 로그인
 uv run skim login reddit        # Reddit 로그인 세션 저장
 
 # Desktop
-swift run --package-path apps/swift-desktop SkimDesktop
-swift build --package-path apps/swift-desktop
+swift run --package-path apps/desktop SkimDesktop
+swift build --package-path apps/desktop
 ```
 
 ## Architecture
@@ -53,7 +53,7 @@ swift build --package-path apps/swift-desktop
 ```text
 .
 ├── apps/
-│   └── swift-desktop/                   # SwiftUI macOS app
+│   └── desktop/                   # SwiftUI macOS app
 ├── packages/
 │   ├── skim-cli/src/skim_cli/           # Typer CLI
 │   └── skim-core/src/skim_core/         # crawler, DB, enrichment, feed config
@@ -96,7 +96,7 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
 - `packages/skim-core/src/skim_core/enrichment.py`: `bunx defuddle`, `yt-dlp`, transcript 정리
 - `packages/skim-core/src/skim_core/feed_utils.py`: RSS/Atom 파싱, KST 변환
 - `packages/skim-core/src/skim_core/feed_config.py`: RSS URL, YouTube 채널 ID, API endpoint 설정
-- `apps/swift-desktop/`: SwiftUI desktop reader for local `data/skim.db`
+- `apps/desktop/`: SwiftUI desktop reader for local `data/skim.db`
 
 ### 새 크롤러 추가 방법
 
@@ -128,6 +128,6 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
 
 - JS/TS: `pnpm` workspace + `turbo` + `biome`
 - Python: `uv` workspace
-- Swift desktop: `apps/swift-desktop`
+- Swift desktop: `apps/desktop`
 - Git hooks: `husky`
 - Commit message validation: `commitlint`

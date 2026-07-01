@@ -1,6 +1,6 @@
 # apps
 
-Application packages live here. Currently the only app is `swift-desktop/`.
+Application packages live here. Currently the only app is `desktop/`.
 
 ## Rules
 

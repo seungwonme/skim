@@ -3,7 +3,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "SkimSwiftDesktop",
+    name: "SkimDesktop",
     platforms: [
         .macOS(.v14)
     ],
