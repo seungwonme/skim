@@ -11,7 +11,6 @@ import typer
 from skim_core.crawlers import REGISTRY
 from skim_core.crawlers.auth.cdp import login as cdp_login
 from skim_core.db import finish_run, init_db, save_posts, save_run, update_run_progress
-from skim_core.exporters import SheetsExporter
 from skim_core.models import Post
 from skim_core.paths import DATA_DIR
 from skim_core.research.refresh import run_research
@@ -62,7 +61,6 @@ def crawl(  # noqa: C901 — CLI 진입점으로 플랫폼별 분기가 불가�
     days: Optional[int] = typer.Option(None, "--days", help="최근 N일 이내 게시글 (feed 기본 1)"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="출력 파일명"),
     debug: bool = typer.Option(False, "--debug", "-d", help="디버그 모드"),
-    sheets: bool = typer.Option(False, "--sheets", "-s", help="구글 시트에 저장"),
     no_content: bool = typer.Option(False, "--no-content", help="콘텐츠 enrichment 스킵"),
     user_id: Optional[str] = typer.Option(
         None, "--user-id", "-u", help="특정 사용자 ID/screen name"
@@ -149,6 +147,9 @@ def crawl(  # noqa: C901 — CLI 진입점으로 플랫폼별 분기가 불가�
                     traceback.print_exc()
                 continue
 
+            if count is not None:
+                posts = posts[:count]
+
             if not posts:
                 update_run_progress(run_id, platform, f"{platform} 수집된 게시글 없음")
                 typer.echo("  -> 수집된 게시글 없음")
@@ -170,15 +171,6 @@ def crawl(  # noqa: C901 — CLI 진입점으로 플랫폼별 분기가 불가�
                 filepath = DATA_DIR / platform / f"{timestamp}.json"
             save_posts_to_file(posts, filepath)
             typer.echo(f"  -> 파일: {filepath}")
-
-            # 구글 시트 저장
-            if sheets:
-                try:
-                    exporter = SheetsExporter()
-                    exporter.export_posts(posts, platform)
-                    typer.echo("  -> 구글 시트 저장 완료")
-                except Exception as e:
-                    typer.echo(f"  -> 구글 시트 저장 실패: {e}")
 
             update_run_progress(run_id, platform, f"{platform} 처리 완료: {saved}개 DB 반영")
 

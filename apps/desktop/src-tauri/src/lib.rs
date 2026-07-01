@@ -231,22 +231,6 @@ struct SearchPostsResult {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ExportRequest {
-    ids: Vec<i64>,
-    format: String,
-    destination: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ExportResult {
-    destination: String,
-    exported_count: usize,
-    format: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 struct FeedImportItem {
     display_name: String,
     canonical_id: String,
@@ -630,39 +614,6 @@ fn run_python_json(args: &[&str]) -> Result<FeedImportResult, String> {
     }
 
     serde_json::from_slice(&output.stdout).map_err(|error| format!("Python JSON 응답 파싱 실패: {error}"))
-}
-
-fn csv_escape(value: &str) -> String {
-    if value.contains(',') || value.contains('"') || value.contains('\n') {
-        format!("\"{}\"", value.replace('"', "\"\""))
-    } else {
-        value.to_string()
-    }
-}
-
-fn posts_by_ids(conn: &Connection, ids: &[i64]) -> Result<Vec<PostRecord>, String> {
-    if ids.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let placeholders = vec!["?"; ids.len()].join(", ");
-    let sql = format!(
-        "SELECT id, platform, source, external_id, author, title, content, url, timestamp,
-                likes, comments, reposts, views, summary, content_markdown, word_count, extra, crawled_at
-         FROM posts
-         WHERE id IN ({placeholders})
-         ORDER BY crawled_at DESC"
-    );
-
-    let mut statement = conn
-        .prepare(&sql)
-        .map_err(|error| format!("export 대상 조회 준비 실패: {error}"))?;
-    let rows = statement
-        .query_map(params_from_iter(ids.iter()), map_post)
-        .map_err(|error| format!("export 대상 조회 실패: {error}"))?;
-
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("export 대상 변환 실패: {error}"))
 }
 
 #[tauri::command]
@@ -1058,84 +1009,9 @@ fn search_posts(filters: SearchFilters) -> Result<SearchPostsResult, String> {
     Ok(SearchPostsResult { items, total_count })
 }
 
-#[tauri::command]
-fn export_posts(request: ExportRequest) -> Result<ExportResult, String> {
-    let conn = ensure_database()?;
-    let posts = posts_by_ids(&conn, &request.ids)?;
-    if posts.is_empty() {
-        return Err("내보낼 게시글이 없습니다.".to_string());
-    }
-
-    let content = match request.format.as_str() {
-        "csv" => {
-            let mut lines = vec![
-                "id,platform,author,title,url,timestamp,likes,comments,reposts,views,source,crawled_at"
-                    .to_string(),
-            ];
-            for post in &posts {
-                let line = [
-                    post.id.to_string(),
-                    csv_escape(&post.platform),
-                    csv_escape(&post.author),
-                    csv_escape(post.title.as_deref().unwrap_or("")),
-                    csv_escape(post.url.as_deref().unwrap_or("")),
-                    csv_escape(post.timestamp.as_deref().unwrap_or("")),
-                    post.likes.unwrap_or_default().to_string(),
-                    post.comments.unwrap_or_default().to_string(),
-                    post.reposts.unwrap_or_default().to_string(),
-                    post.views.unwrap_or_default().to_string(),
-                    csv_escape(post.source.as_deref().unwrap_or("")),
-                    csv_escape(&post.crawled_at),
-                ]
-                .join(",");
-                lines.push(line);
-            }
-            lines.join("\n")
-        }
-        "markdown" => posts
-            .iter()
-            .map(|post| {
-                let title = post
-                    .title
-                    .as_deref()
-                    .filter(|value| !value.trim().is_empty())
-                    .unwrap_or(&post.author);
-                format!(
-                    "## {title}\n\n- Platform: {}\n- Author: {}\n- Source: {}\n- URL: {}\n- Timestamp: {}\n- Crawled At: {}\n\n{}\n\n{}\n",
-                    post.platform,
-                    post.author,
-                    post.source.as_deref().unwrap_or("-"),
-                    post.url.as_deref().unwrap_or("-"),
-                    post.timestamp.as_deref().unwrap_or("-"),
-                    post.crawled_at,
-                    post.summary.as_deref().unwrap_or(&post.content),
-                    post.content_markdown.as_deref().unwrap_or("")
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-        "json" => serde_json::to_string_pretty(&posts)
-            .map_err(|error| format!("JSON export 직렬화 실패: {error}"))?,
-        other => return Err(format!("지원하지 않는 export 형식입니다: {other}")),
-    };
-
-    let destination = PathBuf::from(&request.destination);
-    if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent).map_err(|error| format!("export 경로 생성 실패: {error}"))?;
-    }
-    fs::write(&destination, content).map_err(|error| format!("export 저장 실패: {error}"))?;
-
-    Ok(ExportResult {
-        destination: destination.display().to_string(),
-        exported_count: posts.len(),
-        format: request.format,
-    })
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             get_app_overview,
@@ -1149,8 +1025,7 @@ pub fn run() {
             start_login,
             preview_feed_import,
             import_feed_sources,
-            search_posts,
-            export_posts
+            search_posts
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

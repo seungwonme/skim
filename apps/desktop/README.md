@@ -16,4 +16,3 @@ pnpm tauri dev
 - macOS Keychain 자격 증명 저장
 - 세션 상태 확인과 브라우저 로그인 시작
 - `data/skim.db` 탐색
-- `CSV`, `JSON`, `Markdown` export

@@ -1,15 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import {
-  LuExternalLink,
-  LuFileJson,
-  LuFileSpreadsheet,
-  LuFileText,
-  LuSearch,
-} from "react-icons/lu";
+import { LuExternalLink, LuSearch } from "react-icons/lu";
 
-import { exportPosts, searchPosts } from "../lib/api";
+import { searchPosts } from "../lib/api";
 import type { PostRecord, SearchFilters } from "../lib/types";
 
 interface ExplorerPanelProps {
@@ -34,7 +27,6 @@ export function ExplorerPanel({ report }: ExplorerPanelProps) {
   const [results, setResults] = useState<PostRecord[]>([]);
   const [totalCount, setTotalCount] = useState(0);
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [resultLimit, setResultLimit] = useState(SEARCH_BATCH_SIZE);
   const [busy, setBusy] = useState(false);
 
@@ -67,9 +59,6 @@ export function ExplorerPanel({ report }: ExplorerPanelProps) {
       });
       setResults(response.items);
       setTotalCount(response.totalCount);
-      setSelectedIds((current) =>
-        current.filter((id) => response.items.some((post) => post.id === id)),
-      );
       setSelectedId((current) =>
         current !== null && response.items.some((post) => post.id === current)
           ? current
@@ -99,47 +88,6 @@ export function ExplorerPanel({ report }: ExplorerPanelProps) {
     () => JSON.stringify(draftFilters) !== JSON.stringify(appliedFilters),
     [appliedFilters, draftFilters],
   );
-
-  async function handleExport(format: "csv" | "json" | "markdown") {
-    const ids = selectedIds.length > 0 ? selectedIds : results.map((post) => post.id);
-    if (ids.length === 0) {
-      report("내보낼 게시글이 없습니다.", "error");
-      return;
-    }
-
-    const destination = await save({
-      title: "Export skim posts",
-      defaultPath: `skim-export.${format === "markdown" ? "md" : format}`,
-      filters: [
-        {
-          name: format.toUpperCase(),
-          extensions: [format === "markdown" ? "md" : format],
-        },
-      ],
-    });
-
-    if (!destination) {
-      return;
-    }
-
-    setBusy(true);
-    try {
-      const result = await exportPosts(ids, format, destination);
-      report(`${result.exportedCount}개를 ${result.destination}에 저장했습니다.`, "success");
-    } catch (error) {
-      report(`내보내기 실패: ${String(error)}`, "error");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function toggleSelection(postId: number) {
-    setSelectedIds((current) =>
-      current.includes(postId)
-        ? current.filter((value) => value !== postId)
-        : [...current, postId],
-    );
-  }
 
   return (
     <section className="panel-stack">
@@ -278,23 +226,6 @@ export function ExplorerPanel({ report }: ExplorerPanelProps) {
               <LuSearch />
               <span>적용</span>
             </button>
-            <button className="ghost-button icon-button" disabled={busy} type="button" onClick={() => handleExport("csv")}>
-              <LuFileSpreadsheet />
-              <span>CSV</span>
-            </button>
-            <button className="ghost-button icon-button" disabled={busy} type="button" onClick={() => handleExport("json")}>
-              <LuFileJson />
-              <span>JSON</span>
-            </button>
-            <button
-              className="ghost-button icon-button"
-              disabled={busy}
-              type="button"
-              onClick={() => handleExport("markdown")}
-            >
-              <LuFileText />
-              <span>Markdown</span>
-            </button>
           </div>
         </div>
       </div>
@@ -308,7 +239,6 @@ export function ExplorerPanel({ report }: ExplorerPanelProps) {
             </div>
             <p className="stats-copy">
               총 {totalCount}개 중 현재 {results.length}개 로드
-              {selectedIds.length > 0 ? ` / ${selectedIds.length}개 선택` : ""}
             </p>
           </div>
 
@@ -321,14 +251,6 @@ export function ExplorerPanel({ report }: ExplorerPanelProps) {
                 onClick={() => setSelectedId(post.id)}
               >
                 <div className="result-card-top">
-                  <label className="checkbox-row" onClick={(event) => event.stopPropagation()}>
-                    <input
-                      checked={selectedIds.includes(post.id)}
-                      type="checkbox"
-                      onChange={() => toggleSelection(post.id)}
-                    />
-                    선택
-                  </label>
                   <span className="result-platform">{post.platform}</span>
                 </div>
                 <strong>{post.title ?? post.author}</strong>

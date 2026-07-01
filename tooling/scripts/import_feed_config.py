@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Import legacy feed_config YouTube channels into tracked_sources."""
+"""Import feed_config YouTube channels into tracked_sources."""
 
 from __future__ import annotations
 
@@ -96,7 +96,7 @@ def run_import(db_path: Path) -> dict:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Import legacy feed_config YouTube channels into tracked_sources."
+        description="Import feed_config YouTube channels into tracked_sources."
     )
     parser.add_argument(
         "--db",

@@ -64,7 +64,7 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
                                           ↓
                             enrichment (defuddle / yt-dlp)
                                           ↓
-                       SQLite 저장 + JSON 파일 + (Google Sheets)
+                       SQLite 저장 + JSON 파일
 ```
 
 ### Crawler 유형과 패턴
@@ -73,14 +73,12 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
 
 | 유형 | 위치 | 옵션 기준 | 플랫폼 |
 |------|------|-----------|--------|
-| Feed | `packages/skim-core/src/skim_core/crawlers/feed/` | `since` | hackernews, geeknews, youtube, producthunt, arxiv, huggingface, everyto |
+| Feed | `packages/skim-core/src/skim_core/crawlers/feed/` | `since` | hackernews, geeknews, youtube, producthunt, arxiv, huggingface, everyto, blogs, ailabs |
 | API | `packages/skim-core/src/skim_core/crawlers/api/` | `count` | threads, x, linkedin, reddit |
-| Browser | `packages/skim-core/src/skim_core/crawlers/browser/` | `count` | reddit legacy 구현 |
 
 - Feed 크롤러: `since` 유무에 따라 RSS/API 모드 자동 전환
 - API 크롤러: `data/sessions/{platform}_session.json` 세션 쿠키 재사용
 - Reddit API 크롤러: subreddit listing은 verification challenge 해제 후 JSON endpoint 호출, 홈 피드는 로그인 세션 기반 `best.json` 호출
-- Browser 크롤러: `BrowserCrawler`가 Playwright lifecycle과 debug dump를 관리
 
 ### 주요 모듈
 
@@ -113,7 +111,6 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
 - `LINKEDIN_USERNAME`, `LINKEDIN_PASSWORD`
 - `X_USERNAME`, `X_PASSWORD`
 - `REDDIT_USERNAME`, `REDDIT_PASSWORD`
-- `GOOGLE_WEBAPP_URL`
 
 ## Tooling
 
@@ -125,6 +122,19 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
 
 ## Project Notes
 
+- 2026-04-20: 개인 블로그/AI 빅테크 크롤러 추가.
+  - `blogs` 플랫폼: `PERSONAL_BLOGS` dict + `BlogsCrawler`로 RSS 기반 멀티 피드 수집 (Addy Osmani, Phil Schmid, Tidy First 등). 소스 추가는 `feed_config.py`의 `PERSONAL_BLOGS`에 한 줄 append.
+  - `ailabs` 플랫폼: `AI_LABS_SOURCES` 리스트 + `AILabsCrawler`로 RSS/HTML 혼합 수집. OpenAI(RSS), Anthropic News/Research/Engineering(HTML 스크래핑), LangChain Blog(HTML 스크래핑) 지원. `type` 키로 어댑터 분기.
+  - 정확도 체인 (ailabs 전용): article meta HTTP → Playwright 렌더 → 사이트맵 `<lastmod>` 순으로 `_fetch_article_metadata`가 `published`를 채운다. `_resolve_entry_datetime`은 (1) article ISO published_time → (2) anchor 텍스트 날짜 → (3) sitemap lastmod 순서로 신뢰도를 매긴다. sitemap lastmod은 수정 시각일 수 있어 anchor 날짜보다 후순위. `_fetch_article_metadata`/`_fetch_sitemap_lastmod_map`에 `lru_cache` 적용.
+  - **asyncio 루프와 sync_playwright 충돌**: CLI가 `asyncio.run(crawler.crawl(...))`로 async 컨텍스트에서 호출하는데, `_fetch_html_rendered()`가 `sync_playwright`를 쓰면 "Sync API inside asyncio loop" 예외 발생. `AILabsCrawler.crawl()`은 실제 작업을 `_crawl_sync`로 분리해 `asyncio.to_thread`로 워커 스레드에서 실행한다.
+  - Anthropic 인덱스 파서는 동일 URL이 Featured(날짜 없음)와 PublicationList(날짜 있음)에 중복 렌더링되므로 "URL별로 첫 등장 anchor로 시작하되 dated anchor가 나오면 anchor_date 채움" 정책을 쓴다. `collected: Dict[str, Dict]` 구조.
+  - enrichment 강화 (`enrichment.py`): `extract_article_content(url, title)` 래퍼가 HTTP fetch → trafilatura → 품질 게이트(`_is_content_usable`, word_count ≥ 150) → 얇으면 Playwright 렌더 + trafilatura → 마지막 fallback으로 defuddle. Playwright `wait_until="load" + 1.5s 대기` (OpenAI Cloudflare networkidle 타임아웃 회피).
+  - **defuddle이 Anthropic Next.js 페이지에서 Node fetch 내부 hang을 일으켜 수분 블로킹** → trafilatura (Python 네이티브)를 기본 경로로 채택. ailabs/blogs 플랫폼은 trafilatura로 먼저 시도. 이는 subprocess 없이 처리되어 안정적.
+  - `_item_to_post` (ailabs.py, blogs.py)는 `enrichment_method`/`enrichment_error`/`description`/`image`/`original_url` 같은 extras를 whitelist로 전달. 빠지면 Post.extra="allow"여도 저장 안 됨.
+  - 품질 게이트를 통과 못하면 `content_markdown`을 비우고 `extra.enrichment_method="failed"` 마커를 심는다. `db.py`의 upsert(`save_posts`)는 YouTube의 `subtitle_lang=summary`와 동일하게 이 마커를 "재시도 가능"으로 해석해 다음 크롤링에서 더 좋은 본문이 오면 덮어쓴다. 회귀 고정: `tests/test_ailabs_enrichment_retry.py` (실패→성공 overwrite, 성공→실패 유지 2케이스).
+  - RSS summary는 `Post.summary`에 별도 저장되므로 digest 파이프라인은 `content_markdown`이 비었을 때 `summary`로 폴백 가능. OpenAI는 Cloudflare bot 검증으로 `enrichment_method="failed"`가 많이 나오는 게 정상.
+  - `external_id`는 URL에서 파싱 (`{netloc}{path}`). 이전에는 누락되어 DB `ON CONFLICT(platform, external_id)`가 title hash fallback으로 퇴행했음. URL 기준 크로스-소스 dedup도 `_dedupe_by_url`로 추가.
+  - `requests.Session + urllib3 Retry (backoff 0.8, status 429/5xx)` 재사용. HTML/sitemap/article 페이지 fetch 모두 한 세션.
 - 2026-04-09: `runs` 테이블에 `current_platform`, `runner_pid`, `runner_host`를 추가하고, 새 crawl 시작 시 죽은 PID의 stale `running` run을 `interrupted`로 자동 정리하도록 보강했다. `crawl`은 플랫폼 시작/완료를 `runs.summary`와 `current_platform`에 계속 기록한다.
 - 2026-04-09: `save_posts()`는 동일 `(platform, external_id)` 충돌 시 비어 있던 `content_markdown`/`word_count`/기본 메타데이터를 보강하도록 변경했다. YouTube에서 `subtitle_lang="summary"` fallback으로 저장된 행은 나중에 실제 transcript가 오면 덮어쓸 수 있게 처리했다.
 - 2026-04-09: YouTube 자막 추출은 `yt-dlp --list-subs` 결과의 실제 자막 코드(`ko-...`, `en-US-...`)를 골라 요청하도록 수정했고, 자막이 끝내 없으면 `summary`를 fallback 본문으로 저장해 digest 전수 분석에서 누락되지 않게 했다.

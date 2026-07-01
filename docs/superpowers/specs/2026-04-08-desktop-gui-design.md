@@ -2,14 +2,13 @@
 
 ## Summary
 
-`skim`에 로컬 퍼스트 데스크톱 GUI를 추가한다. 첫 릴리스는 macOS를 우선 지원하고, 구조는 Windows 확장을 고려해 설계한다. 앱의 범위는 `설정`과 `탐색`으로 제한한다. 즉, 사용자는 GUI에서 수집 대상을 등록하고 자격 증명을 관리하며, 이미 저장된 SQLite 데이터를 검색, 필터링, 내보내기 할 수 있어야 한다. 크롤링 코어와 로그인 세션 추출 로직은 기존 Python 자산을 유지한다.
+`skim`에 로컬 퍼스트 데스크톱 GUI를 추가한다. 첫 릴리스는 macOS를 우선 지원하고, 구조는 Windows 확장을 고려해 설계한다. 앱의 범위는 `설정`과 `탐색`으로 제한한다. 즉, 사용자는 GUI에서 수집 대상을 등록하고 자격 증명을 관리하며, 이미 저장된 SQLite 데이터를 검색, 필터링, 상세 조회할 수 있어야 한다. 크롤링 코어와 로그인 세션 추출 로직은 기존 Python 자산을 유지한다.
 
 ## Goals
 
 - YouTube 채널, Threads, X, LinkedIn 대상 계정을 GUI에서 등록, 수정, 비활성화할 수 있다.
 - 플랫폼 자격 증명을 GUI에서 입력하고 OS 보안 저장소에 안전하게 보관할 수 있다.
 - 현재 `data/skim.db`에 저장된 게시글을 GUI에서 검색, 필터링, 상세 조회할 수 있다.
-- 탐색 결과를 `CSV`, `JSON`, `Markdown`으로 내보낼 수 있다.
 - 기존 코드 기반 목록은 별도 import 스크립트로 GUI 설정 목록에 반입할 수 있다.
 - 개인용 로컬 도구로 시작하지만 공개 저장소에 올려도 구조적으로 무리가 없어야 한다.
 
@@ -24,10 +23,10 @@
 
 현재 프로젝트는 Python 기반 CLI 파이프라인이다.
 
-- 진입점: [main.py](/Users/seungwonan/Dev/3-tool/skim/main.py)
-- DB 스키마 정의: [src/db.py](/Users/seungwonan/Dev/3-tool/skim/src/db.py)
-- 공통 게시글 모델: [src/models.py](/Users/seungwonan/Dev/3-tool/skim/src/models.py)
-- 하드코딩된 YouTube 기본 목록: [feed_config.py](/Users/seungwonan/Dev/3-tool/skim/feed_config.py)
+- 진입점: [cli.py](/Users/seungwonan/Dev/3-tool/skim/packages/skim-cli/src/skim_cli/cli.py)
+- DB 스키마 정의: [db.py](/Users/seungwonan/Dev/3-tool/skim/packages/skim-core/src/skim_core/db.py)
+- 공통 게시글 모델: [models.py](/Users/seungwonan/Dev/3-tool/skim/packages/skim-core/src/skim_core/models.py)
+- YouTube 기본 목록: [feed_config.py](/Users/seungwonan/Dev/3-tool/skim/packages/skim-core/src/skim_core/feed_config.py)
 - 로그인 세션 저장 경로: `data/sessions/{platform}_session.json`
 
 기존 SQLite는 아래 테이블을 사용한다.
@@ -60,7 +59,7 @@
 
 - 앱의 주된 UI를 제공한다.
 - 설정 화면과 탐색 화면을 담당한다.
-- SQLite 읽기용 query layer와 export 로직을 담당한다.
+- SQLite 읽기용 query layer를 담당한다.
 - 소스 등록, 검색, 필터링, 결과 상세 표시를 담당한다.
 - 기존 config import 명령의 실행과 결과 표시를 담당한다.
 
@@ -92,7 +91,7 @@
 ### `desktop-shell`
 
 - Tauri 애플리케이션 부트스트랩
-- 메뉴, 창, 파일 다이얼로그, 플랫폼별 권한 설정
+- 메뉴, 창, 플랫폼별 권한 설정
 
 ### `settings-store`
 
@@ -110,11 +109,6 @@
 - `posts` 조회
 - 플랫폼/작성자/기간/키워드/지표 필터 조합
 - 페이지네이션, 정렬, 상세 조회
-
-### `export-layer`
-
-- 선택 결과를 `CSV`, `JSON`, `Markdown`으로 변환
-- 파일 저장 경로 선택과 저장 예외 처리
 
 ### `python-bridge`
 
@@ -295,7 +289,6 @@
 - 리스트 보기
 - 상세 패널 보기
 - 원문 링크 열기
-- `CSV`, `JSON`, `Markdown` export
 
 ## User Flows
 
@@ -322,12 +315,12 @@
 3. 앱이 OS 보안 저장소에 저장
 4. SQLite에 credential reference와 메타데이터만 저장
 
-### Explore and Export
+### Explore
 
 1. 사용자가 필터와 검색 조건을 조합
 2. 결과 목록 확인
-3. 필요한 항목을 선택
-4. 원하는 형식으로 export
+3. 필요한 항목의 상세 패널 확인
+4. 원문 링크 열기
 
 ## App to Backend Contract
 
@@ -408,7 +401,6 @@ JS/TS와 Python 사이 계약은 좁게 유지한다.
 - source normalization
 - 필터 조합 로직
 - 검색 쿼리 빌드
-- export 포맷 변환
 
 ### Integration Tests
 
@@ -423,7 +415,6 @@ JS/TS와 Python 사이 계약은 좁게 유지한다.
 - 자격 증명 저장
 - 세션 상태 표시
 - Explorer 검색 및 필터링
-- CSV, JSON, Markdown export
 
 ## MVP Acceptance Criteria
 
@@ -431,7 +422,6 @@ JS/TS와 Python 사이 계약은 좁게 유지한다.
 - 자격 증명을 GUI에서 입력하고 OS 보안 저장소에 저장할 수 있다.
 - 세션 상태를 GUI에서 확인할 수 있다.
 - 기존 `posts` 데이터를 플랫폼, 작성자, 기간, 키워드 기준으로 탐색할 수 있다.
-- 탐색 결과를 `CSV`, `JSON`, `Markdown`으로 내보낼 수 있다.
 - `feed_config.py` 기반 import로 기존 YouTube 목록을 가져올 수 있다.
 
 ## Future Extensions

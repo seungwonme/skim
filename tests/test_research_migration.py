@@ -66,7 +66,7 @@ class MigrateResearchRunsTests(unittest.TestCase):
         conn.close()
 
     def test_migrate_on_existing_v0_db_missing_columns(self):
-        """legacy minimal research_runs 테이블이 있어도 누락 컬럼이 채워져야."""
+        """기존 minimal research_runs 테이블이 있어도 누락 컬럼이 채워져야."""
         conn = sqlite3.connect(str(self.db))
         conn.execute("""CREATE TABLE research_runs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,

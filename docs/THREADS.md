@@ -3,8 +3,8 @@
 ## 아키텍처
 
 ```
-사용자 → python main.py login → Chrome (CDP) → 쿠키 추출 → session.json
-사용자 → python main.py threads → HTTP API (requests) → JSON 저장
+사용자 → uv run skim login threads → Chrome (CDP) → 쿠키 추출 → session.json
+사용자 → uv run skim crawl threads → HTTP API (requests) → JSON 저장
 ```
 
 - **인증**: Chrome DevTools Protocol (CDP)로 쿠키만 추출. 브라우저는 로그인 시에만 사용.
@@ -89,19 +89,16 @@ GET /api/v1/text_feed/{userID}/profile/?max_id={cursor}
 
 ```bash
 # 1. 최초 로그인 (Chrome이 열리면 수동 로그인)
-python main.py login
+uv run skim login threads
 
 # 2. For You 타임라인 크롤링
-python main.py threads --count 10
+uv run skim crawl threads --count 10
 
 # 3. 특정 사용자 피드 크롤링
-python main.py threads --user-id 314216 --count 5
+uv run skim crawl threads --user-id 314216 --count 5
 
 # 4. 디버그 모드
-python main.py threads --count 3 --debug
-
-# 5. Google Sheets 저장
-python main.py threads --count 10 --sheets
+uv run skim crawl threads --count 3 --debug
 ```
 
 ## 스레드 내용 합치기

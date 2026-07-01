@@ -25,7 +25,7 @@ const tabs: Array<{
 }> = [
   { id: "sources", label: "Sources", description: "수집 대상", icon: LuPanelsTopLeft },
   { id: "credentials", label: "Credentials", description: "Keychain", icon: LuKeyRound },
-  { id: "explorer", label: "Explorer", description: "검색 / export", icon: LuSearch },
+  { id: "explorer", label: "Explorer", description: "검색", icon: LuSearch },
 ];
 
 export default function App() {

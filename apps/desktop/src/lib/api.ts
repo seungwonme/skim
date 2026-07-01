@@ -3,7 +3,6 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AppOverview,
   CredentialInput,
-  ExportResult,
   FeedImportResult,
   PlatformCredential,
   SearchFilters,
@@ -62,10 +61,4 @@ export function importFeedSources() {
 
 export function searchPosts(filters: SearchFilters) {
   return invoke<SearchPostsResult>("search_posts", { filters });
-}
-
-export function exportPosts(ids: number[], format: string, destination: string) {
-  return invoke<ExportResult>("export_posts", {
-    request: { ids, format, destination },
-  });
 }

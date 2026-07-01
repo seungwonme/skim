@@ -109,14 +109,12 @@ pnpm desktop:dev
 - credential management with macOS Keychain integration
 - session status inspection and login trigger
 - post search/filter/detail view
-- CSV / JSON / Markdown export
 - YouTube source import from `skim_core.feed_config`
 
 ## Environment Variables
 
 ```bash
 SKIM_WORKSPACE_ROOT=
-GOOGLE_WEBAPP_URL=
 
 THREADS_USERNAME=
 THREADS_PASSWORD=

@@ -117,9 +117,3 @@ export interface FeedImportResult {
   insertedCount?: number;
   items: FeedImportItem[];
 }
-
-export interface ExportResult {
-  destination: string;
-  exportedCount: number;
-  format: string;
-}
