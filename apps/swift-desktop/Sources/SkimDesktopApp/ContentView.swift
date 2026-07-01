@@ -198,6 +198,10 @@ struct ContentView: View {
                         .lineSpacing(4)
                         .textSelection(.enabled)
 
+                    if let url = post.url {
+                        PreviewPane(preview: ContentPreview.classify(url))
+                    }
+
                     Spacer()
                 }
                 .padding(28)
