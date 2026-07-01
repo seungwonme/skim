@@ -1,33 +1,63 @@
 """CDP 자동 로그인 회귀 테스트."""
 
-import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from skim_core.crawlers.auth import cdp
 
 
 class CDPAutofillTests(unittest.TestCase):
-    def test_load_login_credentials_from_env_returns_none_without_complete_values(self):
-        with patch.dict(os.environ, {}, clear=True):
-            self.assertIsNone(cdp.load_login_credentials_from_env())
+    def test_resolve_login_credentials_returns_explicit_values(self):
+        self.assertEqual(
+            cdp.resolve_login_credentials(
+                "threads",
+                login_identifier="user@example.com",
+                password="super-secret",
+            ),
+            ("user@example.com", "super-secret"),
+        )
 
-        with patch.dict(os.environ, {"SKIM_LOGIN_IDENTIFIER": "user@example.com"}, clear=True):
-            self.assertIsNone(cdp.load_login_credentials_from_env())
+    def test_resolve_login_credentials_requires_identifier_with_password(self):
+        with self.assertRaises(ValueError):
+            cdp.resolve_login_credentials("threads", password="super-secret")
 
-    def test_load_login_credentials_from_env_returns_identifier_and_password(self):
-        with patch.dict(
-            os.environ,
-            {
-                "SKIM_LOGIN_IDENTIFIER": "user@example.com",
-                "SKIM_LOGIN_PASSWORD": "super-secret",
-            },
-            clear=True,
-        ):
+    def test_save_and_load_login_credentials_uses_keychain_reference(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "skim.db"
+            with patch("skim_core.crawlers.auth.cdp.write_keychain_password") as write_password:
+                cdp.save_login_credentials_to_keychain(
+                    "threads",
+                    "user@example.com",
+                    "super-secret",
+                    db_path=db_path,
+                )
+
+            write_password.assert_called_once_with(
+                "skim.desktop.threads",
+                "user@example.com",
+                "super-secret",
+            )
+
+            with (
+                patch("skim_core.crawlers.auth.cdp.platform.system", return_value="Darwin"),
+                patch(
+                    "skim_core.crawlers.auth.cdp.read_keychain_password",
+                    return_value="super-secret",
+                ) as read_password,
+            ):
+                credentials = cdp.load_login_credentials_from_keychain(
+                    "threads",
+                    "user@example.com",
+                    db_path=db_path,
+                )
+
             self.assertEqual(
-                cdp.load_login_credentials_from_env(),
+                credentials,
                 ("user@example.com", "super-secret"),
             )
+            read_password.assert_called_once_with("skim.desktop.threads", "user@example.com")
 
     @patch("skim_core.crawlers.auth.cdp.execute_cdp_command")
     def test_attempt_login_autofill_skips_when_credentials_are_missing(self, execute_cdp_command):

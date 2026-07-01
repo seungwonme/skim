@@ -220,11 +220,11 @@ def print_error_debug_info(platform: str, error_message: str) -> None:
     if platform == "threads":
         typer.echo("   💡 해결 방법:")
         typer.echo("     - data/debug_screenshots/ 폴더의 스크린샷 확인")
-        typer.echo("     - 환경 변수 THREADS_USERNAME, THREADS_PASSWORD 확인")
+        typer.echo("     - uv run skim login threads 로 세션 갱신")
     elif platform == "linkedin":
         typer.echo("   💡 해결 방법:")
         typer.echo("     - 브라우저에서 수동 로그인 확인")
-        typer.echo("     - 환경 변수 LINKEDIN_USERNAME, LINKEDIN_PASSWORD 확인")
+        typer.echo("     - uv run skim login linkedin 로 세션 갱신")
 
     typer.echo("     - 로그 메시지에서 추가 오류 원인 확인")
 

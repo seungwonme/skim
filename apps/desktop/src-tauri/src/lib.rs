@@ -98,6 +98,8 @@ CREATE TABLE IF NOT EXISTS app_settings (
 
 CREATE INDEX IF NOT EXISTS idx_posts_platform    ON posts(platform);
 CREATE INDEX IF NOT EXISTS idx_posts_crawled_at  ON posts(crawled_at);
+CREATE INDEX IF NOT EXISTS idx_posts_platform_url ON posts(platform, url)
+    WHERE url IS NOT NULL AND TRIM(url) <> '';
 CREATE INDEX IF NOT EXISTS idx_summaries_post_id ON summaries(post_id);
 CREATE INDEX IF NOT EXISTS idx_feedback_post_id  ON feedback(post_id);
 CREATE INDEX IF NOT EXISTS idx_feedback_action   ON feedback(action);
@@ -548,31 +550,6 @@ fn save_secret_mac(service: &str, account: &str, password: &str) -> Result<(), S
     }
 }
 
-fn read_secret_mac(service: &str, account: &str) -> Result<String, String> {
-    #[cfg(target_os = "macos")]
-    {
-        let output = Command::new("security")
-            .args(["find-generic-password", "-w", "-a", account, "-s", service])
-            .output()
-            .map_err(|error| format!("macOS Keychain 조회 실패: {error}"))?;
-
-        if output.status.success() {
-            let password = String::from_utf8(output.stdout)
-                .map_err(|error| format!("macOS Keychain 응답 디코딩 실패: {error}"))?;
-            return Ok(password.trim_end_matches(['\n', '\r']).to_string());
-        }
-
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        Err(format!("macOS Keychain 조회 실패: {stderr}"))
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (service, account);
-        Err("현재 빌드는 macOS Keychain만 지원합니다.".to_string())
-    }
-}
-
 fn delete_secret_mac(service: &str, account: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -919,7 +896,7 @@ fn start_login(credential_id: i64) -> Result<String, String> {
     let credential = conn
         .query_row(
             "
-            SELECT platform, account_label, login_identifier, secret_service, secret_account
+            SELECT platform, account_label, login_identifier
             FROM platform_credentials
             WHERE id = ?1
             ",
@@ -929,8 +906,6 @@ fn start_login(credential_id: i64) -> Result<String, String> {
                     row.get::<_, String>("platform")?,
                     row.get::<_, String>("account_label")?,
                     row.get::<_, String>("login_identifier")?,
-                    row.get::<_, String>("secret_service")?,
-                    row.get::<_, String>("secret_account")?,
                 ))
             },
         )
@@ -938,13 +913,10 @@ fn start_login(credential_id: i64) -> Result<String, String> {
         .map_err(|error| format!("로그인 credential 조회 실패: {error}"))?
         .ok_or_else(|| format!("ID {credential_id}에 해당하는 credential이 없습니다."))?;
 
-    let (platform, account_label, login_identifier, secret_service, secret_account) = credential;
-    let password = read_secret_mac(&secret_service, &secret_account)?;
+    let (platform, account_label, login_identifier) = credential;
 
     Command::new("uv")
-        .args(["run", "skim", "login", &platform])
-        .env("SKIM_LOGIN_IDENTIFIER", &login_identifier)
-        .env("SKIM_LOGIN_PASSWORD", &password)
+        .args(["run", "skim", "login", &platform, "--identifier", &login_identifier])
         .current_dir(root)
         .spawn()
         .map_err(|error| format!("로그인 프로세스 실행 실패: {error}"))?;
@@ -956,12 +928,12 @@ fn start_login(credential_id: i64) -> Result<String, String> {
 
 #[tauri::command]
 fn preview_feed_import() -> Result<FeedImportResult, String> {
-    run_python_json(&["run", "python", "tooling/scripts/import_feed_config.py", "--preview"])
+    run_python_json(&["run", "python", "scripts/import_feed_config.py", "--preview"])
 }
 
 #[tauri::command]
 fn import_feed_sources() -> Result<FeedImportResult, String> {
-    run_python_json(&["run", "python", "tooling/scripts/import_feed_config.py"])
+    run_python_json(&["run", "python", "scripts/import_feed_config.py"])
 }
 
 #[tauri::command]

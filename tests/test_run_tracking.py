@@ -155,6 +155,45 @@ class RunTrackingTests(unittest.TestCase):
         self.assertEqual(row["word_count"], 3)
         self.assertIn('"subtitle_lang": "ko"', row["extra"])
 
+    def test_save_posts_dedupes_by_url_when_external_id_changes(self):
+        first = Post(
+            platform="youtube",
+            author="tester",
+            content="old title",
+            timestamp="2026-04-09T00:00:00+09:00",
+            title="Old title",
+            url="https://www.youtube.com/watch?v=same",
+            content_markdown="",
+        )
+        retry = Post(
+            platform="youtube",
+            author="tester",
+            content="renamed title",
+            timestamp="2026-04-10T00:00:00+09:00",
+            title="Renamed title",
+            url="https://www.youtube.com/watch?v=same",
+            content_markdown="full transcript text",
+            word_count=3,
+        )
+
+        saved_first = save_posts([first], "youtube", db_path=self.db_path)
+        saved_retry = save_posts([retry], "youtube", db_path=self.db_path)
+
+        conn = get_connection(self.db_path)
+        rows = conn.execute("""
+            SELECT title, content_markdown, word_count
+            FROM posts
+            WHERE platform = 'youtube' AND url = 'https://www.youtube.com/watch?v=same'
+            """).fetchall()
+        conn.close()
+
+        self.assertEqual(saved_first, 1)
+        self.assertEqual(saved_retry, 1)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["title"], "Old title")
+        self.assertEqual(rows[0]["content_markdown"], "full transcript text")
+        self.assertEqual(rows[0]["word_count"], 3)
+
 
 class YouTubeFallbackTests(unittest.TestCase):
     def test_select_youtube_subtitle_languages_prefers_exact_codes(self):

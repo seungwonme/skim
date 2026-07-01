@@ -57,7 +57,8 @@ pnpm desktop:build
 ├── packages/
 │   ├── skim-cli/src/skim_cli/           # Typer CLI
 │   └── skim-core/src/skim_core/         # crawler, DB, enrichment, feed config
-├── tooling/scripts/                     # import/cron/helper scripts
+├── scripts/                             # import/cron/helper scripts
+├── images/                              # README/project images
 ├── tests/                               # Python regression tests
 └── data/                                # local runtime artifacts
 ```
@@ -116,15 +117,12 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
 - 커밋: `<type>(<scope>): <subject>` (Conventional Commits)
 - type: feat, fix, docs, style, refactor, test, chore
 
-## Environment Variables
+## Runtime Auth
 
-`.env` 파일에 설정:
-
-- `SKIM_WORKSPACE_ROOT` (optional override)
-- `THREADS_USERNAME`, `THREADS_PASSWORD`
-- `LINKEDIN_USERNAME`, `LINKEDIN_PASSWORD`
-- `X_USERNAME`, `X_PASSWORD`
-- `REDDIT_USERNAME`, `REDDIT_PASSWORD`
+- `SKIM_WORKSPACE_ROOT` can override the workspace root when needed.
+- Login sessions live under `data/sessions/{platform}_session.json`.
+- macOS credentials live in Keychain; SQLite stores only `platform_credentials` references.
+- Use `uv run skim login <platform> --identifier <id>` to read a saved Keychain credential, or add `--password-stdin --save-credential` to store one from CLI.
 
 ## Tooling
 

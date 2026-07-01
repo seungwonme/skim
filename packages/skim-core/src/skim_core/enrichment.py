@@ -20,7 +20,7 @@ except ImportError:  # pragma: no cover — optional dependency
 
 from .paths import workspace_root
 
-SRT_TO_TXT = str(workspace_root() / "tooling" / "scripts" / "srt_to_txt.sh")
+SRT_TO_TXT = str(workspace_root() / "scripts" / "srt_to_txt.sh")
 
 
 def defuddle(url: str, timeout: int = 45) -> Optional[dict]:

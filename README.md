@@ -2,6 +2,10 @@
 
 <p align="center"><b>English</b> | <a href="README.ko.md">한국어</a></p>
 
+<p align="center">
+  <img src="images/skim-readme-banner.png" alt="Skim local-first information curation pipeline banner" width="100%">
+</p>
+
 ![status: local-first crawler](https://img.shields.io/badge/status-local--first%20crawler-blue)
 ![last commit](https://img.shields.io/github/last-commit/seungwonme/skim)
 ![license: MIT](https://img.shields.io/badge/license-MIT-green)
@@ -21,7 +25,8 @@ Skim collects posts from multiple public feeds and session-based social sources,
 | `packages/skim-core/` | Crawlers, models, enrichment, SQLite persistence, research/search |
 | `packages/skim-cli/` | Typer CLI exposed as `uv run skim ...` |
 | `apps/desktop/` | React + Vite + Tauri desktop app |
-| `tooling/scripts/` | Import, cron, and maintenance scripts |
+| `scripts/` | Import, cron, and maintenance scripts |
+| `images/` | README and project images |
 | `docs/` | Design notes, crawler notes, source backlog, generated implementation plans |
 | `data/` | Local runtime artifacts: SQLite DB, session files, crawl JSON output |
 
@@ -49,7 +54,6 @@ Skim collects posts from multiple public feeds and session-based social sources,
 pnpm install
 uv sync
 uv run playwright install
-cp .env.example .env
 ```
 
 Python requires 3.12+. Node tooling uses `pnpm` and `turbo`; Python tooling uses `uv`.
@@ -82,6 +86,7 @@ Login for session-based sources:
 ```bash
 uv run skim login threads
 uv run skim login reddit
+printf '%s\n' "$PASSWORD" | uv run skim login threads --identifier user@example.com --password-stdin --save-credential
 ```
 
 ## Desktop App
@@ -102,24 +107,9 @@ macOS DMG builds are produced under `target/release/bundle/dmg/` by Tauri.
 - Crawl output: `data/<platform>/*.json`
 - Optional workspace override: `SKIM_WORKSPACE_ROOT`
 
-`.env` is only a CLI login helper. Existing sessions are reused from `data/sessions/*.json`.
+Existing sessions are reused from `data/sessions/*.json`.
 
-The CLI does not read macOS Keychain directly. The desktop app stores passwords in macOS Keychain and keeps only Keychain references in SQLite. When desktop login is triggered, Tauri reads the password from Keychain and passes `SKIM_LOGIN_IDENTIFIER` / `SKIM_LOGIN_PASSWORD` to `uv run skim login <platform>`.
-
-## Environment Variables
-
-```bash
-SKIM_WORKSPACE_ROOT=
-
-THREADS_USERNAME=
-THREADS_PASSWORD=
-LINKEDIN_USERNAME=
-LINKEDIN_PASSWORD=
-X_USERNAME=
-X_PASSWORD=
-REDDIT_USERNAME=
-REDDIT_PASSWORD=
-```
+On macOS, credentials can be stored in Keychain. SQLite keeps only the Keychain reference (`platform_credentials.secret_service` / `secret_account`), and both the CLI and desktop app read the password from Keychain when login starts. To avoid shell history, prefer `--password-stdin` over `--password`.
 
 ## Development
 
@@ -134,10 +124,10 @@ Python-only checks:
 
 ```bash
 uv run pytest tests -q
-uv run black packages tests tooling/scripts --config pyproject.toml
-uv run isort packages tests tooling/scripts --settings-path pyproject.toml
+uv run black packages tests scripts --config pyproject.toml
+uv run isort packages tests scripts --settings-path pyproject.toml
 uv run flake8
-uv run pylint packages/skim-core/src/skim_core packages/skim-cli/src/skim_cli tooling/scripts
+uv run pylint packages/skim-core/src/skim_core packages/skim-cli/src/skim_cli scripts
 ```
 
 ## Documentation

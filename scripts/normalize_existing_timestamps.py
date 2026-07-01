@@ -7,9 +7,9 @@
   4. 파싱 실패 row 는 stdout 으로 dump (수동 조사 대상)
 
 사용법:
-    uv run python tooling/scripts/normalize_existing_timestamps.py            # dry-run
-    uv run python tooling/scripts/normalize_existing_timestamps.py --commit   # 실제 반영
-    uv run python tooling/scripts/normalize_existing_timestamps.py --db path  # 임의 DB
+    uv run python scripts/normalize_existing_timestamps.py            # dry-run
+    uv run python scripts/normalize_existing_timestamps.py --commit   # 실제 반영
+    uv run python scripts/normalize_existing_timestamps.py --db path  # 임의 DB
 """
 
 from __future__ import annotations

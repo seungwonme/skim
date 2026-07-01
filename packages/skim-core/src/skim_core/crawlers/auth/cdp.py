@@ -15,7 +15,6 @@ Chrome DevTools Protocol을 사용하여 SNS 플랫폼 로그인 쿠키를 추�
 """
 
 import json
-import os
 import platform
 import shutil
 import socket
@@ -27,6 +26,7 @@ from typing import Optional
 import requests
 import typer
 
+from ...db import DB_PATH, get_connection, init_db
 from ...paths import SESSIONS_DIR
 
 CHROME_PROFILE_DIR = Path.home() / ".skim" / "chrome-profile"
@@ -117,15 +117,169 @@ PLATFORM_CONFIG = {
 }
 
 
-def load_login_credentials_from_env() -> Optional[tuple[str, str]]:
-    """Tauri backend가 전달한 저장된 로그인 자격 증명을 읽습니다."""
-    login_identifier = os.getenv("SKIM_LOGIN_IDENTIFIER")
-    password = os.getenv("SKIM_LOGIN_PASSWORD")
+def keychain_secret_service(platform_name: str) -> str:
+    """Desktop과 같은 macOS Keychain service 이름."""
+    return f"skim.desktop.{platform_name}"
 
-    if not login_identifier or not password:
+
+def read_keychain_password(service: str, account: str) -> Optional[str]:
+    """macOS Keychain에서 password를 읽습니다."""
+    if platform.system() != "Darwin":
         return None
 
-    return login_identifier, password
+    output = subprocess.run(
+        ["security", "find-generic-password", "-w", "-a", account, "-s", service],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if output.returncode != 0:
+        return None
+
+    return output.stdout.rstrip("\r\n")
+
+
+def write_keychain_password(service: str, account: str, password: str) -> None:
+    """macOS Keychain에 password를 저장합니다."""
+    if platform.system() != "Darwin":
+        raise RuntimeError("macOS Keychain은 macOS에서만 지원합니다.")
+
+    output = subprocess.run(
+        [
+            "security",
+            "add-generic-password",
+            "-U",
+            "-a",
+            account,
+            "-s",
+            service,
+            "-w",
+            password,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if output.returncode != 0:
+        message = output.stderr.strip() or "unknown error"
+        raise RuntimeError(f"macOS Keychain 저장 실패: {message}")
+
+
+def load_login_credentials_from_keychain(
+    platform_name: str,
+    login_identifier: Optional[str] = None,
+    db_path: Optional[Path] = None,
+) -> Optional[tuple[str, str]]:
+    """SQLite credential reference를 따라 macOS Keychain password를 읽습니다."""
+    if platform.system() != "Darwin":
+        return None
+
+    path = db_path or DB_PATH
+    init_db(path)
+    conn = get_connection(path)
+    try:
+        if login_identifier:
+            row = conn.execute(
+                """
+                SELECT login_identifier, secret_service, secret_account
+                FROM platform_credentials
+                WHERE platform = ? AND login_identifier = ?
+                """,
+                (platform_name, login_identifier),
+            ).fetchone()
+            rows = [row] if row else []
+        else:
+            rows = conn.execute(
+                """
+                SELECT login_identifier, secret_service, secret_account
+                FROM platform_credentials
+                WHERE platform = ?
+                ORDER BY updated_at DESC, id DESC
+                """,
+                (platform_name,),
+            ).fetchall()
+    finally:
+        conn.close()
+
+    if len(rows) != 1:
+        return None
+
+    row = rows[0]
+    password = read_keychain_password(row["secret_service"], row["secret_account"])
+    if not password:
+        return None
+    return row["login_identifier"], password
+
+
+def save_login_credentials_to_keychain(
+    platform_name: str,
+    login_identifier: str,
+    password: str,
+    account_label: Optional[str] = None,
+    db_path: Optional[Path] = None,
+) -> None:
+    """CLI에서 받은 credential을 Desktop과 같은 schema/Keychain에 저장합니다."""
+    service = keychain_secret_service(platform_name)
+    write_keychain_password(service, login_identifier, password)
+
+    path = db_path or DB_PATH
+    init_db(path)
+    conn = get_connection(path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO platform_credentials (
+                platform,
+                account_label,
+                login_identifier,
+                secret_service,
+                secret_account,
+                session_path
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            ON CONFLICT(platform, login_identifier) DO UPDATE SET
+                account_label = excluded.account_label,
+                secret_service = excluded.secret_service,
+                secret_account = excluded.secret_account,
+                session_path = excluded.session_path,
+                updated_at = datetime('now')
+            """,
+            (
+                platform_name,
+                account_label or login_identifier,
+                login_identifier,
+                service,
+                login_identifier,
+                f"data/sessions/{platform_name}_session.json",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def resolve_login_credentials(
+    platform_name: str,
+    login_identifier: Optional[str] = None,
+    password: Optional[str] = None,
+    use_keychain: bool = True,
+    save_credential: bool = False,
+) -> Optional[tuple[str, str]]:
+    """명시 입력, Keychain 순서로 로그인 credential을 결정합니다."""
+    if password and not login_identifier:
+        raise ValueError("--password는 --identifier와 함께 써야 합니다.")
+
+    if login_identifier and password:
+        if save_credential:
+            save_login_credentials_to_keychain(platform_name, login_identifier, password)
+        return login_identifier, password
+
+    if save_credential:
+        raise ValueError("--save-credential은 --identifier와 password가 필요합니다.")
+
+    if use_keychain:
+        return load_login_credentials_from_keychain(platform_name, login_identifier)
+
+    return None
 
 
 def build_autofill_expression(platform_name: str, login_identifier: str, password: str) -> str:
@@ -396,7 +550,13 @@ def is_logged_in(url: str, platform_name: str) -> bool:
     return False
 
 
-def login(platform_name: str = "threads"):  # noqa: C901
+def login(  # noqa: C901
+    platform_name: str = "threads",
+    login_identifier: Optional[str] = None,
+    password: Optional[str] = None,
+    use_keychain: bool = True,
+    save_credential: bool = False,
+):
     """CDP 기반 로그인 (Chrome에서 수동 로그인 후 쿠키 자동 추출)"""
     config = PLATFORM_CONFIG.get(platform_name)
     if not config:
@@ -428,7 +588,18 @@ def login(platform_name: str = "threads"):  # noqa: C901
 
     typer.echo(f"Chrome을 실행합니다... {config['display_name']}에 로그인해주세요.")
     typer.echo(f"(최대 {LOGIN_TIMEOUT // 60}분 대기)")
-    credentials = load_login_credentials_from_env()
+    try:
+        credentials = resolve_login_credentials(
+            platform_name,
+            login_identifier=login_identifier,
+            password=password,
+            use_keychain=use_keychain,
+            save_credential=save_credential,
+        )
+    except (RuntimeError, ValueError) as error:
+        typer.echo(str(error))
+        raise typer.Exit(1) from error
+
     if credentials:
         typer.echo(
             "저장된 credential로 자동 입력을 시도합니다. 필요하면 수동으로 이어서 로그인하세요."

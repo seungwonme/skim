@@ -1,5 +1,6 @@
 """`crawl` 저장 경로 회귀 테스트."""
 
+import io
 import inspect
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -29,6 +30,26 @@ class CrawlPersistenceTests(unittest.TestCase):
         params = inspect.signature(main.crawl).parameters
         self.assertIn("subreddit", params)
         self.assertIn("sort", params)
+
+    @patch("skim_cli.cli.cdp_login")
+    def test_login_reads_password_from_stdin(self, cdp_login):
+        with patch("skim_cli.cli.sys.stdin", io.StringIO("super-secret\n")):
+            main.login(
+                platform="threads",
+                identifier="user@example.com",
+                password=None,
+                password_stdin=True,
+                save_credential=True,
+                no_keychain=False,
+            )
+
+        cdp_login.assert_called_once_with(
+            "threads",
+            login_identifier="user@example.com",
+            password="super-secret",
+            use_keychain=True,
+            save_credential=True,
+        )
 
     @patch("skim_cli.cli.typer.echo")
     @patch("skim_cli.cli.save_posts_to_file")
@@ -175,6 +196,57 @@ class CrawlPersistenceTests(unittest.TestCase):
         update_run_progress_mock.assert_any_call(101, "hackernews", "hackernews 크롤링 시작")
         finish_run_mock.assert_called_once_with(101, "success", 1, "전체 플랫폼 처리 완료")
         self.assertTrue(typer_echo_mock.called)
+
+    @patch("skim_cli.cli.typer.echo")
+    @patch("skim_cli.cli.save_posts_to_file")
+    @patch("skim_cli.cli.finish_run")
+    @patch("skim_cli.cli.update_run_progress")
+    @patch("skim_cli.cli.save_posts")
+    @patch("skim_cli.cli.save_run", return_value=102)
+    @patch("skim_cli.cli.init_db")
+    @patch("skim_cli.cli.run_single_crawler", new_callable=AsyncMock)
+    def test_crawl_marks_run_failed_when_a_platform_fails(
+        self,
+        run_single_crawler,
+        init_db_mock,
+        save_run_mock,
+        save_posts,
+        update_run_progress_mock,
+        finish_run_mock,
+        save_posts_to_file_mock,
+        typer_echo_mock,
+    ):
+        run_single_crawler.side_effect = [RuntimeError("boom"), self.sample_posts]
+        save_posts.return_value = 1
+
+        main.crawl(
+            platforms=["threads", "reddit"],
+            count=1,
+            days=None,
+            output=None,
+            debug=False,
+            no_content=True,
+            user_id=None,
+        )
+
+        init_db_mock.assert_called_once()
+        save_run_mock.assert_called_once_with()
+        save_posts.assert_called_once_with(self.sample_posts, "reddit")
+        save_posts_to_file_mock.assert_called_once()
+        update_run_progress_mock.assert_any_call(102, "threads", "threads 크롤링 실패: boom")
+        finish_run_mock.assert_called_once_with(
+            102,
+            "failed",
+            1,
+            "실패 플랫폼: threads; 완료 플랫폼: reddit",
+        )
+        self.assertTrue(
+            any(
+                "실패: threads" in call.args[0]
+                for call in typer_echo_mock.call_args_list
+                if call.args
+            ),
+        )
 
 
 if __name__ == "__main__":

@@ -110,6 +110,8 @@ CREATE TABLE IF NOT EXISTS app_settings (
 
 CREATE INDEX IF NOT EXISTS idx_posts_platform    ON posts(platform);
 CREATE INDEX IF NOT EXISTS idx_posts_crawled_at  ON posts(crawled_at);
+CREATE INDEX IF NOT EXISTS idx_posts_platform_url ON posts(platform, url)
+    WHERE url IS NOT NULL AND TRIM(url) <> '';
 CREATE INDEX IF NOT EXISTS idx_summaries_post_id ON summaries(post_id);
 CREATE INDEX IF NOT EXISTS idx_feedback_post_id  ON feedback(post_id);
 CREATE INDEX IF NOT EXISTS idx_feedback_action   ON feedback(action);
@@ -291,11 +293,26 @@ def save_posts(
         extra_data = {k: v for k, v in data.items() if k not in known_fields}
         extra_json = json.dumps(extra_data, ensure_ascii=False) if extra_data else None
 
+        url = (data.get("url") or "").strip()
+
         # external_id가 없으면 content 해시로 대체 (NULL은 UNIQUE 제약 무시됨)
         ext_id = data.get("external_id")
         if not ext_id:
             hash_src = f"{platform}:{data.get('author', '')}:{data.get('content', '')}"
             ext_id = hashlib.sha256(hash_src.encode()).hexdigest()[:16]
+
+        if url:
+            row = conn.execute(
+                """
+                SELECT external_id FROM posts
+                WHERE platform = ? AND url = ?
+                ORDER BY id
+                LIMIT 1
+                """,
+                (platform, url),
+            ).fetchone()
+            if row and row["external_id"]:
+                ext_id = row["external_id"]
 
         try:
             conn.execute(
@@ -369,7 +386,7 @@ def save_posts(
                     data.get("author", ""),
                     data.get("title"),
                     data.get("content", ""),
-                    data.get("url"),
+                    url or None,
                     data.get("timestamp"),
                     data.get("likes"),
                     data.get("comments"),

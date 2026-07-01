@@ -12,7 +12,7 @@ from datetime import (  # noqa: F401 — datetime API used in DetectAndNormalize
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-MIGRATION_PATH = ROOT / "tooling" / "scripts" / "normalize_existing_timestamps.py"
+MIGRATION_PATH = ROOT / "scripts" / "normalize_existing_timestamps.py"
 
 
 def _load_migration():
