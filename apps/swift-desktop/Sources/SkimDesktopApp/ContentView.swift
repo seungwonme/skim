@@ -364,7 +364,7 @@ struct ContentView: View {
                             .padding(.horizontal, 12)
                             .frame(height: 38)
                             .background(Design.inputBackground, in: RoundedRectangle(cornerRadius: 7))
-                            .overlay(inputBorder(isFocused: focusedCredentialField == .password))
+                            .overlay(inputBorder(isFocused: focusedCredentialField == .password).allowsHitTesting(false))
                         Text(credentialForm.passwordRequired ? "새 크레덴셜이거나 플랫폼/로그인 식별자를 바꾸는 경우 필요합니다." : "비워두면 기존 키체인 비밀번호를 유지합니다.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -594,7 +594,7 @@ struct ContentView: View {
                 .padding(.horizontal, 12)
                 .frame(height: 38)
                 .background(Design.inputBackground, in: RoundedRectangle(cornerRadius: 7))
-                .overlay(inputBorder(isFocused: focusedCredentialField == field))
+                .overlay(inputBorder(isFocused: focusedCredentialField == field).allowsHitTesting(false))
                 .onTapGesture {
                     focusedCredentialField = field
                 }
