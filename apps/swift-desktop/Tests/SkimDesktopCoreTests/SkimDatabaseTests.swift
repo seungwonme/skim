@@ -49,6 +49,23 @@ func databaseReadsFixturePostsAndSources() throws {
 }
 
 @Test
+func recentPostsUsePostTimestampBeforeCrawlBatchTime() throws {
+    try withFixtureDatabase { database in
+        try database.execute(
+            """
+            INSERT INTO posts (
+                platform, source, external_id, author, title, content, timestamp, crawled_at
+            ) VALUES
+            ('youtube', 'Late crawl', 'old-post', 'Channel', 'Old post', 'old', '2026-06-30T09:00:00+09:00', '2026-07-01 12:00:00'),
+            ('youtube', 'Early crawl', 'new-post', 'Channel', 'New post', 'new', '2026-07-01T10:00:00+09:00', '2026-07-01 01:00:00');
+            """
+        )
+
+        #expect(try database.fetchRecentPosts(limit: 2).map(\.displayTitle) == ["New post", "Old post"])
+    }
+}
+
+@Test
 func trackedSourceUpsertUsesPlatformAndCanonicalID() throws {
     try withFixtureDatabase { database in
         let first = try database.upsertTrackedSource(

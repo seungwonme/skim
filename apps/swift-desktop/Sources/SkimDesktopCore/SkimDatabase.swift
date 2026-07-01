@@ -134,7 +134,7 @@ public final class SkimDatabase {
             SELECT id, platform, source, external_id, author, title, content, url, timestamp,
                    likes, comments, summary, content_markdown, word_count, crawled_at
             FROM posts
-            ORDER BY datetime(crawled_at) DESC, id DESC
+            ORDER BY datetime(COALESCE(NULLIF(timestamp, ''), crawled_at)) DESC, id DESC
             LIMIT ?
             """,
             bindings: [.integer(Int64(max(1, limit)))]

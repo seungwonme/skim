@@ -9,9 +9,7 @@
     "lint": "uv run flake8 packages tests scripts && uv run pylint packages/skim-core/src/skim_core packages/skim-cli/src/skim_cli scripts && turbo run lint",
     "test": "uv run pytest tests -q && turbo run test",
     "typecheck": "turbo run typecheck",
-    "format": "uv run black packages tests scripts --config pyproject.toml && uv run isort packages tests scripts --settings-path pyproject.toml && turbo run format",
-    "desktop:dev": "pnpm --filter @skim/desktop tauri dev",
-    "desktop:build": "pnpm --filter @skim/desktop tauri build"
+    "format": "uv run black packages tests scripts --config pyproject.toml && uv run isort packages tests scripts --settings-path pyproject.toml && turbo run format"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",

@@ -1,6 +1,6 @@
 # Swift Desktop Feed Dashboard Proof Review
 
-Reviewed on 2026-07-01 against the current `goal/swift-desktop-feed` worktree.
+Historical review from 2026-07-01 against the then-current `goal/swift-desktop-feed` worktree.
 
 ## What Exists
 
@@ -9,12 +9,12 @@ Reviewed on 2026-07-01 against the current `goal/swift-desktop-feed` worktree.
   - `SkimDesktopCore`: local data, URL parsing, and preview classification library.
   - `SkimDesktopSmoke`: command-line fixture/workspace smoke executable.
   - `SkimDesktopCoreTests`: focused tests for path resolution, SQLite fixture reads, `tracked_sources` upsert, YouTube channel URL parsing, and embed classification.
-- The existing React/Tauri desktop app remains in `apps/desktop`; no migration deletion happened.
+- The React/Tauri desktop app still existed when this review was written; it was removed later.
 
 ## Data Contract
 
 - Default workspace database path resolves to `data/skim.db`, with `SKIM_WORKSPACE_ROOT` respected when set.
-- `SkimDatabase.ensureSchema()` creates the same subset used by the current Tauri bridge:
+- `SkimDatabase.ensureSchema()` creates the local desktop schema subset:
   - `posts` for feed/dashboard content.
   - `tracked_sources` for source subscriptions.
 - Fixture tests create SQLite databases at runtime and verify reading posts, reading tracked sources, loading a dashboard snapshot, and upserting a YouTube source through `UNIQUE(platform, canonical_id)`.

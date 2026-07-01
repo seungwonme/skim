@@ -9,7 +9,7 @@ SwiftUI macOS app for reading the local Skim workspace.
 - Source entry: pasted YouTube channel URL or handle saved into `tracked_sources`.
 - Preview: embedded YouTube links when possible, external-open fallback otherwise.
 
-The existing React/Tauri app remains under `apps/desktop`. Crawlers stay in the Python packages.
+Crawlers stay in the Python packages.
 
 ## Commands
 

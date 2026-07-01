@@ -1,10 +1,10 @@
 # Swift Desktop Baseline
 
-Captured before implementation on 2026-07-01.
+Historical baseline captured before implementation on 2026-07-01. It describes the pre-removal Tauri desktop surface.
 
 ## Existing Desktop Surface
 
-- `apps/desktop` is the existing React/Vite/Tauri app and remains intact.
+- `apps/desktop` was the React/Vite/Tauri app at capture time.
 - `apps/desktop/AGENTS.md` says frontend code calls Tauri through `src/lib/api.ts`, backend commands should bridge existing CLI/scripts, and generated Tauri output must not be edited.
 - `apps/desktop/src/App.tsx` currently exposes three tabs: Sources, Credentials, and Explorer.
 - `apps/desktop/src/components/SourcesPanel.tsx` already stores tracked sources, including YouTube channels, through the Tauri `upsert_tracked_source` command.
@@ -12,7 +12,7 @@ Captured before implementation on 2026-07-01.
 
 ## SQLite Contract To Preserve
 
-The Tauri bridge in `apps/desktop/src-tauri/src/lib.rs` creates the app schema. The Swift app must use the same table/column names for the subset it owns:
+The removed Tauri bridge created this app schema. The Swift app must use the same table/column names for the subset it owns:
 
 - `posts`: `id`, `platform`, `source`, `external_id`, `author`, `title`, `content`, `url`, `timestamp`, `likes`, `comments`, `reposts`, `views`, `summary`, `content_markdown`, `word_count`, `extra`, `crawled_at`.
 - `tracked_sources`: `id`, `platform`, `source_type`, `display_name`, `canonical_id`, `handle_or_url`, `is_enabled`, `focus_level`, `notes`, `created_at`, `updated_at`.

@@ -13,7 +13,7 @@
 
 > Local-first information curation pipeline for feeds, social timelines, papers, videos, and AI lab updates.
 
-Skim collects posts from multiple public feeds and session-based social sources, stores them in local SQLite, and exposes them through a Python CLI and a macOS desktop app.
+Skim collects posts from multiple public feeds and session-based social sources, stores them in local SQLite, and exposes them through a Python CLI and a Swift macOS desktop app.
 
 > [!WARNING]
 > Some API crawlers use authenticated browser sessions and unofficial web endpoints. Use your own accounts, respect each platform's terms and rate limits, and expect upstream pages/APIs to change.
@@ -24,7 +24,7 @@ Skim collects posts from multiple public feeds and session-based social sources,
 |---|---|
 | `packages/skim-core/` | Crawlers, models, enrichment, SQLite persistence, research/search |
 | `packages/skim-cli/` | Typer CLI exposed as `uv run skim ...` |
-| `apps/desktop/` | React + Vite + Tauri desktop app |
+| `apps/swift-desktop/` | SwiftUI macOS desktop app |
 | `scripts/` | Import, cron, and maintenance scripts |
 | `images/` | README and project images |
 | `docs/` | Design notes, crawler notes, source backlog, generated implementation plans |
@@ -92,13 +92,11 @@ printf '%s\n' "$PASSWORD" | uv run skim login threads --identifier user@example.
 ## Desktop App
 
 ```bash
-pnpm desktop:dev
-pnpm desktop:build
+swift run --package-path apps/swift-desktop SkimDesktop
+swift build --package-path apps/swift-desktop
 ```
 
-The desktop app reads the same local workspace as the CLI. It can inspect session status, trigger login, manage tracked sources, and browse `data/skim.db`.
-
-macOS DMG builds are produced under `target/release/bundle/dmg/` by Tauri.
+The desktop app reads the same local workspace as the CLI. It can manage tracked sources and credentials, then browse `data/skim.db`.
 
 ## Data And Auth
 

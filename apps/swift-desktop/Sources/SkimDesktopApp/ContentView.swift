@@ -1,6 +1,7 @@
 import AppKit
 import SkimDesktopCore
 import SwiftUI
+import WebKit
 
 struct ContentView: View {
     @State private var snapshot = DashboardSnapshot.empty
@@ -10,6 +11,8 @@ struct ContentView: View {
     @State private var sourceMessage: Notice?
     @State private var searchText = ""
     @State private var platformFilter: String?
+    @State private var readerContentMode = ReaderContentMode.markdown
+    @State private var readerMarkdownHeight: CGFloat = 520
     @State private var activeSection = AppSection.feed
     @State private var credentialForm = CredentialForm()
     @State private var credentialNotice: Notice?
@@ -231,59 +234,27 @@ struct ContentView: View {
     private var readerPane: some View {
         Group {
             if let post = selectedPost {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 18) {
-                        HStack(alignment: .top) {
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack(spacing: 8) {
-                                    platformBadge(post.platform)
-                                    Text(post.source ?? post.author)
-                                        .font(.caption.weight(.medium))
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
-                                Text(post.displayTitle)
-                                    .font(.system(size: 30, weight: .semibold, design: .serif))
-                                    .lineSpacing(2)
-                                    .textSelection(.enabled)
-                            }
-                            Spacer()
+                VStack(spacing: 0) {
+                    readerTopBar(post)
+                    Divider()
+
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 18) {
+                            infoStrip(post)
+
                             if let url = post.url {
-                                Link(destination: url) {
-                                    Label("열기", systemImage: "arrow.up.right")
-                                }
-                                .buttonStyle(.bordered)
+                                PreviewPane(preview: ContentPreview.classify(url))
                             }
-                        }
 
-                        infoStrip(post)
-
-                        if let url = post.url {
-                            PreviewPane(preview: ContentPreview.classify(url))
-                        }
-
-                        VStack(alignment: .leading, spacing: 10) {
-                            sectionLabel(post.summary == nil ? "본문" : "요약")
-                            Text(post.summary ?? post.content)
-                                .font(.system(size: 15))
-                                .foregroundStyle(Design.readerText)
-                                .lineSpacing(5)
-                                .textSelection(.enabled)
-                        }
-
-                        if let markdown = post.contentMarkdown, !markdown.isEmpty {
                             VStack(alignment: .leading, spacing: 10) {
-                                sectionLabel("마크다운")
-                                Text(markdown)
-                                    .font(.system(.body, design: .monospaced))
-                                    .foregroundStyle(.secondary)
-                                    .lineSpacing(4)
-                                    .textSelection(.enabled)
+                                sectionLabel(readerContentMode == .markdown ? "MD 렌더링" : "코드")
+                                readerBody(post)
                             }
                         }
+                        .padding(30)
+                        .frame(maxWidth: 820, alignment: .leading)
                     }
-                    .padding(30)
-                    .frame(maxWidth: 820, alignment: .leading)
+                    .scrollIndicators(.automatic)
                 }
                 .background(Design.readerBackground)
             } else {
@@ -291,6 +262,38 @@ struct ContentView: View {
                     .background(Design.readerBackground)
             }
         }
+    }
+
+    private func readerTopBar(_ post: DashboardPost) -> some View {
+        HStack(alignment: .top, spacing: 16) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    platformBadge(post.platform)
+                    Text(post.source ?? post.author)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Text(post.displayTitle)
+                    .font(.system(size: 26, weight: .semibold, design: .serif))
+                    .lineSpacing(2)
+                    .lineLimit(2)
+                    .textSelection(.enabled)
+            }
+            Spacer(minLength: 16)
+            HStack(spacing: 10) {
+                readerModeToggle
+                if let url = post.url {
+                    Link(destination: url) {
+                        Label("열기", systemImage: "arrow.up.right")
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+        }
+        .padding(.horizontal, 30)
+        .padding(.vertical, 18)
+        .background(Design.readerBackground)
     }
 
     private var credentialsPane: some View {
@@ -657,6 +660,57 @@ struct ContentView: View {
         return credentialForm.hasChanges ? "checkmark" : "checkmark.circle"
     }
 
+    private var readerModeToggle: some View {
+        HStack(spacing: 2) {
+            readerModeButton(.markdown, title: "MD")
+            readerModeButton(.raw, title: "코드")
+        }
+        .padding(3)
+        .background(Design.panelBackground.opacity(0.95), in: Capsule())
+        .overlay(Capsule().stroke(Design.hairline, lineWidth: 1))
+    }
+
+    private func readerModeButton(_ mode: ReaderContentMode, title: String) -> some View {
+        Button {
+            readerContentMode = mode
+        } label: {
+            Text(title)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(readerContentMode == mode ? Color.white : Design.primaryText)
+                .padding(.horizontal, 10)
+                .frame(height: 26)
+                .background(readerContentMode == mode ? Design.green : Color.clear, in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+    }
+
+    @ViewBuilder
+    private func readerBody(_ post: DashboardPost) -> some View {
+        let markdown = readerMarkdown(post)
+        if readerContentMode == .markdown {
+            ReaderMarkdownWebView(markdown: markdown, contentHeight: $readerMarkdownHeight)
+                .frame(height: max(readerMarkdownHeight, 260))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .allowsHitTesting(false)
+        } else {
+            Text(markdown)
+                .font(.system(.body, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineSpacing(4)
+                .textSelection(.enabled)
+        }
+    }
+
+    private func readerMarkdown(_ post: DashboardPost) -> String {
+        if let markdown = post.contentMarkdown?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !markdown.isEmpty
+        {
+            return markdown
+        }
+        return post.summary ?? post.content
+    }
+
     private func inputBorder(isFocused: Bool) -> some View {
         RoundedRectangle(cornerRadius: 7)
             .stroke(isFocused ? Design.green.opacity(0.85) : Design.hairline, lineWidth: isFocused ? 1.5 : 1)
@@ -905,6 +959,273 @@ private enum AppSection: Equatable {
         case .feed: "피드"
         case .credentials: "크레덴셜"
         }
+    }
+}
+
+private enum ReaderContentMode: Equatable {
+    case markdown
+    case raw
+}
+
+private struct ReaderMarkdownWebView: NSViewRepresentable {
+    let markdown: String
+    @Binding var contentHeight: CGFloat
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(contentHeight: $contentHeight)
+    }
+
+    func makeNSView(context: Context) -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.navigationDelegate = context.coordinator
+        webView.allowsBackForwardNavigationGestures = false
+        webView.setValue(false, forKey: "drawsBackground")
+        return webView
+    }
+
+    func updateNSView(_ webView: WKWebView, context: Context) {
+        let html = MarkdownHTMLRenderer.document(markdown)
+        guard context.coordinator.html != html else {
+            return
+        }
+        context.coordinator.html = html
+        contentHeight = 260
+        webView.loadHTMLString(html, baseURL: nil)
+    }
+
+    final class Coordinator: NSObject, WKNavigationDelegate {
+        var html = ""
+        private let contentHeight: Binding<CGFloat>
+
+        init(contentHeight: Binding<CGFloat>) {
+            self.contentHeight = contentHeight
+        }
+
+        func webView(_ webView: WKWebView, didFinish _: WKNavigation!) {
+            webView.evaluateJavaScript("Math.ceil(Math.max(document.body.scrollHeight, document.documentElement.scrollHeight))") { [weak self] result, _ in
+                guard let self else {
+                    return
+                }
+                let height = (result as? NSNumber).map { CGFloat($0.doubleValue) } ?? 260
+                DispatchQueue.main.async {
+                    self.contentHeight.wrappedValue = max(height + 8, 260)
+                }
+            }
+        }
+    }
+}
+
+private enum MarkdownHTMLRenderer {
+    static func document(_ markdown: String) -> String {
+        """
+        <!doctype html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <style>
+              :root { color-scheme: light dark; --text: #202124; --border: rgba(0,0,0,.12); --soft: rgba(0,0,0,.055); --code: #f5f5f5; --accent: #1769e0; }
+              @media (prefers-color-scheme: dark) { :root { --text: #d7d7d7; --border: rgba(255,255,255,.12); --soft: rgba(255,255,255,.06); --code: #242424; --accent: #62a8ff; } }
+              html, body { margin: 0; padding: 0; background: transparent; color: var(--text); font: 15px/1.68 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Apple SD Gothic Neo", sans-serif; overflow: hidden; }
+              body { padding-bottom: 22px; }
+              h1, h2, h3 { margin: 1.2em 0 .45em; line-height: 1.24; font-weight: 750; }
+              h1 { font-size: 28px; border-bottom: 1px solid var(--border); padding-bottom: .28em; }
+              h2 { font-size: 23px; border-bottom: 1px solid var(--border); padding-bottom: .22em; }
+              h3 { font-size: 19px; }
+              p { margin: .75em 0; }
+              a { color: var(--accent); text-decoration: none; }
+              ul, ol { margin: .72em 0 .72em 1.55em; padding: 0; }
+              li { margin: .32em 0; }
+              blockquote { margin: 1em 0; padding-left: 1em; border-left: 3px solid var(--border); opacity: .78; }
+              code { padding: .12em .35em; border-radius: 5px; background: var(--code); font: .92em "SF Mono", ui-monospace, Menlo, monospace; }
+              pre { margin: 1em 0; padding: 14px 16px; overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--code); }
+              pre code { padding: 0; background: transparent; white-space: pre; }
+              table { width: 100%; margin: 1em 0; border-collapse: collapse; font-size: 14px; }
+              th, td { padding: 8px 10px; border: 1px solid var(--border); vertical-align: top; }
+              th { background: var(--soft); font-weight: 700; }
+              img { display: block; max-width: 100%; height: auto; margin: 1em 0; border-radius: 8px; }
+            </style>
+          </head>
+          <body>\(renderBlocks(markdown))</body>
+        </html>
+        """
+    }
+
+    private static func renderBlocks(_ markdown: String) -> String {
+        let lines = markdown.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
+        var html = ""
+        var inCode = false
+        var listTag: String?
+
+        func closeList() {
+            if let tag = listTag {
+                html += "</\(tag)>"
+                listTag = nil
+            }
+        }
+
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+
+            if trimmed.hasPrefix("```") {
+                closeList()
+                html += inCode ? "</code></pre>" : "<pre><code>"
+                inCode.toggle()
+                continue
+            }
+            if inCode {
+                html += escape(line) + "\n"
+                continue
+            }
+            if trimmed.isEmpty {
+                closeList()
+                continue
+            }
+            if let heading = heading(trimmed) {
+                closeList()
+                html += heading
+            } else if let item = unorderedItem(trimmed) {
+                if listTag != "ul" {
+                    closeList()
+                    html += "<ul>"
+                    listTag = "ul"
+                }
+                html += "<li>\(inline(item))</li>"
+            } else if let item = orderedItem(trimmed) {
+                if listTag != "ol" {
+                    closeList()
+                    html += "<ol>"
+                    listTag = "ol"
+                }
+                html += "<li>\(inline(item))</li>"
+            } else {
+                closeList()
+                html += trimmed.hasPrefix("> ")
+                    ? "<blockquote>\(inline(String(trimmed.dropFirst(2))))</blockquote>"
+                    : "<p>\(inline(trimmed))</p>"
+            }
+        }
+
+        closeList()
+        if inCode {
+            html += "</code></pre>"
+        }
+        return html
+    }
+
+    private static func heading(_ text: String) -> String? {
+        let level = text.prefix { $0 == "#" }.count
+        guard (1...3).contains(level), text.dropFirst(level).first == " " else {
+            return nil
+        }
+        return "<h\(level)>\(inline(String(text.dropFirst(level + 1))))</h\(level)>"
+    }
+
+    private static func unorderedItem(_ text: String) -> String? {
+        (text.hasPrefix("- ") || text.hasPrefix("* ")) ? String(text.dropFirst(2)) : nil
+    }
+
+    private static func orderedItem(_ text: String) -> String? {
+        guard let marker = text.range(of: #"^\d+[.)]\s+"#, options: .regularExpression) else {
+            return nil
+        }
+        return String(text[marker.upperBound...])
+    }
+
+    private static func inline(_ text: String) -> String {
+        var html = text.range(of: #"</?[A-Za-z][^>]*>"#, options: .regularExpression) == nil ? escape(text) : sanitize(text)
+        html = replace(#"`([^`]+)`"#, in: html, with: "<code>$1</code>")
+        html = replace(#"\*\*([^*]+)\*\*"#, in: html, with: "<strong>$1</strong>")
+        html = replace(#"\*([^*]+)\*"#, in: html, with: "<em>$1</em>")
+        html = replaceImages(in: html)
+        html = replaceLinks(in: html)
+        return html
+    }
+
+    private static func replaceImages(in text: String) -> String {
+        replaceMarkdownLink(#"!\[([^\]]*)\]\(([^)]+)\)"#, in: text) { alt, url in
+            imageTag(alt: alt, url: url)
+        }
+    }
+
+    private static func replaceLinks(in text: String) -> String {
+        replaceMarkdownLink(#"\[([^\]]+)\]\(([^)]+)\)"#, in: text) { label, url in
+            if isImageReference(label: label, url: url) {
+                return imageTag(alt: label, url: url)
+            }
+            return #"<a href="\#(safeURL(url))">\#(label)</a>"#
+        }
+    }
+
+    private static func replaceMarkdownLink(
+        _ pattern: String,
+        in text: String,
+        replacement: (String, String) -> String
+    ) -> String {
+        guard let expression = try? NSRegularExpression(pattern: pattern) else {
+            return text
+        }
+
+        var result = text
+        let source = text as NSString
+        let matches = expression.matches(in: text, range: NSRange(text.startIndex..<text.endIndex, in: text))
+        for match in matches.reversed() {
+            guard match.numberOfRanges == 3,
+                  let range = Range(match.range, in: result)
+            else {
+                continue
+            }
+            let label = source.substring(with: match.range(at: 1))
+            let url = source.substring(with: match.range(at: 2))
+            result.replaceSubrange(range, with: replacement(label, url))
+        }
+        return result
+    }
+
+    private static func isImageReference(label: String, url: String) -> Bool {
+        let value = "\(label) \(url)"
+            .replacingOccurrences(of: "&amp;", with: "&")
+            .lowercased()
+        return [".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".svg", ".fpng"].contains { value.contains($0) }
+    }
+
+    private static func imageTag(alt: String, url: String) -> String {
+        #"<img src="\#(safeURL(url))" alt="\#(attributeEscape(alt))">"#
+    }
+
+    private static func safeURL(_ url: String) -> String {
+        let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.lowercased().hasPrefix("javascript:") else {
+            return "#"
+        }
+        return trimmed.replacingOccurrences(of: "\"", with: "%22")
+    }
+
+    private static func attributeEscape(_ text: String) -> String {
+        escape(text).replacingOccurrences(of: "\"", with: "&quot;")
+    }
+
+    private static func sanitize(_ text: String) -> String {
+        replace(#"(?is)<script\b[^>]*>.*?</script>"#, in: text, with: "")
+    }
+
+    private static func escape(_ text: String) -> String {
+        text.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+    }
+
+    private static func replace(_ pattern: String, in text: String, with template: String) -> String {
+        guard let expression = try? NSRegularExpression(pattern: pattern) else {
+            return text
+        }
+        return expression.stringByReplacingMatches(
+            in: text,
+            range: NSRange(text.startIndex..<text.endIndex, in: text),
+            withTemplate: template
+        )
     }
 }
 
