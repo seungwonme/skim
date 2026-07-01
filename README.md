@@ -1,23 +1,45 @@
 # skim
 
-멀티 플랫폼 정보 큐레이션 파이프라인 모노레포다. Python crawler/CLI, React/Tauri desktop app, Rust backend를 한 저장소에서 관리한다.
+![status: local-first crawler](https://img.shields.io/badge/status-local--first%20crawler-blue)
+![last commit](https://img.shields.io/github/last-commit/seungwonme/skim)
+![license: MIT](https://img.shields.io/badge/license-MIT-green)
+![python: 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)
 
-현재 배포 버전은 `v0.2.0`이다.
+> Local-first information curation pipeline for feeds, social timelines, papers, videos, and AI lab updates.
 
-## Workspace Layout
+Skim collects posts from multiple public feeds and session-based social sources, stores them in local SQLite, and exposes them through a Python CLI and a macOS desktop app.
 
-```text
-.
-├── apps/
-│   └── desktop/                # React + Vite + Tauri desktop app
-├── packages/
-│   ├── skim-cli/               # Typer CLI package
-│   └── skim-core/              # crawler, DB, enrichment, feed config
-├── tooling/
-│   └── scripts/                # 운영/보조 스크립트
-├── data/                       # local runtime artifacts
-└── docs/
-```
+> [!WARNING]
+> Some API crawlers use authenticated browser sessions and unofficial web endpoints. Use your own accounts, respect each platform's terms and rate limits, and expect upstream pages/APIs to change.
+
+## Contents
+
+| Path | Purpose |
+|---|---|
+| `packages/skim-core/` | Crawlers, models, enrichment, SQLite persistence, research/search |
+| `packages/skim-cli/` | Typer CLI exposed as `uv run skim ...` |
+| `apps/desktop/` | React + Vite + Tauri desktop app |
+| `tooling/scripts/` | Import, cron, and maintenance scripts |
+| `docs/` | Design notes, crawler notes, source backlog, generated implementation plans |
+| `data/` | Local runtime artifacts: SQLite DB, session files, crawl JSON output |
+
+## Supported Sources
+
+| Type | Platform | Source |
+|---|---|---|
+| Feed | Hacker News | hnrss.org |
+| Feed | GeekNews | news.hada.io Atom |
+| Feed | YouTube | RSS + `yt-dlp` |
+| Feed | Product Hunt | RSS |
+| Feed | arXiv | Atom API |
+| Feed | Hugging Face | Daily Papers JSON API |
+| Feed | Every.to | RSS feeds |
+| Feed | Blogs | RSS feeds in `PERSONAL_BLOGS` |
+| Feed | AI Labs | OpenAI RSS, Anthropic pages, LangChain blog |
+| API | Threads | Instagram Private API |
+| API | X | GraphQL via `twitter-api-client` |
+| API | LinkedIn | Voyager GraphQL |
+| API | Reddit | JSON listing API |
 
 ## Install
 
@@ -28,88 +50,57 @@ uv run playwright install
 cp .env.example .env
 ```
 
-## Desktop Release
+Python requires 3.12+. Node tooling uses `pnpm` and `turbo`; Python tooling uses `uv`.
 
-macOS용 desktop 앱은 GitHub Releases에서 DMG로 배포한다.
+## Usage
 
-- 태그: `v0.2.0`
-- 대상 아티팩트: `Skim Desktop_<version>_aarch64.dmg`
-- 설치 흐름: DMG 다운로드 -> 앱을 `Applications`로 복사 -> 첫 실행
-
-## Common Commands
-
-### Root
-
-```bash
-pnpm lint
-pnpm test
-pnpm build
-pnpm desktop:dev
-```
-
-### CLI
+List platforms:
 
 ```bash
 uv run skim platforms
+```
+
+Crawl recent sources:
+
+```bash
 uv run skim crawl all --days 1
 uv run skim crawl hackernews --count 10
 uv run skim crawl reddit --subreddit python --sort hot --count 10
-uv run skim login threads
 ```
 
-### Desktop
+Search the local post store:
+
+```bash
+uv run skim research "AI video" --days 7 --emit summary
+uv run skim research "vector database" --sources hackernews,arxiv --emit json
+```
+
+Login for session-based sources:
+
+```bash
+uv run skim login threads
+uv run skim login reddit
+```
+
+## Desktop App
 
 ```bash
 pnpm desktop:dev
 pnpm desktop:build
 ```
 
-`pnpm desktop:build`는 Tauri bundle을 생성하며, macOS DMG는 기본적으로 `target/release/bundle/dmg/` 아래에 만들어진다.
+The desktop app reads the same local workspace as the CLI. It can inspect session status, trigger login, manage tracked sources, and browse `data/skim.db`.
 
-## Supported Platforms
+macOS DMG builds are produced under `target/release/bundle/dmg/` by Tauri.
 
-| 유형 | 플랫폼 | 소스 |
-|------|--------|------|
-| Feed | HackerNews | hnrss.org |
-| Feed | GeekNews | news.hada.io Atom |
-| Feed | YouTube | RSS + yt-dlp |
-| Feed | ProductHunt | RSS |
-| Feed | arXiv | Atom API |
-| Feed | HuggingFace | Daily Papers JSON API |
-| Feed | Every.to | Multi-feed RSS |
-| API | Threads | Instagram Private API |
-| API | X | GraphQL (`twitter-api-client`) |
-| API | LinkedIn | Voyager GraphQL |
-| API | Reddit | JSON listing API |
+## Data And Auth
 
-## Architecture
-
-```text
-uv run skim ...
-  -> packages/skim-cli/src/skim_cli/cli.py
-  -> packages/skim-core/src/skim_core/crawlers/*
-  -> packages/skim-core/src/skim_core/db.py
-  -> data/skim.db + data/<platform>/*.json
-
-pnpm desktop:dev
-  -> apps/desktop
-  -> apps/desktop/src-tauri/src/lib.rs
-  -> data/skim.db + data/sessions/*.json
-```
-
-### Data
-
-- SQLite: `data/skim.db`
-- Sessions: `data/sessions/*.json`
+- SQLite database: `data/skim.db`
+- Session cookies: `data/sessions/*.json`
 - Crawl output: `data/<platform>/*.json`
+- Optional workspace override: `SKIM_WORKSPACE_ROOT`
 
-### Desktop Features
-
-- tracked source management
-- credential management with macOS Keychain integration
-- session status inspection and login trigger
-- post search/filter/detail view
-- YouTube source import from `skim_core.feed_config`
+`.env` is only a login helper. Existing sessions are reused from `data/sessions/*.json`; the desktop credential flow stores credentials in macOS Keychain and injects them into the login process when needed.
 
 ## Environment Variables
 
@@ -126,34 +117,47 @@ REDDIT_USERNAME=
 REDDIT_PASSWORD=
 ```
 
-## Automation
+## Development
 
 ```bash
-0 9 * * * /path/to/skim/tooling/scripts/run_daily_feed.sh
+pnpm lint
+pnpm test
+pnpm build
+pnpm typecheck
 ```
 
-## Quality Gates
-
-- JS/TS workspace tasks: `pnpm` + `turbo`
-- Python workspace tasks: `uv`
-- Git hooks: `husky`
-- Commit message validation: `commitlint`
-
-## Release Flow
+Python-only checks:
 
 ```bash
-pnpm desktop:build
-git tag v0.2.0
-gh release create v0.2.0 target/release/bundle/dmg/*.dmg
+uv run pytest tests -q
+uv run black packages tests tooling/scripts --config pyproject.toml
+uv run isort packages tests tooling/scripts --settings-path pyproject.toml
+uv run flake8
+uv run pylint packages/skim-core/src/skim_core packages/skim-cli/src/skim_cli tooling/scripts
 ```
 
-릴리즈 전에 최소한 아래 검증을 통과시키는 것을 기준으로 한다.
+## Documentation
 
-- `pnpm lint`
-- `pnpm test`
-- `pnpm build`
-- `pnpm typecheck`
+- `AGENTS.md` - AI working guide and repository conventions
+- `docs/TODO.md` - source backlog and promotion checklist
+- `docs/THREADS.md` - Threads crawler implementation notes
+- `docs/DESIGN.md` - historical design inspiration note, not the current product spec
+
+## Out Of Scope
+
+Skim is not a hosted crawler service, a data resale product, or a way to bypass platform access controls. It is designed for local personal curation with user-owned sessions and public feeds.
+
+## Contributing
+
+Small fixes are welcome. Useful contribution areas:
+
+- broken feed/API adapters
+- timestamp or metadata normalization bugs
+- focused tests for crawler, DB, or research behavior
+- documentation corrections that match current CLI behavior
+
+Before opening a PR, run the smallest relevant test first, then the root gates when the change touches shared behavior.
 
 ## License
 
-MIT
+MIT. See `LICENSE`.

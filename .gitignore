@@ -159,12 +159,17 @@ cython_debug/
 *.db
 *.sqlite3
 *.bin
+
+# Local agent/reference workspaces
+/refs/
+/worktrees/
+
 # OMX 상태 파일은 로컬 세션 전용
 .omx/state/
 
 # other
 .note/
-.cursor/mcp.json
+/.cursor/
 data/
 .env.backup
 .omc/
