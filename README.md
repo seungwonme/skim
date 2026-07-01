@@ -1,5 +1,7 @@
 # skim
 
+<p align="center"><b>English</b> | <a href="README.ko.md">한국어</a></p>
+
 ![status: local-first crawler](https://img.shields.io/badge/status-local--first%20crawler-blue)
 ![last commit](https://img.shields.io/github/last-commit/seungwonme/skim)
 ![license: MIT](https://img.shields.io/badge/license-MIT-green)
@@ -139,7 +141,7 @@ uv run pylint packages/skim-core/src/skim_core packages/skim-cli/src/skim_cli to
 ## Documentation
 
 - `AGENTS.md` - AI working guide and repository conventions
-- `docs/TODO.md` - source backlog and promotion checklist
+- `docs/TODO.md` - source backlog and promotion checklist ([Korean](docs/TODO.ko.md))
 - `docs/THREADS.md` - Threads crawler implementation notes
 - `docs/DESIGN.md` - historical design inspiration note, not the current product spec
 

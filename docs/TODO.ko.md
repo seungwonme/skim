@@ -1,19 +1,19 @@
 # Source Backlog
 
-<p align="center"><b>English</b> | <a href="TODO.ko.md">한국어</a></p>
+<p align="center"><a href="TODO.md">English</a> | <b>한국어</b></p>
 
-Candidate sources and promotion checklist for Skim. Keep implementation plans under `docs/plans/` and AI working rules in `AGENTS.md`.
+Skim에 넣을 source 후보와 promotion checklist입니다. 구현 계획은 `docs/plans/` 아래에 두고, AI 작업 규칙은 `AGENTS.md`에 둡니다.
 
-## Already Covered
+## 이미 포함됨
 
 - Communities: Hacker News, GeekNews, Product Hunt
 - Social/API: Threads, X, LinkedIn, Reddit
-- Articles: Every.to, personal blogs in `PERSONAL_BLOGS`
-- Video: YouTube channels in `YOUTUBE_CHANNELS`
+- Articles: Every.to, `PERSONAL_BLOGS`의 personal blogs
+- Video: `YOUTUBE_CHANNELS`의 YouTube channels
 - Papers: Hugging Face Daily Papers, arXiv cs.AI
 - AI labs: OpenAI, Anthropic, LangChain
 
-## Candidate Accounts
+## 후보 계정
 
 ### LinkedIn
 
@@ -39,13 +39,13 @@ Candidate sources and promotion checklist for Skim. Keep implementation plans un
 - https://www.youtube.com/@anthropic-ai
 - https://www.youtube.com/@OpenAI
 
-## Candidate Sources
+## 후보 소스
 
 - Google AI blogs and research updates
 
 ## Promotion Checklist
 
-- Add static feed/source config in `packages/skim-core/src/skim_core/feed_config.py` when possible.
-- Add or update a crawler in `packages/skim-core/src/skim_core/crawlers/` only when config is not enough.
-- Register new platforms in `packages/skim-core/src/skim_core/crawlers/__init__.py`.
-- Update README supported platforms and add one focused regression or smoke check.
+- 가능하면 `packages/skim-core/src/skim_core/feed_config.py`에 static feed/source config만 추가한다.
+- config로 부족할 때만 `packages/skim-core/src/skim_core/crawlers/`에 crawler를 추가하거나 수정한다.
+- 새 platform은 `packages/skim-core/src/skim_core/crawlers/__init__.py`에 등록한다.
+- README supported platforms를 갱신하고 focused regression 또는 smoke check를 하나 추가한다.
