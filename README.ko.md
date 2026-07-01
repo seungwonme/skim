@@ -2,6 +2,10 @@
 
 <p align="center"><a href="README.md">English</a> | <b>한국어</b></p>
 
+<p align="center">
+  <img src="images/skim-readme-banner.png" alt="Skim 로컬 우선 정보 큐레이션 파이프라인 배너" width="100%">
+</p>
+
 ![status: local-first crawler](https://img.shields.io/badge/status-local--first%20crawler-blue)
 ![last commit](https://img.shields.io/github/last-commit/seungwonme/skim)
 ![license: MIT](https://img.shields.io/badge/license-MIT-green)
