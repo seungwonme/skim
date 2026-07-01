@@ -102,7 +102,9 @@ macOS DMG builds are produced under `target/release/bundle/dmg/` by Tauri.
 - Crawl output: `data/<platform>/*.json`
 - Optional workspace override: `SKIM_WORKSPACE_ROOT`
 
-`.env` is only a login helper. Existing sessions are reused from `data/sessions/*.json`; the desktop credential flow stores credentials in macOS Keychain and injects them into the login process when needed.
+`.env` is only a CLI login helper. Existing sessions are reused from `data/sessions/*.json`.
+
+The CLI does not read macOS Keychain directly. The desktop app stores passwords in macOS Keychain and keeps only Keychain references in SQLite. When desktop login is triggered, Tauri reads the password from Keychain and passes `SKIM_LOGIN_IDENTIFIER` / `SKIM_LOGIN_PASSWORD` to `uv run skim login <platform>`.
 
 ## Environment Variables
 
