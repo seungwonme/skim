@@ -120,6 +120,12 @@ class GeekNewsCrawler:
         return posts
 
     def _item_to_post(self, item: dict) -> Post:
+        extras = {
+            key: value
+            for key, value in item.items()
+            if key in ("original_url", "enrichment_method", "enrichment_error")
+            and value is not None
+        }
         return Post(
             platform=item.get("platform", self.platform),
             author=item.get("author", ""),
@@ -130,4 +136,5 @@ class GeekNewsCrawler:
             summary=item.get("summary", ""),
             content_markdown=item.get("content_markdown"),
             word_count=item.get("word_count"),
+            **extras,
         )

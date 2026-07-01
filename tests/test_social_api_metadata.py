@@ -86,6 +86,103 @@ class SocialAPIMetadataTests(unittest.TestCase):
         self.assertEqual(post.content, "hello https://example.com/post")
         self.assertEqual(post.views, 42)
 
+    def test_x_parse_single_tweet_keeps_entities_media_link_when_media_only(self):
+        crawler = XAPICrawler.__new__(XAPICrawler)
+        tweet = {
+            "legacy": {
+                "full_text": "https://t.co/media",
+                "created_at": "Wed Oct 10 20:19:24 +0000 2018",
+                "id_str": "1050118621198921728",
+                "entities": {
+                    "media": [
+                        {
+                            "url": "https://t.co/media",
+                            "expanded_url": "https://x.com/jack/status/1050118621198921728/video/1",
+                        }
+                    ]
+                },
+            },
+            "core": {
+                "user_results": {
+                    "result": {
+                        "legacy": {
+                            "screen_name": "jack",
+                        }
+                    }
+                }
+            },
+        }
+
+        post = getattr(crawler, "_parse_single_tweet")(tweet)
+
+        self.assertIsNotNone(post)
+        self.assertEqual(
+            post.content,
+            "https://x.com/jack/status/1050118621198921728/video/1",
+        )
+        self.assertEqual(post.content_status, "media_link")
+
+    def test_x_parse_single_tweet_keeps_extended_media_link_when_media_only(self):
+        crawler = XAPICrawler.__new__(XAPICrawler)
+        tweet = {
+            "legacy": {
+                "full_text": "https://t.co/media",
+                "created_at": "Wed Oct 10 20:19:24 +0000 2018",
+                "id_str": "1050118621198921728",
+                "entities": {},
+                "extended_entities": {
+                    "media": [
+                        {
+                            "url": "https://t.co/media",
+                            "expanded_url": "https://x.com/jack/status/1050118621198921728/video/1",
+                        }
+                    ]
+                },
+            },
+            "core": {
+                "user_results": {
+                    "result": {
+                        "legacy": {
+                            "screen_name": "jack",
+                        }
+                    }
+                }
+            },
+        }
+
+        post = getattr(crawler, "_parse_single_tweet")(tweet)
+
+        self.assertIsNotNone(post)
+        self.assertEqual(
+            post.content,
+            "https://x.com/jack/status/1050118621198921728/video/1",
+        )
+        self.assertEqual(post.content_status, "media_link")
+
+    def test_x_parse_single_tweet_skips_empty_after_cleanup_without_fallback(self):
+        crawler = XAPICrawler.__new__(XAPICrawler)
+        tweet = {
+            "legacy": {
+                "full_text": "https://t.co/media",
+                "created_at": "Wed Oct 10 20:19:24 +0000 2018",
+                "id_str": "1050118621198921728",
+                "entities": {"media": [{"url": "https://t.co/media"}]},
+            },
+            "core": {
+                "user_results": {
+                    "result": {
+                        "legacy": {
+                            "screen_name": "jack",
+                        }
+                    }
+                }
+            },
+        }
+
+        post = getattr(crawler, "_parse_single_tweet")(tweet)
+
+        self.assertIsNone(post)
+
     def test_linkedin_extract_post_sets_activity_id_and_iso_timestamp(self):
         crawler = LinkedInAPICrawler.__new__(LinkedInAPICrawler)
         item = {

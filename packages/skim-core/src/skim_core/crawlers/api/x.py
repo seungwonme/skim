@@ -285,16 +285,43 @@ class XAPICrawler:
                     content = content.replace(short, expanded)
 
             # 미디어 URL 제거
-            media = legacy.get("entities", {}).get("media", [])
+            media = []
+            for media_container in (
+                legacy.get("entities", {}),
+                legacy.get("extended_entities", {}),
+            ):
+                media.extend(media_container.get("media") or [])
+            media_fallbacks = []
+            media_alt_texts = []
             for m in media:
                 media_url = m.get("url", "")
+                alt_text = (m.get("ext_alt_text") or "").strip()
+                if alt_text:
+                    media_alt_texts.append(alt_text)
+                media_link = (
+                    m.get("expanded_url") or m.get("display_url") or m.get("media_url_https")
+                )
+                if media_link:
+                    media_fallbacks.append(media_link)
                 if media_url:
                     content = content.replace(media_url, "").strip()
+
+            content = content.strip()
+            content_status = None
+            if not content:
+                if media_alt_texts:
+                    content = "\n".join(media_alt_texts)
+                    content_status = "media_alt_text"
+                elif media_fallbacks:
+                    content = "\n".join(dict.fromkeys(media_fallbacks))
+                    content_status = "media_link"
+                else:
+                    return None
 
             return Post(
                 platform="x",
                 author=author,
-                content=content.strip(),
+                content=content,
                 timestamp=timestamp,
                 url=url,
                 likes=likes,
@@ -302,6 +329,7 @@ class XAPICrawler:
                 reposts=reposts,
                 views=views,
                 external_id=tweet_id or None,
+                content_status=content_status,
             )
 
         except Exception as e:

@@ -3,10 +3,12 @@
 @description 콘텐츠 enrichment 유틸리티 (defuddle, YouTube transcript, etc.)
 """
 
+import asyncio
 import json
 import re
 import subprocess
 import tempfile
+import threading
 from pathlib import Path
 from typing import List, Optional
 
@@ -69,7 +71,7 @@ def _defuddle_html_file(html_path: str, timeout: int = 45) -> Optional[dict]:
     return None
 
 
-def _fetch_rendered_html(url: str, timeout_ms: int = 30000) -> Optional[str]:
+def _fetch_rendered_html_sync(url: str, timeout_ms: int = 30000) -> Optional[str]:
     """Playwright headless Chromium으로 JS 렌더링된 최종 HTML을 반환."""
     try:
         # pylint: disable=import-outside-toplevel
@@ -99,6 +101,24 @@ def _fetch_rendered_html(url: str, timeout_ms: int = 30000) -> Optional[str]:
         return None
 
 
+def _fetch_rendered_html(url: str, timeout_ms: int = 30000) -> Optional[str]:
+    """async crawler 안에서도 sync Playwright를 별도 thread에서 실행한다."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return _fetch_rendered_html_sync(url, timeout_ms)
+
+    result: dict[str, Optional[str]] = {"html": None}
+
+    def _run() -> None:
+        result["html"] = _fetch_rendered_html_sync(url, timeout_ms)
+
+    thread = threading.Thread(target=_run)
+    thread.start()
+    thread.join()
+    return result["html"]
+
+
 _UA_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -106,6 +126,53 @@ _UA_HEADERS = {
     ),
     "Accept": "text/html,application/xhtml+xml,*/*",
 }
+
+_PLACEHOLDER_EXACT = {
+    "00:00",
+    "loading",
+    "loading...",
+    "stage 1",
+    "불러오는 중",
+    "불러오는 중...",
+}
+_PLACEHOLDER_START = re.compile(
+    r"^\s*(?:"
+    r"stage \d+|"
+    r"loading wasm|"
+    r"just a moment|"
+    r"access denied|"
+    r"403 forbidden|"
+    r"forbidden|"
+    r"please enable javascript|"
+    r"checking your browser|"
+    r"please wait while we check|"
+    r"verify you are human|"
+    r"human verification|"
+    r"captcha|"
+    r"too many requests|"
+    r"service unavailable|"
+    r"application error|"
+    r"error \d{3}|"
+    r"not found|"
+    r"page not found|"
+    r"오늘의 .*불러오는 중입니다|"
+    r"sito in allestimento"
+    r")\b",
+    re.IGNORECASE,
+)
+_PLACEHOLDER_ANY = re.compile(
+    r"(?:"
+    r"cloudflare ray id|"
+    r"cf-browser-verification|"
+    r"ddos protection by cloudflare|"
+    r"sign in to confirm you.?re not a bot|"
+    r"unusual traffic from your computer network|"
+    r"서버 연결이 불안정합니다|"
+    r"자동 재시도 중|"
+    r"연결 중\.\.\."
+    r")",
+    re.IGNORECASE,
+)
 
 
 def _trafilatura_extract(html: str, url: str) -> Optional[dict]:
@@ -147,12 +214,23 @@ def _http_fetch_html(url: str, timeout: int = 20) -> Optional[str]:
     return resp.text
 
 
-def _is_content_usable(data: Optional[dict], title: str, min_words: int = 150) -> bool:
+def _looks_like_placeholder_content(content: str) -> bool:
+    normalized = re.sub(r"\s+", " ", content).strip()
+    if not normalized:
+        return False
+    if normalized.lower() in _PLACEHOLDER_EXACT:
+        return True
+    return bool(_PLACEHOLDER_START.search(normalized) or _PLACEHOLDER_ANY.search(normalized))
+
+
+def _is_content_usable(data: Optional[dict], title: str, min_words: int = 60) -> bool:
     """defuddle 결과가 실제 본문으로 쓸만한지 판정."""
     if not data:
         return False
     content = (data.get("content_markdown") or "").strip()
     if not content:
+        return False
+    if _looks_like_placeholder_content(content):
         return False
     word_count = data.get("word_count") or len(content.split())
     if word_count < min_words:
@@ -467,6 +545,13 @@ def enrich_with_content(items: List[dict]) -> List[dict]:
                 item["original_url"] = original_url
                 print(f"    -> 원문: {original_url[:60]}")
                 data = defuddle(original_url)
+                if not _is_content_usable(data, item.get("title", ""), min_words=3):
+                    data, method, error = extract_article_content(
+                        original_url, item.get("title", "")
+                    )
+                    item["enrichment_method"] = method
+                    if error:
+                        item["enrichment_error"] = error
             else:
                 data = defuddle(url)
         elif item["platform"].startswith("ailabs") or item["platform"].startswith("blogs"):
@@ -475,7 +560,7 @@ def enrich_with_content(items: List[dict]) -> List[dict]:
             if error:
                 item["enrichment_error"] = error
                 print(f"    [!] enrichment 경고: {error}")
-            # 품질 게이트(default 150 words)를 통과 못하면 본문을 채우지 않고
+            # 기본 품질 게이트를 통과 못하면 본문을 채우지 않고
             # enrichment_method="failed"로 표시. DB upsert는 이 마커를 "재시도 가능"으로
             # 해석해 다음 크롤링에서 더 좋은 본문이 오면 덮어쓴다.
             if not _is_content_usable(data, item.get("title", "")):
@@ -487,7 +572,7 @@ def enrich_with_content(items: List[dict]) -> List[dict]:
         else:
             data = defuddle(url)
 
-        if data:
+        if data and _is_content_usable(data, item.get("title", ""), min_words=3):
             item["content_markdown"] = data.get("content_markdown", "")
             item["word_count"] = data.get("word_count", 0)
             item["description"] = data.get("description", "")
