@@ -21,8 +21,10 @@ public enum SkimDatabaseError: Error, LocalizedError, Sendable {
 
 public final class SkimDatabase {
     private var handle: OpaquePointer?
+    private let path: URL
 
     public init(path: URL, createIfMissing: Bool = true) throws {
+        self.path = path
         if createIfMissing {
             try FileManager.default.createDirectory(
                 at: path.deletingLastPathComponent(),
@@ -58,6 +60,15 @@ public final class SkimDatabase {
         DashboardSummary(
             postsCount: try countRows(table: "posts"),
             sourcesCount: try countRows(table: "tracked_sources")
+        )
+    }
+
+    public func loadDashboard(limit: Int = 80) throws -> DashboardSnapshot {
+        DashboardSnapshot(
+            summary: try fetchSummary(),
+            posts: try fetchRecentPosts(limit: limit),
+            sources: try fetchTrackedSources(),
+            databasePath: path.path
         )
     }
 

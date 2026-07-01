@@ -69,6 +69,32 @@ public struct DashboardSummary: Equatable, Sendable {
     }
 }
 
+public struct DashboardSnapshot: Equatable, Sendable {
+    public let summary: DashboardSummary
+    public let posts: [DashboardPost]
+    public let sources: [TrackedSource]
+    public let databasePath: String
+
+    public init(
+        summary: DashboardSummary,
+        posts: [DashboardPost],
+        sources: [TrackedSource],
+        databasePath: String
+    ) {
+        self.summary = summary
+        self.posts = posts
+        self.sources = sources
+        self.databasePath = databasePath
+    }
+
+    public static let empty = DashboardSnapshot(
+        summary: DashboardSummary(postsCount: 0, sourcesCount: 0),
+        posts: [],
+        sources: [],
+        databasePath: ""
+    )
+}
+
 public struct TrackedSource: Identifiable, Equatable, Sendable {
     public let id: Int64
     public let platform: String

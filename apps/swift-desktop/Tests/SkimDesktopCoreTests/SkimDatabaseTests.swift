@@ -28,11 +28,16 @@ func databaseReadsFixturePostsAndSources() throws {
         )
 
         let summary = try database.fetchSummary()
+        let snapshot = try database.loadDashboard(limit: 10)
         let posts = try database.fetchRecentPosts(limit: 10)
         let sources = try database.fetchTrackedSources()
 
         #expect(summary.postsCount == 1)
         #expect(summary.sourcesCount == 1)
+        #expect(snapshot.summary == summary)
+        #expect(snapshot.posts.count == 1)
+        #expect(snapshot.sources.count == 1)
+        #expect(snapshot.databasePath.hasSuffix("fixture.db"))
         #expect(posts.map(\.displayTitle) == ["Practical Agents"])
         #expect(posts.first?.url?.absoluteString == "https://www.youtube.com/watch?v=abc123XYZ09")
         #expect(posts.first?.likes == 42)
