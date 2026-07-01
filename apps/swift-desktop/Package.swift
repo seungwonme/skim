@@ -13,7 +13,12 @@ let package = Package(
         .library(name: "SkimDesktopCore", targets: ["SkimDesktopCore"])
     ],
     targets: [
-        .target(name: "SkimDesktopCore"),
+        .target(
+            name: "SkimDesktopCore",
+            linkerSettings: [
+                .linkedLibrary("sqlite3")
+            ]
+        ),
         .executableTarget(
             name: "SkimDesktopApp",
             dependencies: ["SkimDesktopCore"]

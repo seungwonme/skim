@@ -25,5 +25,6 @@ func dashboardPostKeepsReadableTitleFallbackInputs() {
 
     #expect(post.id == 7)
     #expect(post.title == nil)
+    #expect(post.displayTitle == "Author")
     #expect(post.url?.host() == "www.youtube.com")
 }
