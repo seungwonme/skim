@@ -82,6 +82,19 @@ func trackedSourceUpsertUsesPlatformAndCanonicalID() throws {
     }
 }
 
+@Test
+func parsedYouTubeChannelInputPersistsAsTrackedSource() throws {
+    try withFixtureDatabase { database in
+        let candidate = try YouTubeChannelInput.parse("https://www.youtube.com/@openai")
+        let source = try database.upsertTrackedSource(candidate.draft)
+
+        #expect(source.platform == "youtube")
+        #expect(source.sourceType == "channel")
+        #expect(source.canonicalID == "@openai")
+        #expect(source.handleOrURL == "https://www.youtube.com/@openai")
+    }
+}
+
 private func withFixtureDatabase(_ body: (SkimDatabase) throws -> Void) throws {
     let directory = FileManager.default.temporaryDirectory.appending(
         path: "skim-swift-desktop-\(UUID().uuidString)",

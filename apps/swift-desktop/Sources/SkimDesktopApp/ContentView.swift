@@ -5,6 +5,8 @@ struct ContentView: View {
     @State private var snapshot = DashboardSnapshot.empty
     @State private var selectedPostID: DashboardPost.ID?
     @State private var loadError: String?
+    @State private var youtubeInput = ""
+    @State private var sourceMessage: String?
 
     private var selectedPost: DashboardPost? {
         snapshot.posts.first { $0.id == selectedPostID } ?? snapshot.posts.first
@@ -68,8 +70,24 @@ struct ContentView: View {
 
     private var sourceStrip: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Tracked Sources")
-                .font(.headline)
+            HStack {
+                Text("Tracked Sources")
+                    .font(.headline)
+                Spacer()
+                TextField("Paste YouTube channel URL or @handle", text: $youtubeInput)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(minWidth: 280)
+                Button("Add YouTube") {
+                    addYouTubeSource()
+                }
+                .disabled(youtubeInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            if let sourceMessage {
+                Text(sourceMessage)
+                    .font(.caption)
+                    .foregroundStyle(sourceMessage.hasPrefix("Added") ? Color.secondary : Color.red)
+                    .lineLimit(2)
+            }
             if snapshot.sources.isEmpty {
                 Text("No tracked sources yet.")
                     .font(.callout)
@@ -208,6 +226,20 @@ struct ContentView: View {
             loadError = nil
         } catch {
             loadError = String(describing: error)
+        }
+    }
+
+    private func addYouTubeSource() {
+        do {
+            let candidate = try YouTubeChannelInput.parse(youtubeInput)
+            let database = try SkimDatabase(path: WorkspaceLocator.defaultDatabasePath())
+            try database.ensureSchema()
+            let source = try database.upsertTrackedSource(candidate.draft)
+            youtubeInput = ""
+            sourceMessage = "Added \(source.displayName)"
+            loadDashboard()
+        } catch {
+            sourceMessage = String(describing: error)
         }
     }
 }
