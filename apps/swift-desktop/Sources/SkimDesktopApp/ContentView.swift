@@ -10,6 +10,11 @@ struct ContentView: View {
     @State private var sourceMessage: Notice?
     @State private var searchText = ""
     @State private var platformFilter: String?
+    @State private var activeSection = AppSection.feed
+    @State private var credentialForm = CredentialForm()
+    @State private var credentialNotice: Notice?
+    @State private var pendingDeleteCredential: PlatformCredential?
+    @FocusState private var focusedCredentialField: CredentialField?
 
     private var filteredPosts: [DashboardPost] {
         snapshot.posts.filter { post in
@@ -47,16 +52,34 @@ struct ContentView: View {
             libraryPane
                 .frame(minWidth: 286, idealWidth: 318, maxWidth: 360)
 
-            feedPane
-                .frame(minWidth: 390, idealWidth: 460)
+            if activeSection == .feed {
+                feedPane
+                    .frame(minWidth: 390, idealWidth: 460)
 
-            readerPane
-                .frame(minWidth: 520, idealWidth: 680)
+                readerPane
+                    .frame(minWidth: 520, idealWidth: 680)
+            } else {
+                credentialsPane
+                    .frame(minWidth: 430, idealWidth: 510)
+
+                credentialEditorPane
+                    .frame(minWidth: 520, idealWidth: 640)
+            }
         }
         .background(Design.windowBackground)
         .frame(minWidth: 1240, minHeight: 760)
         .task {
             loadDashboard()
+        }
+        .alert("크레덴셜을 삭제할까요?", isPresented: deleteAlertBinding) {
+            Button("삭제", role: .destructive) {
+                deletePendingCredential()
+            }
+            Button("취소", role: .cancel) {
+                pendingDeleteCredential = nil
+            }
+        } message: {
+            Text(pendingDeleteCredential.map { "\($0.platform) / \($0.loginIdentifier)" } ?? "")
         }
     }
 
@@ -65,21 +88,27 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Skim")
                     .font(.system(size: 28, weight: .bold, design: .serif))
-                Text("Local signal desk")
+                Text("로컬 시그널 데스크")
                     .font(.callout.weight(.medium))
                     .foregroundStyle(.secondary)
             }
 
             VStack(spacing: 10) {
-                metricTile(symbol: "doc.text", title: "Posts", value: snapshot.summary.postsCount.formatted())
-                metricTile(symbol: "antenna.radiowaves.left.and.right", title: "Sources", value: snapshot.summary.sourcesCount.formatted())
-                metricTile(symbol: "line.3.horizontal.decrease.circle", title: "Showing", value: filteredPosts.count.formatted())
+                metricTile(symbol: "doc.text", title: "포스트", value: snapshot.summary.postsCount.formatted())
+                metricTile(symbol: "antenna.radiowaves.left.and.right", title: "소스", value: snapshot.summary.sourcesCount.formatted())
+                metricTile(symbol: "key", title: "크레덴셜", value: snapshot.summary.credentialsCount.formatted())
+                metricTile(symbol: "line.3.horizontal.decrease.circle", title: "표시 중", value: filteredPosts.count.formatted())
+            }
+
+            HStack(spacing: 8) {
+                modeButton(.feed, symbol: "tray.full")
+                modeButton(.credentials, symbol: "key")
             }
 
             VStack(alignment: .leading, spacing: 10) {
-                sectionLabel("Subscribe")
+                sectionLabel("구독")
                 HStack(spacing: 8) {
-                    TextField("youtube.com/@channel", text: $youtubeInput)
+                    TextField("youtube.com/@채널", text: $youtubeInput)
                         .textFieldStyle(.plain)
                         .padding(.horizontal, 10)
                         .frame(height: 34)
@@ -92,7 +121,7 @@ struct ContentView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(youtubeInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .help("Add YouTube source")
+                    .help("YouTube 소스 추가")
                 }
                 if let sourceMessage {
                     Text(sourceMessage.text)
@@ -103,9 +132,9 @@ struct ContentView: View {
             }
 
             VStack(alignment: .leading, spacing: 10) {
-                sectionLabel("Sources")
+                sectionLabel("소스")
                 if snapshot.sources.isEmpty {
-                    emptyLine("No tracked sources")
+                    emptyLine("추적 중인 소스 없음")
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 6) {
@@ -129,7 +158,7 @@ struct ContentView: View {
                 Button {
                     loadDashboard()
                 } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
+                    Label("새로고침", systemImage: "arrow.clockwise")
                 }
                 .buttonStyle(.borderless)
             }
@@ -142,16 +171,16 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Inbox")
+                    Text("수집함")
                         .font(.system(size: 22, weight: .semibold, design: .serif))
-                    Text("\(filteredPosts.count.formatted()) of \(snapshot.posts.count.formatted()) loaded")
+                    Text("로드된 \(snapshot.posts.count.formatted())개 중 \(filteredPosts.count.formatted())개 표시")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
             }
 
-            TextField("Search title, source, summary", text: $searchText)
+            TextField("제목, 소스, 요약 검색", text: $searchText)
                 .textFieldStyle(.plain)
                 .padding(.horizontal, 12)
                 .frame(height: 38)
@@ -160,10 +189,10 @@ struct ContentView: View {
             platformBar
 
             if let loadError {
-                ContentUnavailableView("Could not load data", systemImage: "exclamationmark.triangle", description: Text(loadError))
+                ContentUnavailableView("데이터를 불러오지 못했습니다", systemImage: "exclamationmark.triangle", description: Text(loadError))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if filteredPosts.isEmpty {
-                ContentUnavailableView("No matches", systemImage: "tray", description: Text("Adjust the search or platform filter."))
+                ContentUnavailableView("결과 없음", systemImage: "tray", description: Text("검색어나 플랫폼 필터를 조정하세요."))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
@@ -185,7 +214,7 @@ struct ContentView: View {
     private var platformBar: some View {
         ScrollView(.horizontal) {
             HStack(spacing: 6) {
-                filterChip(title: "All", isSelected: platformFilter == nil) {
+                filterChip(title: "전체", isSelected: platformFilter == nil) {
                     platformFilter = nil
                 }
                 ForEach(platforms, id: \.self) { platform in
@@ -220,7 +249,7 @@ struct ContentView: View {
                             Spacer()
                             if let url = post.url {
                                 Link(destination: url) {
-                                    Label("Open", systemImage: "arrow.up.right")
+                                    Label("열기", systemImage: "arrow.up.right")
                                 }
                                 .buttonStyle(.bordered)
                             }
@@ -233,7 +262,7 @@ struct ContentView: View {
                         }
 
                         VStack(alignment: .leading, spacing: 10) {
-                            sectionLabel(post.summary == nil ? "Content" : "Summary")
+                            sectionLabel(post.summary == nil ? "본문" : "요약")
                             Text(post.summary ?? post.content)
                                 .font(.system(size: 15))
                                 .foregroundStyle(Design.readerText)
@@ -243,7 +272,7 @@ struct ContentView: View {
 
                         if let markdown = post.contentMarkdown, !markdown.isEmpty {
                             VStack(alignment: .leading, spacing: 10) {
-                                sectionLabel("Markdown")
+                                sectionLabel("마크다운")
                                 Text(markdown)
                                     .font(.system(.body, design: .monospaced))
                                     .foregroundStyle(.secondary)
@@ -257,10 +286,135 @@ struct ContentView: View {
                 }
                 .background(Design.readerBackground)
             } else {
-                ContentUnavailableView("Select a post", systemImage: "sidebar.right")
+                ContentUnavailableView("포스트를 선택하세요", systemImage: "sidebar.right")
                     .background(Design.readerBackground)
             }
         }
+    }
+
+    private var credentialsPane: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("크레덴셜")
+                        .font(.system(size: 22, weight: .semibold, design: .serif))
+                    Text("저장된 계정 \(snapshot.credentials.count.formatted())개")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    credentialForm = CredentialForm()
+                    credentialNotice = nil
+                    DispatchQueue.main.async {
+                        focusedCredentialField = .accountLabel
+                    }
+                } label: {
+                    Label("새로 만들기", systemImage: "plus")
+                }
+                .buttonStyle(.borderedProminent)
+            }
+
+            if snapshot.credentials.isEmpty {
+                ContentUnavailableView("저장된 크레덴셜 없음", systemImage: "key", description: Text("계정을 추가하면 로그인 메타데이터는 DB에, 비밀번호는 macOS 키체인에 저장됩니다."))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 10) {
+                        ForEach(snapshot.credentials) { credential in
+                            credentialRow(credential)
+                        }
+                    }
+                    .padding(.bottom, 18)
+                }
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 20)
+        .background(Design.feedBackground)
+    }
+
+    private var credentialEditorPane: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(credentialForm.id == nil ? "크레덴셜 추가" : "크레덴셜 수정")
+                        .font(.system(size: 30, weight: .semibold, design: .serif))
+                    Text("메타데이터는 SQLite에 저장하고, 비밀번호는 macOS 키체인에 저장합니다. 서비스 이름은 skim.desktop.<플랫폼> 형식입니다.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 14) {
+                    Picker("플랫폼", selection: $credentialForm.platform) {
+                        Text("Threads").tag("threads")
+                        Text("X").tag("x")
+                        Text("LinkedIn").tag("linkedin")
+                        Text("Reddit").tag("reddit")
+                    }
+                    .pickerStyle(.segmented)
+
+                    credentialTextField(.accountLabel, title: "계정 라벨", text: $credentialForm.accountLabel, prompt: "개인 / 업무")
+                    credentialTextField(.loginIdentifier, title: "로그인 식별자", text: $credentialForm.loginIdentifier, prompt: "이메일 또는 사용자명")
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        SecureField(credentialForm.passwordRequired ? "비밀번호 필수" : "새 비밀번호 선택 입력", text: $credentialForm.password)
+                            .textFieldStyle(.plain)
+                            .focused($focusedCredentialField, equals: .password)
+                            .padding(.horizontal, 12)
+                            .frame(height: 38)
+                            .background(Design.inputBackground, in: RoundedRectangle(cornerRadius: 7))
+                            .overlay(inputBorder(isFocused: focusedCredentialField == .password))
+                        Text(credentialForm.passwordRequired ? "새 크레덴셜이거나 플랫폼/로그인 식별자를 바꾸는 경우 필요합니다." : "비워두면 기존 키체인 비밀번호를 유지합니다.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if let credentialNotice {
+                        Text(credentialNotice.text)
+                            .font(.callout)
+                            .foregroundStyle(credentialNotice.isError ? Color.red : Design.green)
+                    }
+
+                    HStack {
+                        Button {
+                            saveCredentialForm()
+                        } label: {
+                            Label(credentialForm.id == nil ? "크레덴셜 저장" : "크레덴셜 수정", systemImage: "checkmark")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!credentialForm.isSaveable)
+
+                        Button {
+                            credentialForm = CredentialForm()
+                            credentialNotice = nil
+                        } label: {
+                            Label("초기화", systemImage: "xmark")
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+                .padding(16)
+                .background(Design.panelBackground, in: RoundedRectangle(cornerRadius: 8))
+
+                VStack(alignment: .leading, spacing: 8) {
+                    sectionLabel("키체인 세부정보")
+                    Text("서비스: \(KeychainStore.secretService(platform: credentialForm.platform))")
+                    Text("계정: \(credentialForm.loginIdentifier.isEmpty ? "-" : credentialForm.loginIdentifier)")
+                    Text("세션 경로: data/sessions/\(credentialForm.platform)_session.json")
+                }
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Design.panelBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
+
+                Spacer(minLength: 20)
+            }
+            .padding(30)
+            .frame(maxWidth: 760, alignment: .leading)
+        }
+        .background(Design.readerBackground)
     }
 
     private func metricTile(symbol: String, title: String, value: String) -> some View {
@@ -281,6 +435,19 @@ struct ContentView: View {
         }
         .padding(12)
         .background(Design.panelBackground, in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func modeButton(_ section: AppSection, symbol: String) -> some View {
+        Button {
+            activeSection = section
+        } label: {
+            Label(section.title, systemImage: symbol)
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.plain)
+        .padding(.vertical, 9)
+        .foregroundStyle(activeSection == section ? Color.white : Design.primaryText)
+        .background(activeSection == section ? Design.green : Design.panelBackground, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private func sourceRow(_ source: TrackedSource) -> some View {
@@ -366,6 +533,79 @@ struct ContentView: View {
         .buttonStyle(.plain)
     }
 
+    private func credentialRow(_ credential: PlatformCredential) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                platformBadge(credential.platform)
+                Text(credential.accountLabel)
+                    .font(.headline)
+                    .foregroundStyle(Design.primaryText)
+                    .lineLimit(1)
+                Spacer()
+                Text(sessionStatusLabel(credential.sessionStatus))
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(isSessionHealthy(credential.sessionStatus) ? Design.green : .secondary)
+            }
+            Text(credential.loginIdentifier)
+                .font(.callout.monospaced())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            HStack {
+                Text(credential.sessionPath ?? "세션 경로 없음")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                Spacer()
+                Button {
+                    selectCredentialForEditing(credential)
+                } label: {
+                    Label("수정", systemImage: "pencil")
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(Design.green)
+                Button(role: .destructive) {
+                    pendingDeleteCredential = credential
+                } label: {
+                    Label("삭제", systemImage: "trash")
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(Color.red)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(credentialForm.id == credential.id ? Design.selectedBackground : Design.cardBackground, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(credentialForm.id == credential.id ? Design.green.opacity(0.5) : Design.hairline, lineWidth: 1)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 8))
+        .onTapGesture {
+            selectCredentialForEditing(credential)
+        }
+    }
+
+    private func credentialTextField(_ field: CredentialField, title: String, text: Binding<String>, prompt: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            sectionLabel(title)
+            TextField(prompt, text: text)
+                .textFieldStyle(.plain)
+                .focused($focusedCredentialField, equals: field)
+                .padding(.horizontal, 12)
+                .frame(height: 38)
+                .background(Design.inputBackground, in: RoundedRectangle(cornerRadius: 7))
+                .overlay(inputBorder(isFocused: focusedCredentialField == field))
+                .onTapGesture {
+                    focusedCredentialField = field
+                }
+        }
+    }
+
+    private func inputBorder(isFocused: Bool) -> some View {
+        RoundedRectangle(cornerRadius: 7)
+            .stroke(isFocused ? Design.green.opacity(0.85) : Design.hairline, lineWidth: isFocused ? 1.5 : 1)
+    }
+
     private func filterChip(title: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
@@ -389,16 +629,16 @@ struct ContentView: View {
 
     private func infoStrip(_ post: DashboardPost) -> some View {
         HStack(spacing: 12) {
-            infoItem("Author", post.author)
+            infoItem("작성자", post.author)
             if let source = post.source {
-                infoItem("Source", source)
+                infoItem("소스", source)
             }
-            infoItem("Date", displayDate(post))
+            infoItem("날짜", displayDate(post))
             if let likes = post.likes {
-                infoItem("Likes", likes.formatted())
+                infoItem("좋아요", likes.formatted())
             }
             if let comments = post.comments {
-                infoItem("Comments", comments.formatted())
+                infoItem("댓글", comments.formatted())
             }
         }
         .padding(12)
@@ -466,7 +706,83 @@ struct ContentView: View {
             }
             loadError = nil
         } catch {
-            loadError = String(describing: error)
+            loadError = localizedError(error)
+        }
+    }
+
+    private func saveCredentialForm() {
+        do {
+            let database = try SkimDatabase(path: WorkspaceLocator.defaultDatabasePath())
+            try database.ensureSchema()
+            let saved = try database.saveCredential(credentialForm.draft)
+            credentialForm = CredentialForm(credential: saved)
+            updateSnapshot(with: saved)
+            credentialNotice = Notice(text: "\(saved.platform) / \(saved.loginIdentifier) 저장됨", isError: false)
+            loadDashboard()
+        } catch {
+            credentialNotice = Notice(text: localizedError(error), isError: true)
+        }
+    }
+
+    private func selectCredentialForEditing(_ credential: PlatformCredential) {
+        credentialForm = CredentialForm(credential: credential)
+        credentialNotice = nil
+        DispatchQueue.main.async {
+            focusedCredentialField = .accountLabel
+        }
+    }
+
+    private func updateSnapshot(with credential: PlatformCredential) {
+        var credentials = snapshot.credentials.filter { $0.id != credential.id }
+        credentials.append(credential)
+        credentials.sort {
+            if $0.platform != $1.platform {
+                return $0.platform < $1.platform
+            }
+            return $0.accountLabel.localizedCaseInsensitiveCompare($1.accountLabel) == .orderedAscending
+        }
+        snapshot = DashboardSnapshot(
+            summary: DashboardSummary(
+                postsCount: snapshot.summary.postsCount,
+                sourcesCount: snapshot.summary.sourcesCount,
+                credentialsCount: credentials.count
+            ),
+            posts: snapshot.posts,
+            sources: snapshot.sources,
+            credentials: credentials,
+            databasePath: snapshot.databasePath
+        )
+    }
+
+    private var deleteAlertBinding: Binding<Bool> {
+        Binding(
+            get: { pendingDeleteCredential != nil },
+            set: { isPresented in
+                if !isPresented {
+                    pendingDeleteCredential = nil
+                }
+            }
+        )
+    }
+
+    private func deletePendingCredential() {
+        guard let credential = pendingDeleteCredential else {
+            return
+        }
+
+        do {
+            let database = try SkimDatabase(path: WorkspaceLocator.defaultDatabasePath())
+            try database.ensureSchema()
+            try database.deleteCredential(id: credential.id)
+            if credentialForm.id == credential.id {
+                credentialForm = CredentialForm()
+            }
+            credentialNotice = Notice(text: "\(credential.platform) / \(credential.loginIdentifier) 삭제됨", isError: false)
+            pendingDeleteCredential = nil
+            loadDashboard()
+        } catch {
+            credentialNotice = Notice(text: localizedError(error), isError: true)
+            pendingDeleteCredential = nil
         }
     }
 
@@ -477,17 +793,96 @@ struct ContentView: View {
             try database.ensureSchema()
             let source = try database.upsertTrackedSource(candidate.draft)
             youtubeInput = ""
-            sourceMessage = Notice(text: "Added \(source.displayName)", isError: false)
+            sourceMessage = Notice(text: "\(source.displayName) 추가됨", isError: false)
             loadDashboard()
         } catch {
-            sourceMessage = Notice(text: String(describing: error), isError: true)
+            sourceMessage = Notice(text: localizedError(error), isError: true)
         }
+    }
+
+    private func sessionStatusLabel(_ status: String) -> String {
+        switch status {
+        case "healthy": "정상"
+        case "missing": "없음"
+        default: status
+        }
+    }
+
+    private func isSessionHealthy(_ status: String) -> Bool {
+        status == "healthy"
+    }
+
+    private func localizedError(_ error: Error) -> String {
+        if let localized = error as? LocalizedError, let description = localized.errorDescription {
+            return description
+        }
+        return error.localizedDescription
     }
 }
 
 private struct Notice: Equatable {
     let text: String
     let isError: Bool
+}
+
+private enum AppSection: Equatable {
+    case feed
+    case credentials
+
+    var title: String {
+        switch self {
+        case .feed: "피드"
+        case .credentials: "크레덴셜"
+        }
+    }
+}
+
+private enum CredentialField: Hashable {
+    case accountLabel
+    case loginIdentifier
+    case password
+}
+
+private struct CredentialForm: Equatable {
+    var id: Int64?
+    var platform = "threads"
+    var accountLabel = ""
+    var loginIdentifier = ""
+    var password = ""
+    var originalPlatform: String?
+    var originalLoginIdentifier: String?
+
+    init() {}
+
+    init(credential: PlatformCredential) {
+        id = credential.id
+        platform = credential.platform
+        accountLabel = credential.accountLabel
+        loginIdentifier = credential.loginIdentifier
+        originalPlatform = credential.platform
+        originalLoginIdentifier = credential.loginIdentifier
+    }
+
+    var passwordRequired: Bool {
+        id == nil || platform != originalPlatform || loginIdentifier != originalLoginIdentifier
+    }
+
+    var isSaveable: Bool {
+        !platform.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            !accountLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            !loginIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            (!passwordRequired || !password.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
+    var draft: PlatformCredentialDraft {
+        PlatformCredentialDraft(
+            id: id,
+            platform: platform,
+            accountLabel: accountLabel,
+            loginIdentifier: loginIdentifier,
+            password: password.isEmpty ? nil : password
+        )
+    }
 }
 
 private enum Design {

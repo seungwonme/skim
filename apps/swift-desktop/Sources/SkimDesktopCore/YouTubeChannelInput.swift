@@ -7,9 +7,9 @@ public enum YouTubeChannelInputError: Error, LocalizedError, Equatable, Sendable
     public var errorDescription: String? {
         switch self {
         case .empty:
-            return "Paste a YouTube channel URL or handle."
+            return "YouTube 채널 URL 또는 핸들을 붙여넣어 주세요."
         case let .unsupported(value):
-            return "Unsupported YouTube channel input: \(value)"
+            return "지원하지 않는 YouTube 채널 입력입니다: \(value)"
         }
     }
 }
@@ -103,7 +103,7 @@ public enum YouTubeChannelInput {
             displayName: handle,
             canonicalID: handle,
             handleOrURL: "https://www.youtube.com/\(handle)",
-            notes: "Handle saved locally; channel_id resolution requires a future refresh/import step."
+            notes: "핸들을 로컬에 저장했습니다. channel_id 해석은 이후 새로고침/가져오기 단계에서 처리합니다."
         )
     }
 }

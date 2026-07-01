@@ -21,7 +21,7 @@ func parsesYouTubeHandleURLAndBareHandle() throws {
     #expect(fromURL.canonicalID == "@openai")
     #expect(fromHandle == fromURL)
     #expect(fromURL.handleOrURL == "https://www.youtube.com/@openai")
-    #expect(fromURL.notes?.contains("channel_id resolution") == true)
+    #expect(fromURL.notes?.contains("channel_id 해석") == true)
 }
 
 @Test

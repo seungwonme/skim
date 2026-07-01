@@ -16,7 +16,8 @@ let package = Package(
         .target(
             name: "SkimDesktopCore",
             linkerSettings: [
-                .linkedLibrary("sqlite3")
+                .linkedLibrary("sqlite3"),
+                .linkedFramework("Security")
             ]
         ),
         .executableTarget(

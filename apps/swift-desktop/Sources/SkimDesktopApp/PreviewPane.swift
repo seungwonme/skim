@@ -10,10 +10,10 @@ struct PreviewPane: View {
         case let .youtube(originalURL, embedURL, videoID):
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
-                    Text("YouTube Preview")
+                    Text("YouTube 미리보기")
                         .font(.headline)
                     Spacer()
-                    Link("Open externally", destination: originalURL)
+                    Link("외부에서 열기", destination: originalURL)
                 }
                 YouTubeWebPreview(embedURL: embedURL, videoID: videoID)
                     .frame(minHeight: 260)
@@ -21,14 +21,14 @@ struct PreviewPane: View {
             }
         case let .external(url):
             VStack(alignment: .leading, spacing: 10) {
-                Text("Preview unavailable")
+                Text("미리보기 불가")
                     .font(.headline)
                 Text(url.absoluteString)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .textSelection(.enabled)
-                Link("Open externally", destination: url)
+                Link("외부에서 열기", destination: url)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(16)

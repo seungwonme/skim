@@ -7,14 +7,18 @@ public enum SkimDatabaseError: Error, LocalizedError, Sendable {
     case prepareFailed(String)
     case stepFailed(String)
     case missingHandle
+    case keychainFailed(status: OSStatus)
+    case invalidCredential(String)
 
     public var errorDescription: String? {
         switch self {
-        case let .openFailed(message): "SQLite open failed: \(message)"
-        case let .executeFailed(message): "SQLite execute failed: \(message)"
-        case let .prepareFailed(message): "SQLite prepare failed: \(message)"
-        case let .stepFailed(message): "SQLite step failed: \(message)"
-        case .missingHandle: "SQLite handle is not available"
+        case let .openFailed(message): "SQLite 데이터베이스를 열 수 없습니다: \(message)"
+        case let .executeFailed(message): "SQLite 실행에 실패했습니다: \(message)"
+        case let .prepareFailed(message): "SQLite 쿼리 준비에 실패했습니다: \(message)"
+        case let .stepFailed(message): "SQLite 쿼리 처리에 실패했습니다: \(message)"
+        case .missingHandle: "SQLite 연결을 사용할 수 없습니다."
+        case let .keychainFailed(status): "macOS 키체인 작업에 실패했습니다. 상태 코드: \(status)"
+        case let .invalidCredential(message): message
         }
     }
 }
@@ -59,7 +63,8 @@ public final class SkimDatabase {
     public func fetchSummary() throws -> DashboardSummary {
         DashboardSummary(
             postsCount: try countRows(table: "posts"),
-            sourcesCount: try countRows(table: "tracked_sources")
+            sourcesCount: try countRows(table: "tracked_sources"),
+            credentialsCount: try countRows(table: "platform_credentials")
         )
     }
 
@@ -68,8 +73,34 @@ public final class SkimDatabase {
             summary: try fetchSummary(),
             posts: try fetchRecentPosts(limit: limit),
             sources: try fetchTrackedSources(),
+            credentials: try fetchCredentials(),
             databasePath: path.path
         )
+    }
+
+    public func fetchCredentials() throws -> [PlatformCredential] {
+        try query(
+            """
+            SELECT id, platform, account_label, login_identifier, secret_service, secret_account,
+                   session_path, session_status, last_verified_at, created_at, updated_at
+            FROM platform_credentials
+            ORDER BY platform, account_label COLLATE NOCASE ASC
+            """
+        ) { statement in
+            PlatformCredential(
+                id: sqlite3_column_int64(statement, 0),
+                platform: text(statement, 1) ?? "",
+                accountLabel: text(statement, 2) ?? "",
+                loginIdentifier: text(statement, 3) ?? "",
+                secretService: text(statement, 4) ?? "",
+                secretAccount: text(statement, 5) ?? "",
+                sessionPath: text(statement, 6),
+                sessionStatus: text(statement, 7) ?? "missing",
+                lastVerifiedAt: text(statement, 8),
+                createdAt: text(statement, 9) ?? "",
+                updatedAt: text(statement, 10) ?? ""
+            )
+        }
     }
 
     public func fetchTrackedSources() throws -> [TrackedSource] {
@@ -182,6 +213,115 @@ public final class SkimDatabase {
         }
     }
 
+    @discardableResult
+    public func saveCredential(_ draft: PlatformCredentialDraft, writeKeychain: Bool = true) throws -> PlatformCredential {
+        let platform = draft.platform.trimmingCharacters(in: .whitespacesAndNewlines)
+        let accountLabel = draft.accountLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let loginIdentifier = draft.loginIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        let password = draft.password?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !platform.isEmpty, !accountLabel.isEmpty, !loginIdentifier.isEmpty else {
+            throw SkimDatabaseError.invalidCredential("플랫폼, 계정 라벨, 로그인 식별자는 필수입니다.")
+        }
+
+        let service = KeychainStore.secretService(platform: platform)
+        let sessionPath = "data/sessions/\(platform)_session.json"
+        let existing = try draft.id.flatMap(fetchCredential(id:))
+        let credentialChanged = existing.map { $0.platform != platform || $0.loginIdentifier != loginIdentifier } ?? true
+
+        if let password, !password.isEmpty {
+            if writeKeychain {
+                try KeychainStore.save(password: password, service: service, account: loginIdentifier)
+                if let existing, credentialChanged {
+                    try? KeychainStore.delete(service: existing.secretService, account: existing.secretAccount)
+                }
+            }
+        } else if credentialChanged {
+            throw SkimDatabaseError.invalidCredential("새 크레덴셜을 만들거나 플랫폼/로그인 식별자를 바꾸려면 비밀번호가 필요합니다.")
+        }
+
+        if let id = draft.id {
+            try execute(
+                """
+                UPDATE platform_credentials
+                SET platform = ?,
+                    account_label = ?,
+                    login_identifier = ?,
+                    secret_service = ?,
+                    secret_account = ?,
+                    session_path = ?,
+                    updated_at = datetime('now')
+                WHERE id = ?
+                """,
+                bindings: [
+                    .text(platform),
+                    .text(accountLabel),
+                    .text(loginIdentifier),
+                    .text(service),
+                    .text(loginIdentifier),
+                    .text(sessionPath),
+                    .integer(id)
+                ]
+            )
+        } else {
+            try execute(
+                """
+                INSERT INTO platform_credentials (
+                    platform, account_label, login_identifier, secret_service, secret_account, session_path
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(platform, login_identifier) DO UPDATE SET
+                    account_label = excluded.account_label,
+                    secret_service = excluded.secret_service,
+                    secret_account = excluded.secret_account,
+                    session_path = excluded.session_path,
+                    updated_at = datetime('now')
+                """,
+                bindings: [
+                    .text(platform),
+                    .text(accountLabel),
+                    .text(loginIdentifier),
+                    .text(service),
+                    .text(loginIdentifier),
+                    .text(sessionPath)
+                ]
+            )
+        }
+
+        return try queryOne(
+            """
+            SELECT id, platform, account_label, login_identifier, secret_service, secret_account,
+                   session_path, session_status, last_verified_at, created_at, updated_at
+            FROM platform_credentials
+            WHERE platform = ? AND login_identifier = ?
+            """,
+            bindings: [.text(platform), .text(loginIdentifier)]
+        ) { statement in
+            PlatformCredential(
+                id: sqlite3_column_int64(statement, 0),
+                platform: text(statement, 1) ?? "",
+                accountLabel: text(statement, 2) ?? "",
+                loginIdentifier: text(statement, 3) ?? "",
+                secretService: text(statement, 4) ?? "",
+                secretAccount: text(statement, 5) ?? "",
+                sessionPath: text(statement, 6),
+                sessionStatus: text(statement, 7) ?? "missing",
+                lastVerifiedAt: text(statement, 8),
+                createdAt: text(statement, 9) ?? "",
+                updatedAt: text(statement, 10) ?? ""
+            )
+        }
+    }
+
+    public func deleteCredential(id: Int64, deleteKeychain: Bool = true) throws {
+        guard let credential = try fetchCredential(id: id) else {
+            return
+        }
+        if deleteKeychain {
+            try KeychainStore.delete(service: credential.secretService, account: credential.secretAccount)
+        }
+        try execute("DELETE FROM platform_credentials WHERE id = ?", bindings: [.integer(id)])
+    }
+
     func execute(_ sql: String, bindings: [SQLiteBinding] = []) throws {
         if bindings.isEmpty {
             guard sqlite3_exec(try requireHandle(), sql, nil, nil, nil) == SQLITE_OK else {
@@ -202,6 +342,33 @@ public final class SkimDatabase {
         try queryOne("SELECT COUNT(*) FROM \(table)") { statement in
             Int(sqlite3_column_int64(statement, 0))
         }
+    }
+
+    private func fetchCredential(id: Int64) throws -> PlatformCredential? {
+        try query(
+            """
+            SELECT id, platform, account_label, login_identifier, secret_service, secret_account,
+                   session_path, session_status, last_verified_at, created_at, updated_at
+            FROM platform_credentials
+            WHERE id = ?
+            """,
+            bindings: [.integer(id)]
+        ) { statement in
+            PlatformCredential(
+                id: sqlite3_column_int64(statement, 0),
+                platform: text(statement, 1) ?? "",
+                accountLabel: text(statement, 2) ?? "",
+                loginIdentifier: text(statement, 3) ?? "",
+                secretService: text(statement, 4) ?? "",
+                secretAccount: text(statement, 5) ?? "",
+                sessionPath: text(statement, 6),
+                sessionStatus: text(statement, 7) ?? "missing",
+                lastVerifiedAt: text(statement, 8),
+                createdAt: text(statement, 9) ?? "",
+                updatedAt: text(statement, 10) ?? ""
+            )
+        }
+        .first
     }
 
     private func query<T>(
@@ -325,10 +492,26 @@ public final class SkimDatabase {
         UNIQUE(platform, canonical_id)
     );
 
+    CREATE TABLE IF NOT EXISTS platform_credentials (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        platform         TEXT NOT NULL,
+        account_label    TEXT NOT NULL,
+        login_identifier TEXT NOT NULL,
+        secret_service   TEXT NOT NULL,
+        secret_account   TEXT NOT NULL,
+        session_path     TEXT,
+        session_status   TEXT NOT NULL DEFAULT 'missing',
+        last_verified_at TEXT,
+        created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(platform, login_identifier)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_posts_platform ON posts(platform);
     CREATE INDEX IF NOT EXISTS idx_posts_crawled_at ON posts(crawled_at);
     CREATE INDEX IF NOT EXISTS idx_tracked_sources_platform ON tracked_sources(platform);
     CREATE INDEX IF NOT EXISTS idx_tracked_sources_enabled ON tracked_sources(is_enabled);
+    CREATE INDEX IF NOT EXISTS idx_credentials_platform ON platform_credentials(platform);
     """
 }
 

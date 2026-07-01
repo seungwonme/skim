@@ -34,9 +34,11 @@ func databaseReadsFixturePostsAndSources() throws {
 
         #expect(summary.postsCount == 1)
         #expect(summary.sourcesCount == 1)
+        #expect(summary.credentialsCount == 0)
         #expect(snapshot.summary == summary)
         #expect(snapshot.posts.count == 1)
         #expect(snapshot.sources.count == 1)
+        #expect(snapshot.credentials.isEmpty)
         #expect(snapshot.databasePath.hasSuffix("fixture.db"))
         #expect(posts.map(\.displayTitle) == ["Practical Agents"])
         #expect(posts.first?.url?.absoluteString == "https://www.youtube.com/watch?v=abc123XYZ09")
@@ -79,6 +81,71 @@ func trackedSourceUpsertUsesPlatformAndCanonicalID() throws {
         #expect(sources[0].handleOrURL == "https://www.youtube.com/@updated")
         #expect(sources[0].focusLevel == 5)
         #expect(sources[0].notes == "updated")
+    }
+}
+
+@Test
+func credentialMetadataCanBeCreatedEditedAndDeleted() throws {
+    try withFixtureDatabase { database in
+        let created = try database.saveCredential(
+            PlatformCredentialDraft(
+                platform: "threads",
+                accountLabel: "Personal",
+                loginIdentifier: "me@example.com",
+                password: "not-used-in-test"
+            ),
+            writeKeychain: false
+        )
+
+        #expect(created.platform == "threads")
+        #expect(created.secretService == "skim.desktop.threads")
+        #expect(created.secretAccount == "me@example.com")
+        #expect(created.sessionPath == "data/sessions/threads_session.json")
+        #expect(try database.fetchSummary().credentialsCount == 1)
+
+        let updated = try database.saveCredential(
+            PlatformCredentialDraft(
+                id: created.id,
+                platform: "threads",
+                accountLabel: "Personal Updated",
+                loginIdentifier: "me@example.com"
+            ),
+            writeKeychain: false
+        )
+
+        #expect(updated.id == created.id)
+        #expect(updated.accountLabel == "Personal Updated")
+        #expect(try database.fetchCredentials().map(\.accountLabel) == ["Personal Updated"])
+
+        try database.deleteCredential(id: created.id, deleteKeychain: false)
+        #expect(try database.fetchCredentials().isEmpty)
+    }
+}
+
+@Test
+func credentialPlatformOrLoginChangeRequiresPassword() throws {
+    try withFixtureDatabase { database in
+        let created = try database.saveCredential(
+            PlatformCredentialDraft(
+                platform: "threads",
+                accountLabel: "Personal",
+                loginIdentifier: "me@example.com",
+                password: "not-used-in-test"
+            ),
+            writeKeychain: false
+        )
+
+        #expect(throws: SkimDatabaseError.self) {
+            try database.saveCredential(
+                PlatformCredentialDraft(
+                    id: created.id,
+                    platform: "x",
+                    accountLabel: "Personal",
+                    loginIdentifier: "me@example.com"
+                ),
+                writeKeychain: false
+            )
+        }
     }
 }
 

@@ -62,10 +62,12 @@ public struct DashboardPost: Identifiable, Equatable, Sendable {
 public struct DashboardSummary: Equatable, Sendable {
     public let postsCount: Int
     public let sourcesCount: Int
+    public let credentialsCount: Int
 
-    public init(postsCount: Int, sourcesCount: Int) {
+    public init(postsCount: Int, sourcesCount: Int, credentialsCount: Int) {
         self.postsCount = postsCount
         self.sourcesCount = sourcesCount
+        self.credentialsCount = credentialsCount
     }
 }
 
@@ -73,24 +75,28 @@ public struct DashboardSnapshot: Equatable, Sendable {
     public let summary: DashboardSummary
     public let posts: [DashboardPost]
     public let sources: [TrackedSource]
+    public let credentials: [PlatformCredential]
     public let databasePath: String
 
     public init(
         summary: DashboardSummary,
         posts: [DashboardPost],
         sources: [TrackedSource],
+        credentials: [PlatformCredential],
         databasePath: String
     ) {
         self.summary = summary
         self.posts = posts
         self.sources = sources
+        self.credentials = credentials
         self.databasePath = databasePath
     }
 
     public static let empty = DashboardSnapshot(
-        summary: DashboardSummary(postsCount: 0, sourcesCount: 0),
+        summary: DashboardSummary(postsCount: 0, sourcesCount: 0, credentialsCount: 0),
         posts: [],
         sources: [],
+        credentials: [],
         databasePath: ""
     )
 }
@@ -163,6 +169,68 @@ public struct TrackedSourceDraft: Equatable, Sendable {
         self.isEnabled = isEnabled
         self.focusLevel = focusLevel
         self.notes = notes
+    }
+}
+
+public struct PlatformCredential: Identifiable, Equatable, Sendable {
+    public let id: Int64
+    public let platform: String
+    public let accountLabel: String
+    public let loginIdentifier: String
+    public let secretService: String
+    public let secretAccount: String
+    public let sessionPath: String?
+    public let sessionStatus: String
+    public let lastVerifiedAt: String?
+    public let createdAt: String
+    public let updatedAt: String
+
+    public init(
+        id: Int64,
+        platform: String,
+        accountLabel: String,
+        loginIdentifier: String,
+        secretService: String,
+        secretAccount: String,
+        sessionPath: String?,
+        sessionStatus: String,
+        lastVerifiedAt: String?,
+        createdAt: String,
+        updatedAt: String
+    ) {
+        self.id = id
+        self.platform = platform
+        self.accountLabel = accountLabel
+        self.loginIdentifier = loginIdentifier
+        self.secretService = secretService
+        self.secretAccount = secretAccount
+        self.sessionPath = sessionPath
+        self.sessionStatus = sessionStatus
+        self.lastVerifiedAt = lastVerifiedAt
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+}
+
+public struct PlatformCredentialDraft: Equatable, Sendable {
+    public let id: Int64?
+    public let platform: String
+    public let accountLabel: String
+    public let loginIdentifier: String
+    public let password: String?
+
+    public init(
+        id: Int64? = nil,
+        platform: String,
+        accountLabel: String,
+        loginIdentifier: String,
+        password: String? = nil
+    ) {
+        self.id = id
+        self.platform = platform
+        self.accountLabel = accountLabel
+        self.loginIdentifier = loginIdentifier
+        self.password = password
     }
 }
 
