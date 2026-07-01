@@ -14,6 +14,7 @@ struct ContentView: View {
     @State private var credentialForm = CredentialForm()
     @State private var credentialNotice: Notice?
     @State private var pendingDeleteCredential: PlatformCredential?
+    @State private var isSavingCredential = false
     @FocusState private var focusedCredentialField: CredentialField?
 
     private var filteredPosts: [DashboardPost] {
@@ -306,6 +307,7 @@ struct ContentView: View {
                 Button {
                     credentialForm = CredentialForm()
                     credentialNotice = nil
+                    isSavingCredential = false
                     DispatchQueue.main.async {
                         focusedCredentialField = .accountLabel
                     }
@@ -370,28 +372,32 @@ struct ContentView: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    if let credentialNotice {
+                    if let credentialNotice, credentialNotice.isError || !credentialForm.hasChanges {
                         Text(credentialNotice.text)
                             .font(.callout)
                             .foregroundStyle(credentialNotice.isError ? Color.red : Design.green)
                     }
 
+                    credentialSaveStatus
+
                     HStack {
                         Button {
                             saveCredentialForm()
                         } label: {
-                            Label(credentialForm.id == nil ? "크레덴셜 저장" : "크레덴셜 수정", systemImage: "checkmark")
+                            Label(credentialSaveButtonTitle, systemImage: credentialSaveButtonIcon)
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(!credentialForm.isSaveable)
+                        .tint(canSaveCredential ? Design.green : Color.gray)
+                        .disabled(!canSaveCredential)
 
                         Button {
-                            credentialForm = CredentialForm()
+                            credentialForm = credentialForm.resettingChanges()
                             credentialNotice = nil
                         } label: {
-                            Label("초기화", systemImage: "xmark")
+                            Label(credentialForm.id == nil ? "초기화" : "되돌리기", systemImage: "arrow.uturn.backward")
                         }
                         .buttonStyle(.bordered)
+                        .disabled(isSavingCredential || !credentialForm.hasChanges)
                     }
                 }
                 .padding(16)
@@ -601,6 +607,56 @@ struct ContentView: View {
         }
     }
 
+    private var credentialSaveStatus: some View {
+        HStack(spacing: 8) {
+            if isSavingCredential {
+                ProgressView()
+                    .controlSize(.small)
+                Text("키체인과 SQLite에 저장하는 중")
+            } else if credentialForm.hasChanges {
+                Image(systemName: "circle.fill")
+                    .font(.system(size: 7))
+                    .foregroundStyle(Design.amber)
+                Text("저장되지 않은 변경사항")
+            } else if credentialForm.id != nil {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(Design.green)
+                Text("현재 내용이 저장되어 있음")
+            } else {
+                Image(systemName: "circle.dashed")
+                    .foregroundStyle(.secondary)
+                Text("필수 항목을 입력하면 저장할 수 있음")
+            }
+        }
+        .font(.caption.weight(.medium))
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 12)
+        .frame(height: 34)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Design.inputBackground.opacity(0.7), in: RoundedRectangle(cornerRadius: 7))
+    }
+
+    private var canSaveCredential: Bool {
+        credentialForm.isSaveable && credentialForm.hasChanges && !isSavingCredential
+    }
+
+    private var credentialSaveButtonTitle: String {
+        if isSavingCredential {
+            return "저장 중"
+        }
+        if !credentialForm.hasChanges {
+            return credentialForm.id == nil ? "입력 필요" : "변경 없음"
+        }
+        return credentialForm.id == nil ? "크레덴셜 저장" : "변경사항 저장"
+    }
+
+    private var credentialSaveButtonIcon: String {
+        if isSavingCredential {
+            return "arrow.triangle.2.circlepath"
+        }
+        return credentialForm.hasChanges ? "checkmark" : "checkmark.circle"
+    }
+
     private func inputBorder(isFocused: Bool) -> some View {
         RoundedRectangle(cornerRadius: 7)
             .stroke(isFocused ? Design.green.opacity(0.85) : Design.hairline, lineWidth: isFocused ? 1.5 : 1)
@@ -711,22 +767,37 @@ struct ContentView: View {
     }
 
     private func saveCredentialForm() {
-        do {
-            let database = try SkimDatabase(path: WorkspaceLocator.defaultDatabasePath())
-            try database.ensureSchema()
-            let saved = try database.saveCredential(credentialForm.draft)
-            credentialForm = CredentialForm(credential: saved)
-            updateSnapshot(with: saved)
-            credentialNotice = Notice(text: "\(saved.platform) / \(saved.loginIdentifier) 저장됨", isError: false)
-            loadDashboard()
-        } catch {
-            credentialNotice = Notice(text: localizedError(error), isError: true)
+        guard credentialForm.isSaveable, credentialForm.hasChanges, !isSavingCredential else {
+            return
+        }
+
+        isSavingCredential = true
+        credentialNotice = nil
+        let draft = credentialForm.draft
+        let databasePath = WorkspaceLocator.defaultDatabasePath()
+
+        Task { @MainActor in
+            do {
+                let saved = try await Task.detached(priority: .userInitiated) {
+                    let database = try SkimDatabase(path: databasePath)
+                    try database.ensureSchema()
+                    return try database.saveCredential(draft)
+                }.value
+                credentialForm = CredentialForm(credential: saved)
+                updateSnapshot(with: saved)
+                credentialNotice = Notice(text: "\(saved.accountLabel) 저장 완료", isError: false)
+                loadDashboard()
+            } catch {
+                credentialNotice = Notice(text: localizedError(error), isError: true)
+            }
+            isSavingCredential = false
         }
     }
 
     private func selectCredentialForEditing(_ credential: PlatformCredential) {
         credentialForm = CredentialForm(credential: credential)
         credentialNotice = nil
+        isSavingCredential = false
         DispatchQueue.main.async {
             focusedCredentialField = .accountLabel
         }
@@ -850,6 +921,7 @@ private struct CredentialForm: Equatable {
     var loginIdentifier = ""
     var password = ""
     var originalPlatform: String?
+    var originalAccountLabel: String?
     var originalLoginIdentifier: String?
 
     init() {}
@@ -860,6 +932,7 @@ private struct CredentialForm: Equatable {
         accountLabel = credential.accountLabel
         loginIdentifier = credential.loginIdentifier
         originalPlatform = credential.platform
+        originalAccountLabel = credential.accountLabel
         originalLoginIdentifier = credential.loginIdentifier
     }
 
@@ -874,6 +947,16 @@ private struct CredentialForm: Equatable {
             (!passwordRequired || !password.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 
+    var hasChanges: Bool {
+        if id == nil {
+            return isSaveable
+        }
+        return platform != originalPlatform ||
+            accountLabel != originalAccountLabel ||
+            loginIdentifier != originalLoginIdentifier ||
+            !password.isEmpty
+    }
+
     var draft: PlatformCredentialDraft {
         PlatformCredentialDraft(
             id: id,
@@ -882,6 +965,18 @@ private struct CredentialForm: Equatable {
             loginIdentifier: loginIdentifier,
             password: password.isEmpty ? nil : password
         )
+    }
+
+    func resettingChanges() -> CredentialForm {
+        guard id != nil else {
+            return CredentialForm()
+        }
+        var form = self
+        form.platform = originalPlatform ?? platform
+        form.accountLabel = originalAccountLabel ?? accountLabel
+        form.loginIdentifier = originalLoginIdentifier ?? loginIdentifier
+        form.password = ""
+        return form
     }
 }
 
