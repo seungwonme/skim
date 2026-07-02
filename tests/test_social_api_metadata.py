@@ -224,6 +224,67 @@ class SocialAPIMetadataTests(unittest.TestCase):
         self.assertEqual(post.comments, 5)
         self.assertEqual(post.reposts, 2)
 
+    def test_linkedin_parse_response_keeps_feed_order_and_share_url_id(self):
+        crawler = LinkedInAPICrawler.__new__(LinkedInAPICrawler)
+        first_urn = "urn:li:fsd_update:(urn:li:activity:999,MAIN_FEED,EMPTY,DEFAULT,false)"
+        second_urn = "urn:li:fsd_update:(urn:li:activity:888,MAIN_FEED,EMPTY,DEFAULT,false)"
+        payload = {
+            "data": {
+                "data": {
+                    "feedDashMainFeedByMainFeed": {
+                        "*elements": [first_urn, second_urn],
+                    },
+                },
+            },
+            "included": [
+                {
+                    "$type": "com.linkedin.voyager.dash.feed.Update",
+                    "entityUrn": second_urn,
+                    "metadata": {"backendUrn": "urn:li:activity:888"},
+                    "commentary": {"text": {"text": "Second LinkedIn body"}},
+                    "actor": {"name": {"text": "Second Author"}},
+                    "createdAt": {"time": 1775631600000},
+                    "*socialDetail": "urn:li:socialDetail:888",
+                },
+                {
+                    "$type": "com.linkedin.voyager.dash.feed.Update",
+                    "entityUrn": first_urn,
+                    "metadata": {"backendUrn": "urn:li:activity:999"},
+                    "socialContent": {
+                        "shareUrl": "https://www.linkedin.com/posts/aiden_activity-111-abc"
+                    },
+                    "commentary": {"text": {"text": "First LinkedIn body"}},
+                    "actor": {"name": {"text": "First Author"}},
+                    "createdAt": {"time": 1775631600000},
+                    "*socialDetail": "urn:li:socialDetail:111",
+                },
+                {
+                    "entityUrn": "urn:li:socialDetail:111",
+                    "*totalSocialActivityCounts": "urn:li:counts:111",
+                },
+                {
+                    "entityUrn": "urn:li:counts:111",
+                    "numLikes": 7,
+                    "numComments": 2,
+                    "numShares": 1,
+                    "numImpressions": 50,
+                },
+            ],
+        }
+
+        posts = getattr(crawler, "_parse_response")(payload)
+
+        self.assertEqual([post.external_id for post in posts], ["111", "888"])
+        self.assertEqual(posts[0].author, "First Author")
+        self.assertEqual(
+            posts[0].url,
+            "https://www.linkedin.com/feed/update/urn:li:activity:111/",
+        )
+        self.assertEqual(posts[0].likes, 7)
+        self.assertEqual(posts[0].comments, 2)
+        self.assertEqual(posts[0].reposts, 1)
+        self.assertEqual(posts[0].views, 50)
+
     def test_linkedin_parse_relative_timestamp_supports_accessibility_copy(self):
         crawler = LinkedInAPICrawler.__new__(LinkedInAPICrawler)
         reference_time = datetime(2026, 4, 8, 18, 0, 0, tzinfo=timezone(timedelta(hours=9)))

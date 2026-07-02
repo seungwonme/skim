@@ -1,276 +1,230 @@
 """
 @file linkedin_api.py
-@description LinkedIn GraphQL API 기반 크롤러 (headless 모드)
+@description LinkedIn Voyager API 기반 크롤러
 
-Playwright 세션 쿠키를 사용하여 LinkedIn Voyager GraphQL API를
-page.evaluate(fetch())로 호출합니다. DOM 파싱 없이 피드 데이터를 수집합니다.
-
-주요 기능:
-1. headless 브라우저 + 세션 쿠키로 인증
-2. GraphQL API (voyagerFeedDashMainFeed)로 피드 수집
-3. URN 참조 resolve하여 engagement 데이터 추출
-4. 페이지네이션 지원
-
-@dependencies
-- playwright.async_api: 브라우저 자동화 (세션 + fetch)
-- typer: CLI 출력
+저장된 Playwright 세션 쿠키를 requests 세션으로 옮겨 LinkedIn Voyager feed
+endpoint를 호출합니다. DOM 파싱 없이 normalized payload에서 게시글을 추출합니다.
 """
 
 import json
 import re
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from pathlib import Path
+from typing import Any, List, Optional
 
+import requests
 import typer
-from playwright.async_api import TimeoutError as PlaywrightTimeoutError
-from playwright.async_api import async_playwright
 
 from ...models import Post
 from ...paths import DATA_DIR, SESSIONS_DIR
 
-GRAPHQL_QUERY_ID = "voyagerFeedDashMainFeed.923020905727c01516495a0ac90bb475"
-GRAPHQL_BASE = "/voyager/api/graphql"
+LINKEDIN_BASE_URL = "https://www.linkedin.com"
+VOYAGER_FEED_URL = f"{LINKEDIN_BASE_URL}/voyager/api/feed/updatesV2"
+LINKEDIN_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+)
+REQUIRED_COOKIE_NAMES = {"li_at", "JSESSIONID"}
+REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
 
 
 class LinkedInAPICrawler:
-    """
-    LinkedIn GraphQL API 기반 크롤러
-
-    Playwright의 page.evaluate(fetch())를 사용하여
-    LinkedIn Voyager GraphQL API를 직접 호출합니다.
-    """
+    """LinkedIn Voyager API 기반 크롤러."""
 
     platform = "linkedin"
 
-    def __init__(self, debug_mode: bool = False):
+    def __init__(
+        self,
+        debug_mode: bool = False,
+        session_path: Path = SESSIONS_DIR / "linkedin_session.json",
+        session: Optional[requests.Session] = None,
+    ):
         self.platform_name = "LinkedIn"
         self.debug_mode = debug_mode
-        self.session_path = SESSIONS_DIR / "linkedin_session.json"
+        self.session_path = session_path
+        self.session = session or requests.Session()
+        self.session.headers.update(
+            {
+                "Accept": "application/vnd.linkedin.normalized+json+2.1",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache",
+                "Referer": f"{LINKEDIN_BASE_URL}/feed/",
+                "User-Agent": LINKEDIN_USER_AGENT,
+                "X-Li-Lang": "en_US",
+                "X-Restli-Protocol-Version": "2.0.0",
+            }
+        )
+        self._has_login_session = False
+        self._load_session_cookies()
 
     async def crawl(self, **options) -> List[Post]:
         count = options.get("count", 5)
-        return await self._crawl_impl(count)
+        return self.fetch_feed(count=count)
 
-    async def _crawl_impl(self, count: int) -> List[Post]:
-        """LinkedIn 피드를 GraphQL API로 수집"""
+    def fetch_feed(self, *, count: int) -> List[Post]:
+        """LinkedIn 홈 피드 게시글을 수집합니다."""
         typer.echo(f"[API 모드] LinkedIn 크롤링 시작... (게시글 {count}개)")
 
-        if not self.session_path.exists():
-            typer.echo("❌ 세션 파일이 없습니다. 먼저 로그인하세요:")
+        if not self._has_login_session:
+            typer.echo("❌ 세션 파일이 없거나 LinkedIn 쿠키가 부족합니다. 먼저 로그인하세요:")
             typer.echo("  uv run skim login linkedin")
             return []
 
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=not self.debug_mode,
-            )
-            context = await browser.new_context(
-                storage_state=str(self.session_path),
-            )
-            page = await context.new_page()
-
-            try:
-                # 피드 페이지 로드 (세션 활성화)
-                if not await self._navigate_to_feed(page):
-                    await browser.close()
-                    return []
-
-                # GraphQL API로 피드 수집
-                posts = await self._collect_feed(page, count)
-
-                # 세션 갱신 저장
-                await self._save_session(context)
-
-                return posts
-
-            except Exception as e:
-                typer.echo(f"❌ 크롤링 중 오류: {e}")
-                if self.debug_mode:
-                    import traceback  # pylint: disable=import-outside-toplevel
-
-                    traceback.print_exc()
-                return []
-            finally:
-                await browser.close()
-
-    async def _navigate_to_feed(self, page) -> bool:
-        """피드 페이지로 이동 (세션 검증 + Remember Me 처리)"""
-        try:
-            await page.goto(
-                "https://www.linkedin.com/feed/",
-                wait_until="domcontentloaded",
-                timeout=15000,
-            )
-        except PlaywrightTimeoutError:
-            pass
-
-        await page.wait_for_timeout(3000)
-
-        # Remember Me 페이지 처리
-        current_url = page.url
-        if "/uas/login" in current_url or "/checkpoint/rm" in current_url:
-            typer.echo("🔄 Remember Me 페이지 감지...")
-            profile_btn = page.locator("button.member-profile__details").first
-            try:
-                await profile_btn.wait_for(state="visible", timeout=5000)
-                await profile_btn.click()
-                typer.echo("   ✅ 프로필 클릭")
-                try:
-                    await page.wait_for_url("**/feed/**", timeout=15000)
-                except PlaywrightTimeoutError:
-                    pass
-                await page.wait_for_timeout(3000)
-            except PlaywrightTimeoutError:
-                typer.echo("❌ Remember Me 프로필을 찾을 수 없습니다.")
-                typer.echo("   먼저 로그인하세요: uv run skim login linkedin")
-                return False
-
-        # 로그인 확인
-        if "/feed" not in page.url or "/login" in page.url:
-            typer.echo("❌ 로그인 실패. 먼저 로그인하세요:")
-            typer.echo("  uv run skim login linkedin")
-            return False
-
-        typer.echo("✅ LinkedIn 피드 접근 성공")
-        return True
-
-    async def _collect_feed(self, page, target_count: int) -> List[Post]:
-        """GraphQL API로 피드 게시글 수집 (페이지네이션)"""
-        all_posts: List[Post] = []
-        seen: set[str] = set()  # 중복 제거용 (author+content 해시)
+        posts: List[Post] = []
+        seen: set[str] = set()
         start = 0
-        batch_size = min(target_count, 20)
         max_iterations = 5
 
         for _ in range(max_iterations):
-            if len(all_posts) >= target_count:
+            if len(posts) >= count:
                 break
 
-            remaining = target_count - len(all_posts)
-            count = min(batch_size, remaining + 5)  # 중복 대비 여유분
-
-            if self.debug_mode:
-                typer.echo(f"   📡 API 호출: start={start}, count={count}")
-
-            raw = await self._fetch_graphql(page, start, count)
+            request_count = min(max(count - len(posts) + 5, 1), 100)
+            raw = self._fetch_feed_page(start=start, count=request_count)
             if not raw:
                 break
 
-            posts = self._parse_response(raw)
-            if not posts:
-                if self.debug_mode:
-                    typer.echo("   ⚠️ 게시글 없음 - 종료")
+            page_posts = self._parse_response(raw)
+            if not page_posts:
                 break
 
-            new_count = 0
-            for post in posts:
-                key = f"{post.author}:{post.content[:100]}"
-                if key not in seen:
-                    seen.add(key)
-                    all_posts.append(post)
-                    new_count += 1
+            for post in page_posts:
+                key = post.external_id or f"{post.author}:{post.content[:100]}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                posts.append(post)
+                if len(posts) >= count:
+                    break
 
-            start += count
+            # ponytail: offset paging is enough for small CLI crawls; add cursor paging if needed.
+            start += request_count
 
-            if self.debug_mode:
-                typer.echo(f"   ✅ {new_count}개 추출 (총 {len(all_posts)}개)")
+        typer.echo(f"📊 총 {len(posts)}개의 게시글을 추출했습니다.")
+        return posts[:count]
 
-        typer.echo(f"📊 총 {len(all_posts)}개의 게시글을 추출했습니다.")
-        return all_posts[:target_count]
-
-    async def _fetch_graphql(self, page, start: int, count: int) -> Optional[dict]:
-        """page.evaluate(fetch())로 GraphQL API 호출"""
-        url = (
-            f"{GRAPHQL_BASE}?includeWebMetadata=true"
-            f"&variables=(start:{start},count:{count},sortOrder:RELEVANCE)"
-            f"&queryId={GRAPHQL_QUERY_ID}"
+    def _fetch_feed_page(self, *, start: int, count: int) -> Optional[dict]:
+        """Voyager feed endpoint를 호출합니다."""
+        response = self.session.get(
+            VOYAGER_FEED_URL,
+            params={"count": str(count), "q": "chronFeed", "start": str(start)},
+            allow_redirects=False,
+            timeout=20,
         )
 
-        try:
-            result = await page.evaluate(
-                """async (url) => {
-                // CSRF 토큰을 쿠키에서 추출
-                const csrfMatch = document.cookie.match(/JSESSIONID="?([^;"]+)/);
-                const csrf = csrfMatch ? csrfMatch[1] : '';
-
-                const resp = await fetch(url, {
-                    credentials: 'include',
-                    headers: {
-                        'Accept': 'application/vnd.linkedin.normalized+json+2.1',
-                        'csrf-token': csrf,
-                        'x-restli-protocol-version': '2.0.0',
-                    }
-                });
-                if (!resp.ok) return { error: resp.status };
-                return await resp.json();
-            }""",
-                url,
-            )
-
-            if "error" in result:
-                typer.echo(f"   ❌ API 오류: {result['error']}")
-                return None
-
-            if self.debug_mode:
-                debug_dir = DATA_DIR / "debug" / "linkedin"
-                debug_dir.mkdir(parents=True, exist_ok=True)
-                with open(debug_dir / f"api_response_{start}.json", "w", encoding="utf-8") as f:
-                    json.dump(result, f, indent=2, ensure_ascii=False)
-
-            return result
-
-        except Exception as e:
-            typer.echo(f"   ❌ fetch 오류: {e}")
+        if response.status_code in REDIRECT_STATUS_CODES:
+            typer.echo(f"   ❌ LinkedIn 세션이 redirect 되었습니다: {response.status_code}")
+            return None
+        if response.status_code in {401, 403}:
+            typer.echo(f"   ❌ LinkedIn 인증이 거부되었습니다: {response.status_code}")
+            return None
+        if response.status_code >= 400:
+            typer.echo(f"   ❌ LinkedIn API 오류: {response.status_code}")
             return None
 
+        try:
+            result = response.json()
+        except ValueError:
+            typer.echo("   ❌ LinkedIn API가 JSON이 아닌 응답을 반환했습니다.")
+            return None
+
+        if self.debug_mode:
+            debug_dir = DATA_DIR / "debug" / "linkedin"
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            with open(debug_dir / f"feed_{start}.json", "w", encoding="utf-8") as f:
+                json.dump(result, f, indent=2, ensure_ascii=False)
+
+        return result
+
     def _parse_response(self, data: dict) -> List[Post]:
-        """GraphQL 응답에서 게시글 추출 (URN 참조 resolve)"""
+        """Voyager normalized 응답에서 게시글을 추출합니다."""
         included = data.get("included", [])
-        if not included:
+        if not isinstance(included, list) or not included:
             return []
 
-        # URN 인덱스 구축
-        urn_index = {}
-        for item in included:
-            urn = item.get("entityUrn")
-            if urn:
-                urn_index[urn] = item
+        urn_index = {
+            item.get("entityUrn"): item
+            for item in included
+            if isinstance(item, dict) and item.get("entityUrn")
+        }
 
-        posts = []
-        for item in included:
+        ordered_items = self._ordered_update_items(data, urn_index)
+        if not ordered_items:
+            ordered_items = [item for item in included if self._is_update_item(item)]
+
+        posts: List[Post] = []
+        for item in ordered_items:
             post = self._extract_post(item, urn_index)
             if post:
                 posts.append(post)
-
         return posts
 
+    def _ordered_update_items(self, data: dict, urn_index: dict[str, dict]) -> list[dict]:
+        element_urns = self._find_first_elements(data)
+        if not element_urns:
+            return []
+
+        ordered: list[dict] = []
+        for raw_urn in element_urns:
+            update_urn = self._coerce_update_urn(raw_urn)
+            item = urn_index.get(update_urn)
+            if item and self._is_update_item(item):
+                ordered.append(item)
+        return ordered
+
+    def _find_first_elements(self, node: Any) -> list[Any]:
+        if isinstance(node, dict):
+            elements = node.get("*elements")
+            if isinstance(elements, list) and elements:
+                return elements
+            for value in node.values():
+                found = self._find_first_elements(value)
+                if found:
+                    return found
+        if isinstance(node, list):
+            for item in node:
+                found = self._find_first_elements(item)
+                if found:
+                    return found
+        return []
+
+    @staticmethod
+    def _coerce_update_urn(raw_value: Any) -> str:
+        if isinstance(raw_value, str):
+            return raw_value
+        if isinstance(raw_value, dict):
+            for key in ("*update", "entityUrn", "urn"):
+                value = raw_value.get(key)
+                if isinstance(value, str):
+                    return value
+        return ""
+
+    @staticmethod
+    def _is_update_item(item: Any) -> bool:
+        if not isinstance(item, dict):
+            return False
+        item_type = item.get("$type", "")
+        entity_urn = item.get("entityUrn", "")
+        return (
+            "feed.Update" in item_type
+            or "fsd_update" in entity_urn
+            or (isinstance(item.get("commentary"), dict) and isinstance(item.get("actor"), dict))
+        )
+
     def _extract_post(self, item: dict, urn_index: dict) -> Optional[Post]:
-        """단일 아이템에서 Post 객체 생성"""
-        # commentary에서 텍스트 추출
-        commentary = item.get("commentary")
-        if not isinstance(commentary, dict):
-            return None
-
-        text_obj = commentary.get("text")
-        if not isinstance(text_obj, dict):
-            return None
-
-        content = text_obj.get("text", "")
+        """단일 아이템에서 Post 객체 생성."""
+        content = self._extract_text(item.get("commentary"))
         if len(content) < 10:
             return None
 
-        # 작성자
         actor = item.get("actor", {})
-        author = "Unknown"
-        if isinstance(actor, dict):
-            name_obj = actor.get("name", {})
-            if isinstance(name_obj, dict):
-                author = name_obj.get("text", "Unknown")
+        author = self._extract_text(actor.get("name")) if isinstance(actor, dict) else ""
+        author = author or "Unknown"
 
-        entity_urn = item.get("entityUrn", "")
-        activity_id = self._extract_activity_id(entity_urn)
+        activity_urn = self._extract_activity_urn(item)
+        activity_id = self._extract_activity_id(activity_urn)
 
-        # 타임스탬프
         timestamp = self._coerce_linkedin_timestamp(item.get("createdAt"))
         if not timestamp and isinstance(actor, dict):
             sub_desc = actor.get("subDescription", {})
@@ -279,13 +233,11 @@ class LinkedInAPICrawler:
                     sub_desc.get("accessibilityText", "")
                 ) or self._parse_relative_timestamp(sub_desc.get("text", ""))
 
-        # URL (entityUrn에서 activity ID 추출)
         url = None
-        if activity_id:
-            url = f"https://www.linkedin.com/feed/update/urn:li:activity:{activity_id}/"
+        if activity_urn:
+            url = f"{LINKEDIN_BASE_URL}/feed/update/{activity_urn}/"
 
-        # Engagement (URN 참조 resolve)
-        likes, comments, shares = self._resolve_engagement(item, urn_index)
+        likes, comments, shares, views = self._resolve_engagement(item, urn_index)
 
         return Post(
             platform="linkedin",
@@ -296,15 +248,31 @@ class LinkedInAPICrawler:
             likes=likes,
             comments=comments,
             reposts=shares,
+            views=views,
+            source="unofficial",
             external_id=activity_id,
         )
 
+    def _extract_activity_urn(self, item: dict) -> str:
+        candidates = [
+            self._extract_path(item, "socialContent.shareUrl"),
+            self._extract_path(item, "metadata.backendUrn"),
+            self._extract_path(item, "updateMetadata.urn"),
+            item.get("entityUrn"),
+            item.get("preDashEntityUrn"),
+        ]
+        for candidate in candidates:
+            activity_id = self._extract_activity_id(str(candidate or ""))
+            if activity_id:
+                return f"urn:li:activity:{activity_id}"
+        return ""
+
     @staticmethod
-    def _extract_activity_id(entity_urn: str) -> Optional[str]:
-        """entityUrn에서 activity id를 추출합니다."""
-        match = re.search(r"urn:li:activity:(\d+)", entity_urn or "")
+    def _extract_activity_id(raw_value: str) -> Optional[str]:
+        """문자열에서 LinkedIn activity id를 추출합니다."""
+        match = re.search(r"urn:li:activity:(\d+)|activity-(\d+)", raw_value or "")
         if match:
-            return match.group(1)
+            return match.group(1) or match.group(2)
         return None
 
     def _coerce_linkedin_timestamp(self, raw_value) -> Optional[str]:
@@ -382,26 +350,91 @@ class LinkedInAPICrawler:
 
         return None
 
-    def _resolve_engagement(self, item: dict, urn_index: dict) -> tuple[int, int, int]:
-        """URN 참조를 따라가서 engagement 데이터 추출"""
-        # *socialDetail → *totalSocialActivityCounts
+    def _resolve_engagement(
+        self, item: dict, urn_index: dict
+    ) -> tuple[int, int, int, Optional[int]]:
+        """URN 참조를 따라가서 engagement 데이터 추출."""
         social_urn = item.get("*socialDetail", "")
         social_obj = urn_index.get(social_urn, {})
 
         counts_urn = social_obj.get("*totalSocialActivityCounts", "")
         counts_obj = urn_index.get(counts_urn, {})
 
-        likes = counts_obj.get("numLikes", 0)
-        comments = counts_obj.get("numComments", 0)
-        shares = counts_obj.get("numShares", 0)
+        likes = self._coerce_count(counts_obj.get("numLikes"))
+        comments = self._coerce_count(counts_obj.get("numComments"))
+        shares = self._coerce_count(counts_obj.get("numShares"))
+        views = counts_obj.get("numImpressions")
 
-        return likes, comments, shares
+        return likes, comments, shares, self._coerce_optional_count(views)
 
-    async def _save_session(self, context) -> None:
-        """세션 상태 저장"""
+    @staticmethod
+    def _coerce_count(value: Any) -> int:
         try:
-            state = await context.storage_state()
-            with open(self.session_path, "w", encoding="utf-8") as f:
-                json.dump(state, f, indent=2)
-        except Exception:
-            pass
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    @classmethod
+    def _coerce_optional_count(cls, value: Any) -> Optional[int]:
+        if value in (None, ""):
+            return None
+        return cls._coerce_count(value)
+
+    def _load_session_cookies(self) -> None:
+        """Playwright storage_state의 LinkedIn 쿠키를 requests 세션으로 옮깁니다."""
+        if not self.session_path.exists():
+            return
+
+        storage_state = json.loads(self.session_path.read_text(encoding="utf-8"))
+        cookie_names = set()
+        csrf_token = ""
+        for cookie in storage_state.get("cookies", []):
+            domain = cookie.get("domain", "")
+            if "linkedin.com" not in domain:
+                continue
+
+            name = cookie.get("name", "")
+            value = cookie.get("value", "")
+            if name == "JSESSIONID" and value:
+                csrf_token = value.strip('"')
+            self.session.cookies.set(
+                name,
+                value,
+                domain=domain,
+                path=cookie.get("path", "/"),
+            )
+            if name:
+                cookie_names.add(name)
+
+        self._has_login_session = REQUIRED_COOKIE_NAMES <= cookie_names
+        if csrf_token:
+            self.session.headers["Csrf-Token"] = csrf_token
+
+    def _extract_text(self, raw_value: Any) -> str:
+        if raw_value is None:
+            return ""
+        if isinstance(raw_value, str):
+            return raw_value.strip()
+        if isinstance(raw_value, dict):
+            for key in ("text", "accessibilityText", "title", "value", "string"):
+                text = self._extract_text(raw_value.get(key))
+                if text:
+                    return text
+            for value in raw_value.values():
+                text = self._extract_text(value)
+                if text:
+                    return text
+        if isinstance(raw_value, list):
+            return " ".join(
+                part for part in (self._extract_text(item) for item in raw_value) if part
+            ).strip()
+        return str(raw_value).strip()
+
+    @staticmethod
+    def _extract_path(raw_value: Any, path: str) -> Any:
+        current = raw_value
+        for part in path.split("."):
+            if not isinstance(current, dict) or part not in current:
+                return None
+            current = current[part]
+        return current
