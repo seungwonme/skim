@@ -1,5 +1,11 @@
 # skim Claude Code 플러그인 구현 계획 — Overview
 
+> Current implementation note: the repository now ships the plugin skill at
+> `.claude/skills/skim/SKILL.md` and `.agents/skills/skim/SKILL.md` with `.claude-plugin/plugin.json`. This document is a
+> historical implementation plan; command examples that mention `uv run --from`
+> predate the current uv CLI, where out-of-tree tool execution uses
+> `uv tool run --from ...`.
+
 ## 목표
 
 1. **`skim research` CLI 추가**: 수집된 posts를 topic/날짜/플랫폼 기준으로 필터해 구조화 JSON 반환

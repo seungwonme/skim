@@ -1,5 +1,11 @@
 # Phase 3 — `.claude-plugin/` 구조 + SKILL.md
 
+> Current implementation note: the checked-in plugin uses
+> `.claude/skills/skim/SKILL.md`, `.agents/skills/skim/SKILL.md`, and `.claude-plugin/plugin.json`, matching the current
+> Claude plugin validator. This plan is historical; examples using
+> `.claude-plugin/skills/...` or `uv run --from` are not the active source of
+> truth.
+
 ## 목표
 
 Claude Code에서 `/skim TOPIC` 슬래시 커맨드로 호출 가능한 플러그인 구조를 repo에 추가한다. SKILL.md가 `uv run --from <ref> skim research` 를 호출하고 결과 JSON을 파싱해 사용자에게 리포트 형태로 전달하도록 한다 (7차 리뷰 P3-12: `uvx` 는 본문의 `uv run --from` 통일 규약과 충돌해 제거).

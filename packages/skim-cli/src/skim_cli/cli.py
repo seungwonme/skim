@@ -1,16 +1,27 @@
 """Skim CLI entrypoint."""
 
 import asyncio
+import csv
 import json
+import re
 import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import List, Optional
 
 import typer
 
 from skim_core.crawlers import REGISTRY
 from skim_core.crawlers.auth.cdp import login as cdp_login
-from skim_core.db import finish_run, init_db, save_posts, save_run, update_run_progress
+from skim_core.db import (
+    DB_PATH,
+    finish_run,
+    get_connection,
+    init_db,
+    save_posts,
+    save_run,
+    update_run_progress,
+)
 from skim_core.models import Post
 from skim_core.paths import DATA_DIR
 from skim_core.research.refresh import run_research
@@ -35,6 +46,35 @@ def platform_help(include_all: bool = False) -> str:
     if include_all:
         names = ["all", *names]
     return ", ".join(names)
+
+
+TEXT_PRESENT_SQL = (
+    "COALESCE(NULLIF(content_markdown, ''), NULLIF(content, ''), NULLIF(summary, ''), '')"
+)
+
+
+def _db_or_default(db: Optional[Path]) -> Path:
+    return (db or DB_PATH).expanduser().resolve()
+
+
+def _session_dir_for(db_path: Path) -> Path:
+    return db_path.parent / "sessions"
+
+
+def _cutoff(days: int) -> str:
+    return (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _slug(value: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9._-]+", "-", value.strip().lower()).strip("-")
+    return slug or "skim"
+
+
+def _validate_platform(platform: Optional[str]) -> None:
+    if platform and platform not in REGISTRY:
+        typer.echo(f"알 수 없는 플랫폼: {platform}", err=True)
+        typer.echo(f"지원 플랫폼: {platform_help()}", err=True)
+        raise typer.Exit(2)
 
 
 app = typer.Typer(
@@ -264,6 +304,391 @@ def platforms():
 def version():
     """버전 정보를 출력합니다."""
     typer.echo(f"SNS Crawler v{__version__}")
+
+
+@app.command()
+def doctor(
+    platform: Optional[str] = typer.Option(None, "--platform", "-p", help="특정 플랫폼만 점검"),
+    db: Optional[Path] = typer.Option(None, "--db", help="SQLite DB 경로"),
+    emit: str = typer.Option("summary", "--emit", help="summary|json"),
+):
+    """DB, 수집 run, session 상태를 점검합니다."""
+    _validate_platform(platform)
+    if emit not in {"summary", "json"}:
+        typer.echo("[skim] invalid --emit value. choose from ['json', 'summary']", err=True)
+        raise typer.Exit(2)
+
+    db_path = _db_or_default(db)
+    session_dir = _session_dir_for(db_path)
+    report: dict = {
+        "db": str(db_path),
+        "db_exists": db_path.exists(),
+        "platform": platform,
+        "platforms": [],
+        "sessions": [],
+        "runs": [],
+        "warnings": [],
+    }
+
+    for name in sorted(REGISTRY):
+        session_path = session_dir / f"{name}_session.json"
+        if platform and name != platform:
+            continue
+        report["sessions"].append(
+            {
+                "platform": name,
+                "exists": session_path.exists(),
+                "path": str(session_path),
+            }
+        )
+
+    if not db_path.exists():
+        report["warnings"].append("missing database; run `uv run skim crawl all --days 1`")
+        _emit_doctor(report, emit)
+        return
+
+    try:
+        conn = get_connection(db_path)
+        platform_filter = "WHERE platform = ?" if platform else ""
+        params = [platform] if platform else []
+        report["platforms"] = [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT platform, COUNT(*) AS total,
+                       SUM(CASE WHEN {TEXT_PRESENT_SQL} != '' THEN 1 ELSE 0 END) AS with_text,
+                       SUM(CASE WHEN {TEXT_PRESENT_SQL} = '' THEN 1 ELSE 0 END) AS missing_text,
+                       MAX(crawled_at) AS latest_crawl
+                FROM posts
+                {platform_filter}
+                GROUP BY platform
+                ORDER BY total DESC
+                """,
+                params,
+            ).fetchall()
+        ]
+        report["runs"] = [dict(row) for row in conn.execute("""
+                SELECT id, status, current_platform, started_at, finished_at, summary
+                FROM runs
+                ORDER BY id DESC
+                LIMIT 10
+                """).fetchall()]
+        conn.close()
+    except Exception as exc:  # pragma: no cover - defensive report path
+        report["warnings"].append(f"database check failed: {exc}")
+
+    if platform and not report["platforms"]:
+        report["warnings"].append(f"no posts found for {platform}")
+    if any(run["status"] in {"failed", "interrupted", "running"} for run in report["runs"][:3]):
+        report["warnings"].append("recent runs need attention")
+    _emit_doctor(report, emit)
+
+
+def _emit_doctor(report: dict, emit: str) -> None:
+    if emit == "json":
+        typer.echo(json.dumps(report, ensure_ascii=False, indent=2))
+        return
+
+    typer.echo(f"db: {report['db']} ({'ok' if report['db_exists'] else 'missing'})")
+    if report["platforms"]:
+        typer.echo("platforms:")
+        for row in report["platforms"]:
+            typer.echo(
+                f"  {row['platform']}: total={row['total']} "
+                f"with_text={row['with_text']} missing_text={row['missing_text']} "
+                f"latest={row['latest_crawl']}"
+            )
+    if report["sessions"]:
+        present = [s["platform"] for s in report["sessions"] if s["exists"]]
+        typer.echo(f"sessions: {', '.join(present) if present else 'none'}")
+    if report["runs"]:
+        typer.echo("recent runs:")
+        for row in report["runs"][:5]:
+            typer.echo(
+                f"  #{row['id']} {row['status']} current={row['current_platform']} "
+                f"started={row['started_at']} summary={row['summary']}"
+            )
+    for warning in report["warnings"]:
+        typer.echo(f"warning: {warning}")
+
+
+@app.command()
+def coverage(
+    days: int = typer.Option(7, "--days", help="최근 N일"),
+    platform: Optional[str] = typer.Option(None, "--platform", "-p", help="특정 플랫폼만 집계"),
+    db: Optional[Path] = typer.Option(None, "--db", help="SQLite DB 경로"),
+    output: Optional[Path] = typer.Option(None, "--output", "-o", help="CSV 출력 경로"),
+    emit: str = typer.Option("summary", "--emit", help="summary|json|csv"),
+):
+    """플랫폼별 수집량과 본문 coverage를 집계합니다."""
+    _validate_platform(platform)
+    if emit not in {"summary", "json", "csv"}:
+        typer.echo("[skim] invalid --emit value. choose from ['csv', 'json', 'summary']", err=True)
+        raise typer.Exit(2)
+
+    db_path = _db_or_default(db)
+    if not db_path.exists():
+        typer.echo(f"missing database: {db_path}", err=True)
+        raise typer.Exit(1)
+
+    where = ["crawled_at >= ?"]
+    params: list = [_cutoff(days)]
+    if platform:
+        where.append("platform = ?")
+        params.append(platform)
+    conn = get_connection(db_path)
+    try:
+        rows = [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT platform, COUNT(*) AS total,
+                       SUM(CASE WHEN {TEXT_PRESENT_SQL} != '' THEN 1 ELSE 0 END) AS with_text,
+                       SUM(CASE WHEN {TEXT_PRESENT_SQL} = '' THEN 1 ELSE 0 END) AS missing_text,
+                       MIN(crawled_at) AS first_crawl,
+                       MAX(crawled_at) AS last_crawl
+                FROM posts
+                WHERE {' AND '.join(where)}
+                GROUP BY platform
+                ORDER BY total DESC
+                """,
+                params,
+            ).fetchall()
+        ]
+    finally:
+        conn.close()
+
+    if output:
+        _write_csv(output, rows)
+        typer.echo(f"coverage csv: {output}")
+        return
+    if emit == "json":
+        typer.echo(
+            json.dumps(
+                {"days": days, "platform": platform, "coverage": rows}, ensure_ascii=False, indent=2
+            )
+        )
+    elif emit == "csv":
+        _print_csv(rows)
+    else:
+        for row in rows:
+            typer.echo(
+                f"{row['platform']}: total={row['total']} with_text={row['with_text']} "
+                f"missing_text={row['missing_text']} last={row['last_crawl']}"
+            )
+
+
+@app.command("refresh-plan")
+def refresh_plan(
+    days: int = typer.Option(1, "--days", help="fresh로 볼 최근 N일"),
+    platform: Optional[str] = typer.Option(None, "--platform", "-p", help="특정 플랫폼만 계획"),
+    db: Optional[Path] = typer.Option(None, "--db", help="SQLite DB 경로"),
+    emit: str = typer.Option("summary", "--emit", help="summary|json"),
+):
+    """필요한 crawl/login 명령을 실행 없이 제안합니다."""
+    _validate_platform(platform)
+    if emit not in {"summary", "json"}:
+        typer.echo("[skim] invalid --emit value. choose from ['json', 'summary']", err=True)
+        raise typer.Exit(2)
+
+    db_path = _db_or_default(db)
+    targets = [platform] if platform else list(REGISTRY)
+    latest_by_platform: dict[str, str] = {}
+    if db_path.exists():
+        conn = get_connection(db_path)
+        try:
+            latest_by_platform = {row["platform"]: row["latest_crawl"] for row in conn.execute("""
+                    SELECT platform, MAX(crawled_at) AS latest_crawl
+                    FROM posts
+                    GROUP BY platform
+                    """).fetchall()}
+        finally:
+            conn.close()
+
+    cutoff = _cutoff(days)
+    session_dir = _session_dir_for(db_path)
+    stale = [p for p in targets if (latest_by_platform.get(p) or "") < cutoff]
+    missing_sessions = [
+        p for p in stale if p in SNS_PLATFORMS and not (session_dir / f"{p}_session.json").exists()
+    ]
+    crawlable = [p for p in stale if p not in missing_sessions]
+    plan = {
+        "db": str(db_path),
+        "days": days,
+        "stale_platforms": stale,
+        "missing_sessions": missing_sessions,
+        "commands": [],
+    }
+    if crawlable:
+        plan["commands"].append(f"uv run skim crawl {' '.join(crawlable)} --days {days}")
+    for name in missing_sessions:
+        plan["commands"].append(f"uv run skim login {name}")
+
+    if emit == "json":
+        typer.echo(json.dumps(plan, ensure_ascii=False, indent=2))
+        return
+    if not stale:
+        typer.echo("fresh: no crawl needed")
+        return
+    typer.echo(f"stale: {', '.join(stale)}")
+    if missing_sessions:
+        typer.echo(f"missing sessions: {', '.join(missing_sessions)}")
+    for command in plan["commands"]:
+        typer.echo(command)
+
+
+@app.command()
+def bundle(
+    topic: Optional[str] = typer.Argument(
+        None, help="선택 topic. 없으면 최근 source inventory만 생성"
+    ),
+    days: int = typer.Option(7, "--days", help="최근 N일"),
+    sources: str = typer.Option("all", "--sources", help="쉼표 구분 플랫폼, 또는 'all'"),
+    limit: int = typer.Option(50, "--limit", help="플랫폼별 최대 반환 수"),
+    db: Optional[Path] = typer.Option(None, "--db", help="SQLite DB 경로"),
+    output_dir: Optional[Path] = typer.Option(None, "--output-dir", "-o", help="bundle 디렉터리"),
+):
+    """research/source-inventory handoff bundle을 생성합니다."""
+    db_path = _db_or_default(db)
+    if not db_path.exists():
+        typer.echo(f"missing database: {db_path}", err=True)
+        raise typer.Exit(1)
+
+    source_list = [s.strip() for s in sources.split(",") if s.strip()]
+    explicit_sources = source_list != ["all"]
+    if explicit_sources:
+        unknown = [p for p in source_list if p not in REGISTRY]
+        if unknown:
+            typer.echo(f"[skim] unknown sources: {unknown}", err=True)
+            raise typer.Exit(2)
+    platforms = source_list if explicit_sources else None
+
+    slug = _slug(topic or "inventory")
+    bundle_dir = output_dir or Path("/tmp/skim") / f"{datetime.now().strftime('%Y%m%d')}-{slug}"
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+
+    inventory = _recent_inventory(db_path, days, platforms)
+    inventory_path = bundle_dir / "source-inventory.tsv"
+    _write_tsv(inventory_path, inventory)
+
+    results_path = bundle_dir / "results.json"
+    summary_path = bundle_dir / "summary.md"
+    proof_path = bundle_dir / "proof.txt"
+
+    if topic:
+        since_utc_iso = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        posts_raw, stats, warnings = search_posts(
+            topic, since_utc_iso, platforms, limit, db_path=db_path
+        )
+        response = build_response(
+            topic=topic,
+            tokens=[t.lower() for t in topic.split() if t.strip()],
+            date_range={"from": since_utc_iso, "to": utc_now_iso()},
+            sources_requested=source_list,
+            posts=posts_raw,
+            search_stats=stats,
+            days_requested=days,
+            warnings=warnings,
+        )
+    else:
+        response = {
+            "topic": None,
+            "days": days,
+            "sources_requested": source_list,
+            "posts": [],
+            "stats": {"total": len(inventory)},
+            "warnings": [],
+        }
+    results_path.write_text(json.dumps(response, ensure_ascii=False, indent=2), encoding="utf-8")
+    summary_path.write_text(_bundle_summary(response, inventory_path), encoding="utf-8")
+    proof_path.write_text(
+        "\n".join(
+            [
+                f"generated_at={datetime.now(timezone.utc).isoformat()}",
+                f"db={db_path}",
+                f"topic={topic or ''}",
+                f"days={days}",
+                f"sources={sources}",
+                f"source_inventory={inventory_path}",
+                f"results={results_path}",
+                f"summary={summary_path}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    typer.echo(f"bundle: {bundle_dir}")
+
+
+def _recent_inventory(db_path: Path, days: int, platforms: Optional[list[str]]) -> list[dict]:
+    where = ["crawled_at >= ?"]
+    params: list = [_cutoff(days)]
+    if platforms:
+        where.append(f"platform IN ({','.join('?' * len(platforms))})")
+        params.extend(platforms)
+    conn = get_connection(db_path)
+    try:
+        return [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT printf('%s:%s', platform, id) AS source_id,
+                       platform, COALESCE(title, '') AS title,
+                       COALESCE(author, '') AS author,
+                       COALESCE(url, '') AS url,
+                       crawled_at
+                FROM posts
+                WHERE {' AND '.join(where)}
+                ORDER BY crawled_at DESC, platform, id DESC
+                """,
+                params,
+            ).fetchall()
+        ]
+    finally:
+        conn.close()
+
+
+def _write_csv(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=list(rows[0].keys()) if rows else ["platform"])
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _print_csv(rows: list[dict]) -> None:
+    writer = csv.DictWriter(sys.stdout, fieldnames=list(rows[0].keys()) if rows else ["platform"])
+    writer.writeheader()
+    writer.writerows(rows)
+
+
+def _write_tsv(path: Path, rows: list[dict]) -> None:
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(
+            fh,
+            fieldnames=(
+                list(rows[0].keys())
+                if rows
+                else ["source_id", "platform", "title", "author", "url", "crawled_at"]
+            ),
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _bundle_summary(response: dict, inventory_path: Path) -> str:
+    stats = response.get("stats", {})
+    lines = [
+        "# Skim Bundle",
+        "",
+        f"- topic: {response.get('topic') or '(inventory)'}",
+        f"- total results: {stats.get('total', 0)}",
+        f"- source inventory: {inventory_path}",
+    ]
+    if response.get("warnings"):
+        lines.append(f"- warnings: {', '.join(response['warnings'])}")
+    return "\n".join(lines) + "\n"
 
 
 VALID_REFRESH_MODES = {"auto", "never", "force"}

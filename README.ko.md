@@ -81,6 +81,26 @@ uv run skim research "AI video" --days 7 --emit summary
 uv run skim research "vector database" --sources hackernews,arxiv --emit json
 ```
 
+로컬 데이터 점검과 bundle 생성:
+
+```bash
+uv run skim doctor
+uv run skim doctor --platform reddit
+uv run skim refresh-plan --days 1
+uv run skim coverage --days 7 --emit json
+uv run skim bundle "AI video" --days 7
+```
+
+## Agent Skill
+
+이 repository에는 Claude/agent skill이 `.claude/skills/skim/SKILL.md`와 `.agents/skills/skim/SKILL.md`에 포함되어 있습니다. 에이전트가 Skim checkout에서 상태 확인, source refresh, local research, coverage 점검, crawler triage, `/tmp/skim/...` source bundle 생성을 수행할 때 사용합니다.
+
+```bash
+claude plugin validate .
+python3 ~/.agents/skills/shared/skill-manager/scripts/quick_validate.py .claude/skills/skim
+python3 ~/.agents/skills/shared/skill-manager/scripts/quick_validate.py .agents/skills/skim
+```
+
 세션 기반 소스 로그인:
 
 ```bash

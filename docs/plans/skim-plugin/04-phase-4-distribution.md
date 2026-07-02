@@ -1,5 +1,9 @@
 # Phase 4 — `sync-plugin.sh` + 배포 타겟
 
+> Current implementation note: the active skill is `.claude/skills/skim/SKILL.md`.
+> Out-of-tree execution should use `uv tool run --from ...`, not the older
+> `uv run --from ...` examples below.
+
 ## 목표
 
 로컬 개발 → 여러 호스트(Claude Code 플러그인 캐시, `~/.agents`, `~/.codex`) 동기화 + git-install 기반 설치를 자동화한다. PyPI 배포는 v1 이후로 미룸.

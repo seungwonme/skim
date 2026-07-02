@@ -81,6 +81,26 @@ uv run skim research "AI video" --days 7 --emit summary
 uv run skim research "vector database" --sources hackernews,arxiv --emit json
 ```
 
+Inspect and package local data:
+
+```bash
+uv run skim doctor
+uv run skim doctor --platform reddit
+uv run skim refresh-plan --days 1
+uv run skim coverage --days 7 --emit json
+uv run skim bundle "AI video" --days 7
+```
+
+## Agent Skill
+
+This repository includes Claude/agent skills at `.claude/skills/skim/SKILL.md` and `.agents/skills/skim/SKILL.md`. They help an agent inspect Skim health, refresh sources, run local research, check coverage, triage crawler issues, and prepare `/tmp/skim/...` source bundles from a Skim checkout.
+
+```bash
+claude plugin validate .
+python3 ~/.agents/skills/shared/skill-manager/scripts/quick_validate.py .claude/skills/skim
+python3 ~/.agents/skills/shared/skill-manager/scripts/quick_validate.py .agents/skills/skim
+```
+
 Login for session-based sources:
 
 ```bash
