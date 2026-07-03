@@ -51,6 +51,7 @@ class HuggingFaceCrawler:
                     "author": authors,
                     "published": published,
                     "summary": re.sub(r"\s+", " ", p.get("summary", "")).strip()[:500],
+                    "abstract": re.sub(r"\s+", " ", p.get("summary", "")).strip(),
                     "thumbnail": p.get("thumbnail", ""),
                     "num_comments": p.get("numComments", 0),
                 }
@@ -64,11 +65,17 @@ class HuggingFaceCrawler:
         return [self._item_to_post(item) for item in items]
 
     def _item_to_post(self, item: dict) -> Post:
+        extras = {
+            key: value
+            for key, value in item.items()
+            if key in ("enrichment_method", "enrichment_error")
+            and value is not None
+        }
         return Post(
             platform=item.get("platform", self.platform),
             author=item.get("author", ""),
             title=item.get("title", ""),
-            content=item.get("title", ""),
+            content="",
             timestamp=item.get("published", ""),
             url=item.get("url", ""),
             summary=item.get("summary", ""),
@@ -76,4 +83,5 @@ class HuggingFaceCrawler:
             word_count=item.get("word_count"),
             thumbnail=item.get("thumbnail", ""),
             num_comments=item.get("num_comments", 0),
+            **extras,
         )

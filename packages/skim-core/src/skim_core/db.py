@@ -20,6 +20,9 @@ from .paths import DATA_DIR
 
 DB_PATH = DATA_DIR / "skim.db"
 
+# API형 플랫폼은 본문이 content_markdown이 아니라 content에 담긴다 (word_count 정규화용).
+_API_BODY_PLATFORMS = {"linkedin", "threads", "x", "reddit"}
+
 SCHEMA = """\
 CREATE TABLE IF NOT EXISTS posts (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -169,6 +172,46 @@ def init_db(db_path: Optional[Path] = None) -> None:
     conn.close()
 
 
+def migrate_canonical_body(db_path: Optional[Path] = None) -> dict:
+    """기존 데이터를 정본 본문 모델로 이행한다 (일회성, 멱등).
+
+    1. API형(linkedin/threads/x/reddit): 본문이 content에만 있던 과거 행을
+       content_markdown으로 승격하고 word_count를 채운다.
+    2. Feed형: content에 제목이 중복 저장된 과거 행에서 content를 비운다
+       (제목은 title, 본문은 content_markdown에 있으므로).
+
+    Returns: 변경 건수 요약 dict.
+    """
+    conn = get_connection(db_path)
+    api_list = ",".join(f"'{p}'" for p in sorted(_API_BODY_PLATFORMS))
+    try:
+        promoted = 0
+        rows = conn.execute(
+            f"""SELECT id, content FROM posts
+                WHERE platform IN ({api_list})
+                  AND (content_markdown IS NULL OR TRIM(content_markdown) = '')
+                  AND content IS NOT NULL AND TRIM(content) != ''"""
+        ).fetchall()
+        for row_id, content in rows:
+            body = content.strip()
+            conn.execute(
+                "UPDATE posts SET content_markdown = ?, "
+                "word_count = COALESCE(NULLIF(word_count, 0), ?) WHERE id = ?",
+                (body, len(body.split()), row_id),
+            )
+            promoted += 1
+
+        cleared = conn.execute(
+            f"""UPDATE posts SET content = ''
+                WHERE platform NOT IN ({api_list})
+                  AND content IS NOT NULL AND content != '' AND content = title"""
+        ).rowcount
+        conn.commit()
+        return {"api_promoted": promoted, "feed_content_cleared": cleared}
+    finally:
+        conn.close()
+
+
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
     """SQLite ADD COLUMN IF NOT EXISTS 대체 (3.43 까지도 미지원).
 
@@ -272,6 +315,22 @@ def save_posts(
     saved = 0
     for post in posts:
         data = post.model_dump() if hasattr(post, "model_dump") else post
+
+        # 본문 정본화: API형 플랫폼은 본문이 content에 오므로 content_markdown으로 승격한다.
+        # 이렇게 하면 content_markdown이 전 플랫폼 공통 본문 필드가 된다 (Feed형은 이미 그렇다).
+        if data.get("platform") in _API_BODY_PLATFORMS and not (
+            data.get("content_markdown") or ""
+        ).strip():
+            body = (data.get("content") or "").strip()
+            if body:
+                data["content_markdown"] = body
+
+        # word_count 정규화: 미계산이면 정본 본문(content_markdown)에서 센다.
+        if not data.get("word_count"):
+            body = (data.get("content_markdown") or "").strip()
+            if body:
+                data["word_count"] = len(body.split())
+
         # extra 필드: Post 모델의 extra="allow"로 들어온 추가 필드
         known_fields = {
             "platform",

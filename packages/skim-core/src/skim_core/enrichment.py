@@ -20,6 +20,11 @@ try:
 except ImportError:  # pragma: no cover — optional dependency
     trafilatura = None  # type: ignore[assignment]
 
+try:
+    import fitz  # PyMuPDF  # pylint: disable=import-error
+except ImportError:  # pragma: no cover — optional dependency
+    fitz = None  # type: ignore[assignment]
+
 from .paths import workspace_root
 
 SRT_TO_TXT = str(workspace_root() / "scripts" / "srt_to_txt.sh")
@@ -554,9 +559,15 @@ def enrich_with_content(items: List[dict]) -> List[dict]:
                         item["enrichment_error"] = error
             else:
                 data = defuddle(url)
-        elif item["platform"].startswith("ailabs") or item["platform"].startswith("blogs"):
+        elif (
+            item["platform"].startswith("ailabs")
+            or item["platform"].startswith("blogs")
+            or item["platform"] == "producthunt"
+        ):
             # ailabs/blogs: trafilatura 기반 파이썬 본문 추출 (defuddle hang 회피)
-            data, method, error = extract_article_content(url, item.get("title", ""))
+            # producthunt: /products SPA(403) 대신 제품 외부 사이트 리다이렉트를 추출 대상으로 사용
+            target_url = item.get("enrich_url") or url
+            data, method, error = extract_article_content(target_url, item.get("title", ""))
             if error:
                 item["enrichment_error"] = error
                 print(f"    [!] enrichment 경고: {error}")
@@ -584,6 +595,51 @@ def enrich_with_content(items: List[dict]) -> List[dict]:
     extracted = sum(1 for it in targets if it.get("word_count", 0) > 0)
     print(f"  -> {extracted}/{len(targets)}개 콘텐츠 추출 성공")
     return items
+
+
+def _paper_pdf_url(url: str) -> Optional[str]:
+    """논문 URL에서 arXiv PDF URL을 유도. HTML 버전이 없어도 PDF는 대개 존재한다."""
+    if "arxiv.org/abs/" in url:
+        return "https://arxiv.org/pdf/" + url.split("/abs/")[-1]
+    if "huggingface.co/papers/" in url:
+        return "https://arxiv.org/pdf/" + url.split("/papers/")[-1]
+    return None
+
+
+def _pdf_page_text(page) -> str:
+    """PDF 한 페이지 텍스트. 2단 레이아웃을 고려해 좌측 컬럼을 먼저, 우측을 나중에 읽는다."""
+    mid = page.rect.width / 2
+    blocks = [b for b in page.get_text("blocks") if b[6] == 0 and b[4].strip()]
+    left = sorted((b for b in blocks if b[0] < mid), key=lambda b: b[1])
+    right = sorted((b for b in blocks if b[0] >= mid), key=lambda b: b[1])
+    return "\n".join(b[4].strip() for b in (left + right))
+
+
+def extract_pdf_text(pdf_url: str, timeout: int = 30, min_words: int = 100) -> Optional[dict]:
+    """arXiv PDF를 내려받아 본문 텍스트를 추출 (2단 레이아웃 대응)."""
+    if fitz is None:
+        return None
+    try:
+        resp = requests.get(pdf_url, headers=_UA_HEADERS, timeout=timeout)
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        print(f"    [!] PDF fetch 실패 ({pdf_url[:60]}...): {exc}")
+        return None
+    try:
+        doc = fitz.open(stream=resp.content, filetype="pdf")
+    except Exception as exc:  # pylint: disable=broad-except
+        print(f"    [!] PDF 파싱 실패: {exc}")
+        return None
+    try:
+        pages = [_pdf_page_text(doc.load_page(i)) for i in range(doc.page_count)]
+    finally:
+        doc.close()
+
+    text = re.sub(r"[ \t]+", " ", "\n".join(pages)).strip()
+    words = len(text.split())
+    if words < min_words:
+        return None
+    return {"content_markdown": text, "word_count": words}
 
 
 def enrich_papers_with_content(items: List[dict]) -> List[dict]:
@@ -616,10 +672,33 @@ def enrich_papers_with_content(items: List[dict]) -> List[dict]:
             item["word_count"] = data["word_count"]
             print(f"    -> {data['word_count']} words")
         else:
-            item["content_markdown"] = ""
-            item["word_count"] = 0
-            print("    -> HTML 버전 없음 (abstract만 저장)")
+            # HTML 버전이 없으면(대개 404) PDF 전문을 추출한다. PDF는 전문이라 확정 처리한다.
+            pdf_url = _paper_pdf_url(url)
+            pdf_data = extract_pdf_text(pdf_url) if pdf_url else None
+            if pdf_data:
+                item["content_markdown"] = pdf_data["content_markdown"]
+                item["word_count"] = pdf_data["word_count"]
+                item["enrichment_method"] = "pdf"
+                print(f"    -> HTML 없음, PDF 추출 ({pdf_data['word_count']} words)")
+            else:
+                # PDF도 실패하면 abstract를 폴백으로 채우고 enrichment_method=failed 마커를 단다.
+                # 다음 크롤에서 HTML/PDF가 생기면 upsert가 덮어쓴다.
+                abstract = (item.get("abstract") or item.get("summary", "")).strip()
+                if abstract:
+                    item["content_markdown"] = abstract
+                    item["word_count"] = len(abstract.split())
+                    item["enrichment_method"] = "failed"
+                    print(f"    -> HTML/PDF 없음, abstract 폴백 ({item['word_count']} words)")
+                else:
+                    item["content_markdown"] = ""
+                    item["word_count"] = 0
+                    item["enrichment_method"] = "failed"
+                    print("    -> HTML/PDF/abstract 모두 없음")
 
-    extracted = sum(1 for it in targets if it.get("word_count", 0) > 0)
-    print(f"  -> {extracted}/{len(targets)}개 전문 추출 성공")
+    html_n = sum(1 for it in targets if it.get("enrichment_method") is None and it.get("word_count", 0) > 0)
+    pdf_n = sum(1 for it in targets if it.get("enrichment_method") == "pdf")
+    abstract_n = sum(
+        1 for it in targets if it.get("enrichment_method") == "failed" and it.get("word_count", 0) > 0
+    )
+    print(f"  -> HTML {html_n}개, PDF {pdf_n}개, abstract 폴백 {abstract_n}개 / 총 {len(targets)}개")
     return items

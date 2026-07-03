@@ -59,11 +59,18 @@ def fetch_feed(url: str, source_name: str, since: datetime, quiet: bool = False)
         if not is_within_range(entry_dt, since):
             continue
 
+        content_html = ""
+        if entry.get("content"):
+            content_html = entry["content"][0].get("value", "")
+        if not content_html:
+            content_html = entry.get("summary", "")
+
         results.append(
             {
                 "platform": source_name,
                 "title": entry.get("title", ""),
                 "url": entry.get("link", ""),
+                "content_html": content_html,
                 "author": (
                     entry.get("author", "")
                     or (

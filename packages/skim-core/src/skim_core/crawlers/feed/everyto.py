@@ -18,7 +18,7 @@ def _item_to_post(item: dict) -> Post:
         platform="every.to",
         author=item.get("author", ""),
         title=item.get("title", ""),
-        content=item.get("title", ""),
+        content="",
         timestamp=item.get("published", ""),
         url=item.get("url", ""),
         summary=item.get("summary", ""),

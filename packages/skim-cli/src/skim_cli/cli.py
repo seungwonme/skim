@@ -18,6 +18,7 @@ from skim_core.db import (
     finish_run,
     get_connection,
     init_db,
+    migrate_canonical_body,
     save_posts,
     save_run,
     update_run_progress,
@@ -309,6 +310,16 @@ def platforms():
 def version():
     """버전 정보를 출력합니다."""
     typer.echo(f"SNS Crawler v{__version__}")
+
+
+@app.command()
+def migrate(db: Optional[Path] = typer.Option(None, "--db", help="SQLite DB 경로")):
+    """기존 데이터를 정본 본문 모델로 이행합니다 (content_markdown 통일). 멱등."""
+    result = migrate_canonical_body(db)
+    typer.echo(
+        f"API 본문 승격: {result['api_promoted']}건, "
+        f"Feed content 정리: {result['feed_content_cleared']}건"
+    )
 
 
 @app.command()
