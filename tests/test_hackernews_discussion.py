@@ -119,8 +119,15 @@ class HNDiscussionTests(unittest.TestCase):
         self.assertIn("기사 본문", posts[0].content_markdown)
         self.assertIn("## Hacker News 댓글", posts[0].content_markdown)
         self.assertEqual(posts[0].likes, 10)
+        # 정본 링크는 HN 토론 페이지, 원문 URL은 extra.original_url로 보존된다.
+        self.assertEqual(posts[0].url, "https://news.ycombinator.com/item?id=100")
+        self.assertEqual(
+            posts[0].model_dump().get("original_url"), "https://example.com/article"
+        )
         # Ask HN: 링크 원문 없이 스토리 텍스트 + 댓글로 채워진다.
         self.assertTrue(posts[1].content_markdown.startswith("질문 본문"))
+        self.assertEqual(posts[1].url, "https://news.ycombinator.com/item?id=101")
+        self.assertIsNone(posts[1].model_dump().get("original_url"))
 
     def test_crawl_no_content_skips_everything(self):
         crawler = HackerNewsCrawler()

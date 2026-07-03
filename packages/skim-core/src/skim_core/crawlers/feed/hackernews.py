@@ -163,10 +163,20 @@ class HackerNewsCrawler:
         return match.group(1) if match else None
 
     def _item_to_post(self, item: dict) -> Post:
+        story_id = self._story_id(item)
+        url = item.get("url", "")
+        # 정본 링크는 HN 토론 페이지. 링크 글의 원문 URL은 extra.original_url로 보존한다.
+        if story_id:
+            hn_url = f"https://news.ycombinator.com/item?id={story_id}"
+            if url and url != hn_url:
+                item["original_url"] = url
+            url = hn_url
         extras = {
             key: value
             for key, value in item.items()
-            if key in ("enrichment_method", "enrichment_error", "image", "description") and value
+            if key
+            in ("enrichment_method", "enrichment_error", "image", "description", "original_url")
+            and value
         }
         return Post(
             platform=item.get("platform", self.platform),
@@ -174,12 +184,12 @@ class HackerNewsCrawler:
             title=item.get("title", ""),
             content="",
             timestamp=item.get("published", ""),
-            url=item.get("url", ""),
+            url=url,
             likes=item.get("likes"),
             comments=item.get("num_comments"),
             summary=item.get("summary", ""),
             content_markdown=item.get("content_markdown"),
             word_count=item.get("word_count"),
-            external_id=self._story_id(item),
+            external_id=story_id,
             **extras,
         )
