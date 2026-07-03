@@ -38,6 +38,10 @@ uv run skim crawl hackernews geeknews --days 1 --no-content
 uv run skim crawl reddit --count 10
 uv run skim crawl reddit --subreddit python --sort hot --count 10
 
+# YouTube 히스토리 (채널 과거 영상 목록 백필 + 개별 전사)
+uv run skim youtube-history --channel LangChain --years 1
+uv run skim youtube-transcribe <video-url-or-id>
+
 # 기타
 uv run skim platforms           # 지원 플랫폼 목록
 uv run skim login threads       # CDP 로그인
@@ -81,7 +85,7 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
 
 - `posts.content_markdown`은 **추출이 완료된 정본 본문**이다. 이 DB를 읽는 소비자(AI, digest, 데스크톱 앱, research)는 재추출 절차 없이 그대로 사용한다고 가정한다.
 - 따라서 추출 완결성은 크롤러의 책임이다. 저장 시점에 링크 원문 본문, 플랫폼 자체 본문(Ask/Show HN 텍스트, GeekNews 한국어 요약), 토론(HN 상위 댓글)까지 채워야 한다. "링크만 저장"은 계약 위반이다.
-- 예외는 `--no-content` 명시 실행뿐이며, 그 행은 다음 크롤 upsert로 본문이 채워질 때까지 미완성으로 간주한다.
+- 예외는 `--no-content` 명시 실행과 `youtube-history` 백필 행(임베드용 목록, 자막은 사용자가 요청할 때 `youtube-transcribe`로 채움)뿐이다.
 - 크롤러가 본문에 합성하는 섹션 라벨은 항상 영어로 쓴다 (예: `## Hacker News Comments`, `## Original Article`). 가용한 메타데이터(작성자, 작성시각, 점수)는 텍스트에 함께 표기한다.
 
 ### Crawler 유형과 패턴

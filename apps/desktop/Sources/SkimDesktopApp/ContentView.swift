@@ -17,6 +17,11 @@ struct ContentView: View {
     @State private var sortOrder = SortOrder.newest
     @State private var showManager = false
     @State private var managerTab = ManagerTab.sources
+    @State private var sourceFilter: String?
+    @State private var channelPosts: [DashboardPost] = []
+    @State private var loadedYears: [String: Int] = [:]
+    @State private var channelBusyMessage: String?
+    @State private var transcribingPostID: DashboardPost.ID?
     @State private var credentialForm = CredentialForm()
     @State private var credentialNotice: Notice?
     @State private var pendingDeleteCredential: PlatformCredential?
@@ -24,7 +29,7 @@ struct ContentView: View {
     @FocusState private var focusedCredentialField: CredentialField?
 
     private var filteredPosts: [DashboardPost] {
-        snapshot.posts.filter { post in
+        (sourceFilter != nil ? channelPosts : snapshot.posts).filter { post in
             let platformMatches = platformFilter == nil || post.platform == platformFilter
             let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             guard platformMatches, !query.isEmpty else {
@@ -115,6 +120,9 @@ struct ContentView: View {
                     platformRow(name: nil, title: "전체", count: snapshot.posts.count)
                     ForEach(platformCounts, id: \.name) { entry in
                         platformRow(name: entry.name, title: entry.name, count: entry.count)
+                        if entry.name == "youtube", platformFilter == "youtube" {
+                            youtubeChannelRows
+                        }
                     }
                 }
             }
@@ -146,10 +154,42 @@ struct ContentView: View {
         .background(Design.sidebarBackground)
     }
 
+    private var youtubeChannelRows: some View {
+        ForEach(snapshot.sources.filter { $0.platform == "youtube" }.sorted { $0.displayName < $1.displayName }) { source in
+            channelRow(source.displayName)
+        }
+    }
+
+    private func channelRow(_ name: String) -> some View {
+        let filterValue = "youtube/\(name)"
+        let isSelected = sourceFilter == filterValue
+        return Button {
+            selectChannel(name)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "play.rectangle")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                Text(name)
+                    .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                    .foregroundStyle(Design.primaryText)
+                    .lineLimit(1)
+                Spacer()
+            }
+            .padding(.leading, 24)
+            .padding(.trailing, 10)
+            .frame(height: 26)
+            .background(isSelected ? Design.selectedBackground : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+            .contentShape(RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+    }
+
     private func platformRow(name: String?, title: String, count: Int) -> some View {
         let isSelected = platformFilter == name
         return Button {
             platformFilter = name
+            sourceFilter = nil
         } label: {
             HStack(spacing: 9) {
                 Circle()
@@ -176,9 +216,9 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .center) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(platformFilter ?? "전체")
+                    Text(sourceFilter.map { String($0.dropFirst("youtube/".count)) } ?? platformFilter ?? "전체")
                         .font(.system(size: 22, weight: .semibold, design: .serif))
-                    Text("\(filteredPosts.count.formatted())개")
+                    Text(channelBusyMessage ?? "\(filteredPosts.count.formatted())개")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -211,6 +251,9 @@ struct ContentView: View {
                         ForEach(sortedPosts) { post in
                             feedCard(post)
                         }
+                        if sourceFilter != nil {
+                            loadMoreButton
+                        }
                     }
                     .padding(.bottom, 18)
                 }
@@ -220,6 +263,25 @@ struct ContentView: View {
         .padding(.horizontal, 18)
         .padding(.vertical, 20)
         .background(Design.feedBackground)
+    }
+
+    private var loadMoreButton: some View {
+        Button {
+            loadMoreYears()
+        } label: {
+            Label(
+                channelBusyMessage ?? "이전 1년 더 불러오기 (현재 \(currentChannelYears)년치)",
+                systemImage: "clock.arrow.circlepath"
+            )
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+        }
+        .buttonStyle(.bordered)
+        .disabled(channelBusyMessage != nil)
+    }
+
+    private var currentChannelYears: Int {
+        sourceFilter.flatMap { loadedYears[$0] } ?? 1
     }
 
     private var readerPane: some View {
@@ -273,6 +335,18 @@ struct ContentView: View {
             }
             Spacer(minLength: 16)
             HStack(spacing: 10) {
+                if post.platform == "youtube", (post.contentMarkdown ?? "").isEmpty {
+                    Button {
+                        transcribe(post)
+                    } label: {
+                        Label(
+                            transcribingPostID == post.id ? "전사 중" : "자막 전사",
+                            systemImage: "captions.bubble"
+                        )
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(transcribingPostID != nil)
+                }
                 readerModeToggle
                 if let url = post.url {
                     Link(destination: url) {
@@ -829,7 +903,8 @@ struct ContentView: View {
     }
 
     private func displayDate(_ post: DashboardPost) -> String {
-        let raw = post.timestamp ?? post.crawledAt
+        // timestamp가 빈 문자열인 행(구버전 yt-dlp fallback 등)은 crawledAt으로 대체
+        let raw = (post.timestamp?.isEmpty == false) ? post.timestamp! : post.crawledAt
         return raw
             .replacingOccurrences(of: "T", with: " ")
             .replacingOccurrences(of: "+09:00", with: "")
@@ -962,6 +1037,113 @@ struct ContentView: View {
             credentialNotice = Notice(text: localizedError(error), isError: true)
             pendingDeleteCredential = nil
         }
+    }
+
+    private func selectChannel(_ name: String) {
+        let filterValue = "youtube/\(name)"
+        sourceFilter = filterValue
+        platformFilter = "youtube"
+        reloadChannelPosts()
+
+        // 처음 선택한 채널은 1년치 히스토리를 자동 백필한다 (upsert라 재실행 무해)
+        if loadedYears[filterValue] == nil {
+            loadedYears[filterValue] = 1
+            runChannelBackfill(channel: name, years: 1)
+        }
+    }
+
+    private func reloadChannelPosts() {
+        guard let sourceFilter else {
+            return
+        }
+        let databasePath = WorkspaceLocator.defaultDatabasePath()
+        Task { @MainActor in
+            do {
+                channelPosts = try await Task.detached(priority: .userInitiated) {
+                    let database = try SkimDatabase(path: databasePath)
+                    return try database.fetchPosts(source: sourceFilter)
+                }.value
+                if !channelPosts.contains(where: { $0.id == selectedPostID }) {
+                    selectedPostID = channelPosts.first?.id
+                }
+            } catch {
+                loadError = localizedError(error)
+            }
+        }
+    }
+
+    private func loadMoreYears() {
+        guard let sourceFilter else {
+            return
+        }
+        let channel = String(sourceFilter.dropFirst("youtube/".count))
+        let years = (loadedYears[sourceFilter] ?? 1) + 1
+        loadedYears[sourceFilter] = years
+        runChannelBackfill(channel: channel, years: years)
+    }
+
+    private func runChannelBackfill(channel: String, years: Int) {
+        channelBusyMessage = "\(channel) \(years)년치 영상 목록 수집 중..."
+        Task { @MainActor in
+            do {
+                _ = try await runSkim(["youtube-history", "--channel", channel, "--years", "\(years)"])
+                channelBusyMessage = nil
+                reloadChannelPosts()
+            } catch {
+                channelBusyMessage = nil
+                sourceMessage = Notice(text: localizedError(error), isError: true)
+            }
+        }
+    }
+
+    private func transcribe(_ post: DashboardPost) {
+        guard let url = post.url else {
+            return
+        }
+        transcribingPostID = post.id
+        Task { @MainActor in
+            do {
+                _ = try await runSkim(["youtube-transcribe", url.absoluteString])
+                reloadChannelPosts()
+                loadDashboard()
+            } catch {
+                sourceMessage = Notice(text: localizedError(error), isError: true)
+            }
+            transcribingPostID = nil
+        }
+    }
+
+    /// 워크스페이스 루트에서 `uv run skim <args>`를 실행한다 (앱 → 파이프라인 브리지)
+    private func runSkim(_ arguments: [String]) async throws -> String {
+        let workspace = WorkspaceLocator.workspaceRoot()
+        return try await Task.detached(priority: .userInitiated) {
+            let uvCandidates = [
+                "/opt/homebrew/bin/uv",
+                "/usr/local/bin/uv",
+                "\(NSHomeDirectory())/.local/bin/uv"
+            ]
+            let uv = uvCandidates.first { FileManager.default.fileExists(atPath: $0) } ?? "uv"
+
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: uv)
+            process.arguments = ["run", "skim"] + arguments
+            process.currentDirectoryURL = workspace
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = pipe
+            try process.run()
+            // 출력을 먼저 다 읽어야 파이프 버퍼가 차서 waitUntilExit이 멈추는 걸 막는다
+            let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else {
+                throw NSError(
+                    domain: "skim.cli",
+                    code: Int(process.terminationStatus),
+                    userInfo: [NSLocalizedDescriptionKey: String(output.suffix(300))]
+                )
+            }
+            return output
+        }.value
     }
 
     private func addYouTubeSource() {

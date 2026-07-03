@@ -28,6 +28,7 @@ from skim_core.paths import DATA_DIR
 from skim_core.research.refresh import run_research
 from skim_core.research.search import search_posts
 from skim_core.research.serializer import build_response, utc_now_iso
+from skim_core.youtube_history import backfill_channel_history, transcribe_video
 from skim_core.research.types import SearchStats
 from skim_core.utils import save_posts_to_file
 
@@ -310,6 +311,25 @@ def platforms():
 def version():
     """버전 정보를 출력합니다."""
     typer.echo(f"SNS Crawler v{__version__}")
+
+
+@app.command("youtube-history")
+def youtube_history(
+    channel: Optional[str] = typer.Option(
+        None, "--channel", "-c", help="채널 이름 또는 채널 ID (생략 시 전체)"
+    ),
+    years: int = typer.Option(1, "--years", "-y", help="지금부터 N년 전까지"),
+):
+    """구독 채널의 과거 영상(롱폼) 목록을 DB에 백필합니다. 자막은 youtube-transcribe로."""
+    total = backfill_channel_history(channel, years)
+    typer.echo(f"완료: {total}개 신규/보강")
+
+
+@app.command("youtube-transcribe")
+def youtube_transcribe(video: str = typer.Argument(..., help="영상 URL 또는 video id")):
+    """영상 하나의 자막을 전사해 해당 행의 본문으로 저장합니다."""
+    if not transcribe_video(video):
+        raise typer.Exit(1)
 
 
 @app.command()
