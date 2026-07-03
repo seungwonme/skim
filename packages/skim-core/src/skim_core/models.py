@@ -36,6 +36,9 @@ class Post(BaseModel):
     - `content_markdown`: **정본 본문**. 모든 플랫폼에서 게시글 본문이 여기 담긴다.
       Feed형은 enrichment된 원문 마크다운, API형(linkedin/threads/x/reddit)은 게시글 텍스트.
       본문을 읽는 소비자는 항상 이 필드를 본다.
+      **소비 계약**: DB 소비자(AI, digest, 데스크톱 앱)는 이 필드가 이미 추출 완료된
+      본문이라고 가정하고 재추출 없이 그대로 사용한다. 링크 원문·플랫폼 자체 본문·토론
+      (HN 댓글, GeekNews 한국어 요약)까지 저장 전에 채우는 것은 크롤러의 책임이다.
     - `title`: **정본 제목**. 제목이 있는 플랫폼(HN, GeekNews, arXiv, YouTube 등)에서 채워진다.
     - `content`: 플랫폼 원본 텍스트. API형은 본문 원문(= content_markdown과 동일), Feed형은
       비운다(제목은 `title`, 본문은 `content_markdown`에 있으므로). 과거 데이터 하위호환용.

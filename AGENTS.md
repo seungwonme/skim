@@ -75,6 +75,12 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
                        SQLite 저장 + JSON 파일
 ```
 
+### 데이터 계약: DB는 소비 준비가 끝난 상태다
+
+- `posts.content_markdown`은 **추출이 완료된 정본 본문**이다. 이 DB를 읽는 소비자(AI, digest, 데스크톱 앱, research)는 재추출 절차 없이 그대로 사용한다고 가정한다.
+- 따라서 추출 완결성은 크롤러의 책임이다. 저장 시점에 링크 원문 본문, 플랫폼 자체 본문(Ask/Show HN 텍스트, GeekNews 한국어 요약), 토론(HN 상위 댓글)까지 채워야 한다. "링크만 저장"은 계약 위반이다.
+- 예외는 `--no-content` 명시 실행뿐이며, 그 행은 다음 크롤 upsert로 본문이 채워질 때까지 미완성으로 간주한다.
+
 ### Crawler 유형과 패턴
 
 모든 크롤러는 `packages/skim-core/src/skim_core/crawlers/base.py`의 `Crawler` Protocol을 구현하고, `packages/skim-core/src/skim_core/crawlers/__init__.py`의 `REGISTRY`에 등록된다.
