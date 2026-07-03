@@ -32,10 +32,17 @@ class Post(BaseModel):
     모든 SNS 플랫폼의 게시글을 표현하는 공통 데이터 구조입니다.
     플랫폼별 특성에 따라 일부 필드는 None일 수 있습니다.
 
+    본문 필드 규약 (플랫폼 유형별로 다르므로 소비 시 주의):
+    - API형 (linkedin, threads, x, reddit): 본문 전체가 `content`에 담긴다.
+      `content_markdown`/`summary`는 비어 있다.
+    - Feed형 (hackernews, geeknews, arxiv, huggingface, youtube 등): `content`에는
+      제목 수준 스니펫만 있고, 본문 전체는 `content_markdown`, 요약은 `summary`에 담긴다.
+    즉 "본문"을 읽으려면 `content_markdown or content` 순으로 접근한다.
+
     Attributes:
-        platform (str): SNS 플랫폼 이름 (threads, linkedin, x, geeknews, reddit)
+        platform (str): 플랫폼 이름 (threads, linkedin, x, reddit, geeknews 등)
         author (str): 게시글 작성자 이름 또는 핸들
-        content (str): 게시글 본문 내용
+        content (str): API형은 본문 전체, Feed형은 제목 스니펫 (위 규약 참고)
         timestamp (str): 게시 시간 (ISO 8601 문자열)
         url (Optional[str]): 게시글 직접 링크
         likes (Optional[int]): 좋아요/추천 수
@@ -44,8 +51,8 @@ class Post(BaseModel):
         views (Optional[int]): 조회수 (X 등 지원 플랫폼만)
         title (Optional[str]): 게시글 제목 (HN, GeekNews, YouTube 등)
         summary (Optional[str]): 요약 (RSS 피드 등)
-        content_markdown (Optional[str]): enrichment된 본문 마크다운
-        word_count (Optional[int]): 본문 단어 수
+        content_markdown (Optional[str]): Feed형 enrichment 본문 마크다운
+        word_count (Optional[int]): 본문 단어 수 (content_markdown or content 기준)
         source (Optional[str]): 세부 소스 (YouTube 채널명, 서브레딧 등)
         external_id (Optional[str]): 플랫폼 고유 ID
     """

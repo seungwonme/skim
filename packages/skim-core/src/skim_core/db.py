@@ -20,6 +20,9 @@ from .paths import DATA_DIR
 
 DB_PATH = DATA_DIR / "skim.db"
 
+# API형 플랫폼은 본문이 content_markdown이 아니라 content에 담긴다 (word_count 정규화용).
+_API_BODY_PLATFORMS = {"linkedin", "threads", "x", "reddit"}
+
 SCHEMA = """\
 CREATE TABLE IF NOT EXISTS posts (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -272,6 +275,16 @@ def save_posts(
     saved = 0
     for post in posts:
         data = post.model_dump() if hasattr(post, "model_dump") else post
+
+        # word_count 정규화: 미계산이면 실제 본문에서 센다.
+        # Feed형 본문은 content_markdown, API형(linkedin/threads/x/reddit) 본문은 content.
+        if not data.get("word_count"):
+            body = (data.get("content_markdown") or "").strip()
+            if not body and data.get("platform") in _API_BODY_PLATFORMS:
+                body = (data.get("content") or "").strip()
+            if body:
+                data["word_count"] = len(body.split())
+
         # extra 필드: Post 모델의 extra="allow"로 들어온 추가 필드
         known_fields = {
             "platform",
