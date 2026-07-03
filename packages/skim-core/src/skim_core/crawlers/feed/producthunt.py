@@ -3,6 +3,7 @@
 @description Product Hunt 크롤러 (RSS)
 """
 
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, List
 
@@ -10,6 +11,16 @@ from ...enrichment import enrich_with_content
 from ...feed_config import PRODUCTHUNT_RSS
 from ...feed_utils import fetch_feed
 from ...models import Post
+
+# PH 피드 content에는 제품 외부 사이트로 가는 리다이렉트(/r/p/{id})가 들어있다.
+# /products/{slug} 페이지는 JS SPA + 403이라 본문 추출이 불가하므로, 이 링크를 enrich 대상으로 쓴다.
+_RP_HREF = re.compile(r'href="(https://www\.producthunt\.com/r/p/[^"]+)"')
+
+
+def _redirect_url(item: dict) -> str:
+    """피드 항목에서 제품 외부 사이트 리다이렉트 URL을 추출 (없으면 원 URL)."""
+    match = _RP_HREF.search(item.get("content_html", ""))
+    return match.group(1) if match else item.get("url", "")
 
 
 def _item_to_post(item: dict) -> Post:
@@ -61,6 +72,9 @@ class ProductHuntCrawler:
             return []
 
         items.sort(key=lambda x: x.get("published", ""), reverse=True)
+
+        for item in items:
+            item["enrich_url"] = _redirect_url(item)
 
         if not no_content:
             enrich_with_content(items)
