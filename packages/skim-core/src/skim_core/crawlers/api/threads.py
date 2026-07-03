@@ -92,7 +92,11 @@ class ThreadsAPICrawler:
     async def crawl(self, **options) -> List[Post]:
         count = options.get("count", 5)
         user_id = options.get("user_id")
-        return await self._crawl_impl(count, user_id)
+        try:
+            return await self._crawl_impl(count, user_id)
+        finally:
+            # 크롤러 인스턴스는 1회성이다. 세션 커넥션 풀을 정리한다.
+            self.session.close()
 
     async def _crawl_impl(self, count: int = 5, user_id: Optional[str] = None) -> List[Post]:
         """

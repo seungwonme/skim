@@ -170,7 +170,6 @@ def _filter_by_session(
 
 
 def _build_crawler_options(platform: str, days: int) -> dict:
-    since_iso = _since_utc(days)
     if platform in {
         "hackernews",
         "geeknews",
@@ -182,7 +181,9 @@ def _build_crawler_options(platform: str, days: int) -> dict:
         "blogs",
         "ailabs",
     }:
-        return {"since": since_iso, "no_content": False}
+        # feed 크롤러의 is_within_range는 datetime을 비교하므로 문자열을 넘기면 TypeError.
+        since_dt = datetime.fromisoformat(_since_utc(days))
+        return {"since": since_dt, "no_content": False}
     if platform in {"threads", "x", "linkedin"}:
         return {"count": max(30, days * 10)}
     if platform == "reddit":
@@ -321,6 +322,8 @@ def _cleanup_stale_research_runs(conn: sqlite3.Connection) -> int:
                     os.kill(pid, 0)
             except (ProcessLookupError, PermissionError):
                 dead = True
+        # TTL은 다른 호스트 run에도 적용한다 (의도된 설계): 호스트 간 pid 확인이
+        # 불가능하므로 TTL이 죽은 원격 run을 회수하는 유일한 수단이다.
         if dead or row["started_at"] < cutoff:
             conn.execute(
                 "UPDATE research_runs SET status='interrupted', finished_at=? WHERE id=?",

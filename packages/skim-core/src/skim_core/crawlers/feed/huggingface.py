@@ -20,13 +20,13 @@ class HuggingFaceCrawler:
     async def crawl(self, **options: Any) -> List[Post]:
         count = options.get("count", 50)
         no_content = options.get("no_content", False)
+        since = options.get("since")
 
         resp = requests.get(HUGGINGFACE_PAPERS_URL, timeout=15)
         resp.raise_for_status()
         papers = resp.json()
 
         items: List[dict] = []
-        now = datetime.now(timezone.utc)
 
         for p in papers:
             paper_id = p.get("paper", {}).get("id", "")
@@ -41,7 +41,13 @@ class HuggingFaceCrawler:
                 entry_dt = datetime.fromisoformat(pub.replace("Z", "+00:00"))
                 published = entry_dt.astimezone(timezone.utc).isoformat()
             except (ValueError, AttributeError):
-                published = now.isoformat()
+                # 발행일 불명을 크롤 시각으로 채우면 시간축이 왜곡된다. 미상으로 남긴다.
+                entry_dt = None
+                published = ""
+
+            # CLI 계약(--days)대로 since 이전 논문은 제외. 발행일 미상은 보수적으로 포함.
+            if since and entry_dt and entry_dt < since:
+                continue
 
             items.append(
                 {

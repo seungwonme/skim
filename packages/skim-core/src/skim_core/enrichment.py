@@ -5,7 +5,9 @@
 
 import asyncio
 import json
+import os
 import re
+import signal
 import subprocess
 import tempfile
 import threading
@@ -30,15 +32,34 @@ from .paths import workspace_root
 SRT_TO_TXT = str(workspace_root() / "scripts" / "srt_to_txt.sh")
 
 
+def _run_group(cmd: list, timeout: int) -> subprocess.CompletedProcess:
+    """subprocess.run 대체. 타임아웃 시 직접 자식만이 아니라 프로세스 그룹 전체를 죽인다.
+    bunx/yt-dlp가 띄우는 하위 node 프로세스가 고아로 남는 것을 막는다."""
+    with subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    ) as proc:
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            proc.wait()
+            raise
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+
+
 def defuddle(url: str, timeout: int = 45) -> Optional[dict]:
     """defuddle CLI로 URL의 본문 콘텐츠를 추출 (bunx 콜드스타트 + 원격 fetch 고려)"""
     try:
-        result = subprocess.run(
+        result = _run_group(
             ["bunx", "defuddle", "parse", url, "--json", "--markdown"],
-            capture_output=True,
-            text=True,
             timeout=timeout,
-            check=False,
         )
         if result.returncode == 0 and result.stdout.strip():
             data = json.loads(result.stdout)
@@ -56,12 +77,9 @@ def defuddle(url: str, timeout: int = 45) -> Optional[dict]:
 def _defuddle_html_file(html_path: str, timeout: int = 45) -> Optional[dict]:
     """미리 렌더링된 HTML 파일에 defuddle 적용 (bunx 콜드스타트 고려)."""
     try:
-        result = subprocess.run(
+        result = _run_group(
             ["bunx", "defuddle", "parse", html_path, "--json", "--markdown"],
-            capture_output=True,
-            text=True,
             timeout=timeout,
-            check=False,
         )
         if result.returncode == 0 and result.stdout.strip():
             data = json.loads(result.stdout)
@@ -316,19 +334,16 @@ def extract_youtube_transcript(url: str, timeout: int = 60) -> Optional[dict]:
     """yt-dlp로 YouTube 자막을 추출하고 srt_to_txt.sh로 정리"""
     with tempfile.TemporaryDirectory() as tmpdir:
         # 1) 자막 목록 확인 → 수동 자막 시도 → 자동 자막 폴백
-        subs_info = subprocess.run(
+        subs_info = _run_group(
             ["yt-dlp", "--list-subs", "--skip-download", url],
-            capture_output=True,
-            text=True,
             timeout=30,
-            check=False,
         )
 
         info = subs_info.stdout + subs_info.stderr
         lang = _select_youtube_subtitle_languages(info)
 
         # 수동 자막 시도
-        subprocess.run(
+        _run_group(
             [
                 "yt-dlp",
                 "--write-sub",
@@ -341,10 +356,7 @@ def extract_youtube_transcript(url: str, timeout: int = 60) -> Optional[dict]:
                 f"{tmpdir}/%(id)s.%(ext)s",
                 url,
             ],
-            capture_output=True,
-            text=True,
             timeout=timeout,
-            check=False,
         )
 
         # 수동 자막 파일 찾기
@@ -352,7 +364,7 @@ def extract_youtube_transcript(url: str, timeout: int = 60) -> Optional[dict]:
 
         # 없으면 자동 자막 폴백
         if not srt_files:
-            subprocess.run(
+            _run_group(
                 [
                     "yt-dlp",
                     "--write-auto-sub",
@@ -365,17 +377,21 @@ def extract_youtube_transcript(url: str, timeout: int = 60) -> Optional[dict]:
                     f"{tmpdir}/%(id)s.%(ext)s",
                     url,
                 ],
-                capture_output=True,
-                text=True,
                 timeout=timeout,
-                check=False,
             )
             srt_files = list(Path(tmpdir).glob("*.srt"))
 
         if not srt_files:
             return None
 
-        srt_file = srt_files[0]
+        # glob 순서는 보장이 없다. 선호 언어(lang) 순서대로 자막 파일을 고른다.
+        preferred = lang.split(",")
+
+        def _pref_rank(path: Path) -> int:
+            code = path.stem.split(".")[-1] if "." in path.stem else ""
+            return preferred.index(code) if code in preferred else len(preferred)
+
+        srt_file = min(srt_files, key=_pref_rank)
         txt_file = srt_file.with_suffix(".txt")
 
         # 2) srt_to_txt.sh로 정리
@@ -513,12 +529,13 @@ def enrich_with_content(items: List[dict]) -> List[dict]:
     print(f"\n[콘텐츠] {len(targets)}개 항목의 원문을 추출합니다...")
 
     for i, item in enumerate(targets):
-        url = item["url"]
-        title_short = item["title"][:50]
+        # 필드 누락 항목 하나가 KeyError로 배치 전체를 죽이지 않게 .get으로 읽는다.
+        url = item.get("url", "")
+        title_short = (item.get("title") or "")[:50]
         print(f"  [{i + 1}/{len(targets)}] {title_short}...")
 
         # YouTube 영상: yt-dlp로 자막 추출
-        if item["platform"].startswith("youtube/"):
+        if (item.get("platform") or "").startswith("youtube/"):
             try:
                 data = extract_youtube_transcript(url)
                 if data:
@@ -651,7 +668,7 @@ def enrich_papers_with_content(items: List[dict]) -> List[dict]:
     print(f"\n[논문 전문] {len(targets)}개 논문의 전문을 추출합니다...")
 
     for i, item in enumerate(targets):
-        title_short = item["title"][:50]
+        title_short = (item.get("title") or "")[:50]
         print(f"  [{i + 1}/{len(targets)}] {title_short}...")
 
         # arxiv URL에서 HTML 버전 URL 생성

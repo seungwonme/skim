@@ -43,6 +43,7 @@ class LinkedInAPICrawler:
         self.debug_mode = debug_mode
         self.session_path = session_path
         self.session = session or requests.Session()
+        self._owns_session = session is None
         self.session.headers.update(
             {
                 "Accept": "application/vnd.linkedin.normalized+json+2.1",
@@ -60,7 +61,12 @@ class LinkedInAPICrawler:
 
     async def crawl(self, **options) -> List[Post]:
         count = options.get("count", 5)
-        return self.fetch_feed(count=count)
+        try:
+            return self.fetch_feed(count=count)
+        finally:
+            # 크롤러 인스턴스는 1회성이다. 직접 만든 세션은 커넥션 풀을 정리한다.
+            if self._owns_session:
+                self.session.close()
 
     def fetch_feed(self, *, count: int) -> List[Post]:
         """LinkedIn 홈 피드 게시글을 수집합니다."""

@@ -26,6 +26,7 @@ public enum SkimDatabaseError: Error, LocalizedError, Sendable {
 public final class SkimDatabase {
     private var handle: OpaquePointer?
     private let path: URL
+    private var schemaEnsured = false
 
     public init(path: URL, createIfMissing: Bool = true) throws {
         self.path = path
@@ -48,6 +49,8 @@ public final class SkimDatabase {
             throw SkimDatabaseError.openFailed(message)
         }
         handle = database
+        // 크롤러가 쓰기 락을 잡고 있어도 즉시 SQLITE_BUSY로 실패하지 않고 대기한다.
+        sqlite3_busy_timeout(database, 5000)
     }
 
     deinit {
@@ -57,7 +60,22 @@ public final class SkimDatabase {
     }
 
     public func ensureSchema() throws {
+        // DDL은 쓰기 트랜잭션이라 크롤러 쓰기와 락 경합한다. 스키마가 이미 있으면
+        // 쓰기를 아예 열지 않아 읽기 경로가 SQLITE_BUSY로 실패하지 않게 한다.
+        guard !schemaEnsured else { return }
+        if try hasTable("platform_credentials") {
+            schemaEnsured = true
+            return
+        }
         try execute(Self.schemaSQL)
+        schemaEnsured = true
+    }
+
+    private func hasTable(_ name: String) throws -> Bool {
+        try query(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            bindings: [.text(name)]
+        ) { _ in true }.first ?? false
     }
 
     public func fetchSummary() throws -> DashboardSummary {
@@ -232,9 +250,6 @@ public final class SkimDatabase {
         if let password, !password.isEmpty {
             if writeKeychain {
                 try KeychainStore.save(password: password, service: service, account: loginIdentifier)
-                if let existing, credentialChanged {
-                    try? KeychainStore.delete(service: existing.secretService, account: existing.secretAccount)
-                }
             }
         } else if credentialChanged {
             throw SkimDatabaseError.invalidCredential("새 크레덴셜을 만들거나 플랫폼/로그인 식별자를 바꾸려면 비밀번호가 필요합니다.")
@@ -287,6 +302,12 @@ public final class SkimDatabase {
             )
         }
 
+        // DB 반영이 성공한 뒤에만 옛 시크릿을 정리한다. 반대 순서는 DB 실패 시
+        // 기존 row가 이미 지워진 시크릿을 가리키게 된다.
+        if writeKeychain, let password, !password.isEmpty, let existing, credentialChanged {
+            try? KeychainStore.delete(service: existing.secretService, account: existing.secretAccount)
+        }
+
         return try queryOne(
             """
             SELECT id, platform, account_label, login_identifier, secret_service, secret_account,
@@ -316,10 +337,11 @@ public final class SkimDatabase {
         guard let credential = try fetchCredential(id: id) else {
             return
         }
-        if deleteKeychain {
-            try KeychainStore.delete(service: credential.secretService, account: credential.secretAccount)
-        }
+        // DB row를 먼저 지운다. 시크릿을 먼저 지우면 DB 실패 시 row가 빈 시크릿을 가리킨다.
         try execute("DELETE FROM platform_credentials WHERE id = ?", bindings: [.integer(id)])
+        if deleteKeychain {
+            try? KeychainStore.delete(service: credential.secretService, account: credential.secretAccount)
+        }
     }
 
     func execute(_ sql: String, bindings: [SQLiteBinding] = []) throws {
@@ -455,6 +477,8 @@ public final class SkimDatabase {
     }
 
     private static let schemaSQL = """
+    PRAGMA journal_mode=WAL;
+
     CREATE TABLE IF NOT EXISTS posts (
         id               INTEGER PRIMARY KEY AUTOINCREMENT,
         platform         TEXT NOT NULL,

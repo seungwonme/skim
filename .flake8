@@ -20,5 +20,10 @@ exclude =
     build,
     # This contains builds of flake8 that we don't want to check
     dist,
-    apps/desktop/dist
+    apps/desktop/dist,
+    # Vendored reference material, not project code
+    refs,
+    # Local runtime artifacts and parallel-session worktrees
+    data,
+    worktrees
 max-complexity = 20

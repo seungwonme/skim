@@ -13,6 +13,7 @@ import json
 import os
 import socket
 import sqlite3
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -313,12 +314,18 @@ def save_posts(
     """Post 객체 리스트를 DB에 저장합니다. 중복은 무시. 저장된 건수 반환."""
     conn = get_connection(db_path)
     saved = 0
+    errors = 0
+    last_error: Optional[str] = None
     for post in posts:
         data = post.model_dump() if hasattr(post, "model_dump") else post
 
         # 본문 정본화: API형 플랫폼은 본문이 content에 오므로 content_markdown으로 승격한다.
         # 이렇게 하면 content_markdown이 전 플랫폼 공통 본문 필드가 된다 (Feed형은 이미 그렇다).
-        if data.get("platform") in _API_BODY_PLATFORMS and not (
+        # 판정과 저장 모두 Post의 platform을 우선한다 (인자는 fallback).
+        # 혼합 배치에서 인자 platform으로 저장하면 row가 오라벨링된다.
+        row_platform = data.get("platform") or platform
+
+        if row_platform in _API_BODY_PLATFORMS and not (
             data.get("content_markdown") or ""
         ).strip():
             body = (data.get("content") or "").strip()
@@ -354,13 +361,21 @@ def save_posts(
 
         url = (data.get("url") or "").strip()
 
-        # external_id가 없으면 content 해시로 대체 (NULL은 UNIQUE 제약 무시됨)
+        # external_id가 없으면 해시로 대체 (NULL은 UNIQUE 제약 무시됨).
+        # URL이 있으면 URL 기준으로 해시해 "같은 작성자의 동일 본문, 다른 글" 충돌을 막고,
+        # 재크롤 시 본문이 바뀌어도 같은 글로 인식되게 한다.
         ext_id = data.get("external_id")
+        has_own_id = bool(ext_id)
         if not ext_id:
-            hash_src = f"{platform}:{data.get('author', '')}:{data.get('content', '')}"
+            if url:
+                hash_src = f"{row_platform}:{data.get('author', '')}:{url}"
+            else:
+                hash_src = f"{row_platform}:{data.get('author', '')}:{data.get('content', '')}"
             ext_id = hashlib.sha256(hash_src.encode()).hexdigest()[:16]
 
-        if url:
+        # 해시 id인 경우만 같은 URL의 기존 row에 병합한다. 크롤러가 준 진짜 id를
+        # URL 일치만으로 덮어쓰면 같은 링크의 서로 다른 글(예: HN 중복 제출)이 유실된다.
+        if url and not has_own_id:
             row = conn.execute(
                 """
                 SELECT external_id FROM posts
@@ -368,7 +383,7 @@ def save_posts(
                 ORDER BY id
                 LIMIT 1
                 """,
-                (platform, url),
+                (row_platform, url),
             ).fetchone()
             if row and row["external_id"]:
                 ext_id = row["external_id"]
@@ -439,7 +454,7 @@ def save_posts(
                        OR (posts.extra IS NULL OR TRIM(posts.extra) = '')
                        OR json_extract(posts.extra, '$.enrichment_method') = 'failed'""",
                 (
-                    platform,
+                    row_platform,
                     source or data.get("source"),
                     ext_id,
                     data.get("author", ""),
@@ -459,10 +474,18 @@ def save_posts(
             )
             if conn.execute("SELECT changes()").fetchone()[0] > 0:
                 saved += 1
-        except sqlite3.Error:
+        except sqlite3.Error as e:
+            # 개별 row 실패는 배치를 살리되, 전량 실패가 성공처럼 보이지 않게 집계한다.
+            errors += 1
+            last_error = str(e)
             continue
     conn.commit()
     conn.close()
+    if errors:
+        print(
+            f"[skim] save_posts: {errors}개 저장 실패 (마지막 오류: {last_error})",
+            file=sys.stderr,
+        )
     return saved
 
 

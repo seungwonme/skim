@@ -3,6 +3,7 @@
 @description Hacker News 크롤러 (Firebase API + RSS)
 """
 
+import re
 from typing import Any, List
 
 import requests
@@ -75,6 +76,8 @@ class HackerNewsCrawler:
         return posts
 
     def _item_to_post(self, item: dict) -> Post:
+        # RSS guid에서 story id를 추출해 Firebase 경로와 identity를 일치시킨다.
+        guid_match = re.search(r"item\?id=(\d+)", item.get("external_id", "") or "")
         return Post(
             platform=item.get("platform", self.platform),
             author=item.get("author", ""),
@@ -85,4 +88,5 @@ class HackerNewsCrawler:
             summary=item.get("summary", ""),
             content_markdown=item.get("content_markdown"),
             word_count=item.get("word_count"),
+            external_id=guid_match.group(1) if guid_match else None,
         )
