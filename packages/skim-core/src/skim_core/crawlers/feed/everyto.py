@@ -20,7 +20,7 @@ def _item_to_post(item: dict) -> Post:
         if key in ("enrichment_method", "enrichment_error", "image", "description") and value
     }
     return Post(
-        platform="every.to",
+        platform="everyto",
         author=item.get("author", ""),
         title=item.get("title", ""),
         content="",
@@ -37,7 +37,7 @@ def _item_to_post(item: dict) -> Post:
 class EveryToCrawler:
     """Every.to 멀티 칼럼 RSS 피드 크롤러"""
 
-    platform: str = "every.to"
+    platform: str = "everyto"
 
     async def crawl(self, **options: Any) -> List[Post]:
         """
