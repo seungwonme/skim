@@ -11,6 +11,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, List, Optional
+from urllib.parse import urljoin, urlparse
 
 import requests
 import typer
@@ -26,6 +27,27 @@ LINKEDIN_USER_AGENT = (
 )
 REQUIRED_COOKIE_NAMES = {"li_at", "JSESSIONID"}
 REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
+SESSION_REJECTED_REASONS = {"login", "authwall", "checkpoint", "challenge", "self-redirect-loop"}
+
+
+def _classify_redirect(response: requests.Response) -> str:
+    """redirect Location 경로로 세션 거부 원인을 분류합니다."""
+    location = response.headers.get("location") or ""
+    if not location:
+        return "empty-redirect"
+    absolute = urljoin(str(response.url), location)
+    if absolute == str(response.url):
+        return "self-redirect-loop"
+    path = urlparse(absolute).path.lower()
+    if "checkpoint" in path:
+        return "checkpoint"
+    if "login" in path:  # /uas/login 포함
+        return "login"
+    if "authwall" in path:
+        return "authwall"
+    if "challenge" in path or "/security" in path:
+        return "challenge"
+    return "redirect"
 
 
 class LinkedInAPICrawler:
@@ -120,7 +142,14 @@ class LinkedInAPICrawler:
         )
 
         if response.status_code in REDIRECT_STATUS_CODES:
-            typer.echo(f"   ❌ LinkedIn 세션이 redirect 되었습니다: {response.status_code}")
+            reason = _classify_redirect(response)
+            typer.echo(
+                f"   ❌ LinkedIn 세션이 redirect 되었습니다: {response.status_code} ({reason})"
+            )
+            if reason in SESSION_REJECTED_REASONS:
+                typer.echo(
+                    "   세션이 만료되었습니다. 다시 로그인하세요: uv run skim login linkedin"
+                )
             return None
         if response.status_code in {401, 403}:
             typer.echo(f"   ❌ LinkedIn 인증이 거부되었습니다: {response.status_code}")
@@ -225,8 +254,11 @@ class LinkedInAPICrawler:
             return None
 
         actor = item.get("actor", {})
-        author = self._extract_text(actor.get("name")) if isinstance(actor, dict) else ""
-        author = author or "Unknown"
+        if not isinstance(actor, dict):
+            actor = {}
+        if self._is_promoted(actor):
+            return None
+        author = self._extract_text(actor.get("name")) or "Unknown"
 
         activity_urn = self._extract_activity_urn(item)
         activity_id = self._extract_activity_id(activity_urn)
@@ -261,6 +293,18 @@ class LinkedInAPICrawler:
             external_id=activity_id,
             **({"images": image_urls} if image_urls else {}),
         )
+
+    @staticmethod
+    def _is_promoted(actor: dict) -> bool:
+        """Promoted(광고) 게시글 여부 — 상대시간 자리(subDescription)에 광고 라벨이 온다."""
+        sub_desc = actor.get("subDescription")
+        if not isinstance(sub_desc, dict):
+            return False
+        for key in ("text", "accessibilityText"):
+            value = sub_desc.get(key)
+            if isinstance(value, str) and ("promoted" in value.lower() or "광고" in value):
+                return True
+        return False
 
     def _extract_image_urls(self, node: Any) -> list[str]:
         """Voyager vectorImage(rootUrl + artifacts)에서 최대 해상도 이미지 URL을 수집합니다."""
