@@ -16,6 +16,8 @@ public struct DashboardPost: Identifiable, Equatable, Sendable {
     public let contentMarkdown: String?
     public let wordCount: Int?
     public let crawledAt: String
+    /// 크롤러가 extra JSON에 남긴 첨부/대표 이미지 CDN URL (SNS images + og:image)
+    public let imageURLs: [String]
 
     public init(
         id: Int64,
@@ -32,7 +34,8 @@ public struct DashboardPost: Identifiable, Equatable, Sendable {
         summary: String? = nil,
         contentMarkdown: String? = nil,
         wordCount: Int? = nil,
-        crawledAt: String
+        crawledAt: String,
+        imageURLs: [String] = []
     ) {
         self.id = id
         self.platform = platform
@@ -49,6 +52,7 @@ public struct DashboardPost: Identifiable, Equatable, Sendable {
         self.contentMarkdown = contentMarkdown
         self.wordCount = wordCount
         self.crawledAt = crawledAt
+        self.imageURLs = imageURLs
     }
 
     public var displayTitle: String {

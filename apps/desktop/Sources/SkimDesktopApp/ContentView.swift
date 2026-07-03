@@ -704,12 +704,21 @@ struct ContentView: View {
     }
 
     private func readerMarkdown(_ post: DashboardPost) -> String {
-        if let markdown = post.contentMarkdown?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !markdown.isEmpty
+        var markdown: String
+        if let body = post.contentMarkdown?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !body.isEmpty
         {
-            return markdown
+            markdown = body
+        } else {
+            markdown = post.summary ?? post.content
         }
-        return post.summary ?? post.content
+
+        // SNS 첨부/og:image 중 본문에 아직 없는 것만 뒤에 붙인다 (인라인 이미지와 중복 방지)
+        let attached = post.imageURLs.filter { !markdown.contains($0) }
+        if !attached.isEmpty {
+            markdown += "\n\n" + attached.map { "![](\($0))" }.joined(separator: "\n\n")
+        }
+        return markdown
     }
 
     private func inputBorder(isFocused: Bool) -> some View {

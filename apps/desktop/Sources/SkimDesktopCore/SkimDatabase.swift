@@ -150,7 +150,7 @@ public final class SkimDatabase {
         try query(
             """
             SELECT id, platform, source, external_id, author, title, content, url, timestamp,
-                   likes, comments, summary, content_markdown, word_count, crawled_at
+                   likes, comments, summary, content_markdown, word_count, crawled_at, extra
             FROM posts
             ORDER BY datetime(COALESCE(NULLIF(timestamp, ''), crawled_at)) DESC, id DESC
             LIMIT ?
@@ -172,9 +172,26 @@ public final class SkimDatabase {
                 summary: text(statement, 11),
                 contentMarkdown: text(statement, 12),
                 wordCount: int(statement, 13),
-                crawledAt: text(statement, 14) ?? ""
+                crawledAt: text(statement, 14) ?? "",
+                imageURLs: Self.imageURLs(fromExtra: text(statement, 15))
             )
         }
+    }
+
+    /// extra JSON의 `images`(첨부 배열)와 `image`(og:image)를 중복 제거해 합칩니다.
+    static func imageURLs(fromExtra json: String?) -> [String] {
+        guard let json,
+              let data = json.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return []
+        }
+        var urls = (object["images"] as? [String]) ?? []
+        if let single = object["image"] as? String, !single.isEmpty {
+            urls.append(single)
+        }
+        var seen = Set<String>()
+        return urls.filter { seen.insert($0).inserted }
     }
 
     @discardableResult
