@@ -608,7 +608,7 @@ def enrich_with_content(items: List[dict]) -> List[dict]:
                 original_md = (data or {}).get("content_markdown", "").strip()
                 merged = topic_body
                 if original_md:
-                    merged += "\n\n---\n\n## 원문 전문\n\n" + original_md
+                    merged += "\n\n---\n\n## Original Article\n\n" + original_md
                 data = dict(data or {})
                 data["content_markdown"] = merged
                 data["word_count"] = len(merged.split())

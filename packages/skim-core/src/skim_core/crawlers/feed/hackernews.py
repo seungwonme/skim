@@ -56,7 +56,10 @@ def fetch_hn_discussion(story_id: str) -> Optional[dict]:
             if text:
                 indent = "  " * depth
                 author = child.get("author") or "unknown"
-                comments.append(f"{indent}- **{author}**: {text}")
+                # HN은 댓글 점수를 공개하지 않으므로 작성시각까지가 가용 메타데이터다.
+                created = (child.get("created_at") or "")[:16].replace("T", " ")
+                meta = f" ({created} UTC)" if created else ""
+                comments.append(f"{indent}- **{author}**{meta}: {text}")
                 if depth < 1:
                     walk(child.get("children") or [], depth + 1)
 
@@ -64,6 +67,7 @@ def fetch_hn_discussion(story_id: str) -> Optional[dict]:
     return {
         "story_text": _html_to_text(data.get("text") or ""),
         "comments": comments,
+        "points": data.get("points"),
     }
 
 
@@ -75,7 +79,11 @@ def compose_hn_body(article_md: str, discussion: Optional[dict]) -> str:
     if article_md and article_md.strip():
         parts.append(article_md.strip())
     if discussion and discussion.get("comments"):
-        parts.append("## Hacker News 댓글\n\n" + "\n".join(discussion["comments"]))
+        section = "## Hacker News Comments\n\n"
+        if discussion.get("points") is not None:
+            section += f"Story score: {discussion['points']} points\n\n"
+        section += "\n".join(discussion["comments"])
+        parts.append(section)
     return "\n\n---\n\n".join(parts)
 
 

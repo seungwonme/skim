@@ -14,9 +14,11 @@ from skim_core.crawlers.feed.hackernews import (
 ALGOLIA_FIXTURE = {
     "id": 100,
     "text": "<p>Ask HN 본문입니다.</p><p>둘째 문단.</p>",
+    "points": 42,
     "children": [
         {
             "author": "alice",
+            "created_at": "2026-07-03T04:16:00.000Z",
             "text": "<p>First comment</p>",
             "children": [
                 {"author": "bob", "text": "Reply to alice", "children": []},
@@ -39,10 +41,11 @@ class HNDiscussionTests(unittest.TestCase):
             discussion = fetch_hn_discussion("100")
 
         self.assertIn("Ask HN 본문입니다.", discussion["story_text"])
+        self.assertEqual(discussion["points"], 42)
         self.assertEqual(
             discussion["comments"],
             [
-                "- **alice**: First comment",
+                "- **alice** (2026-07-03 04:16 UTC): First comment",
                 "  - **bob**: Reply to alice",
                 "- **carol**: Second comment",
             ],
@@ -56,11 +59,12 @@ class HNDiscussionTests(unittest.TestCase):
             self.assertIsNone(fetch_hn_discussion("100"))
 
     def test_compose_hn_body_orders_story_article_comments(self):
-        discussion = {"story_text": "스토리 텍스트", "comments": ["- **a**: c1"]}
+        discussion = {"story_text": "스토리 텍스트", "comments": ["- **a**: c1"], "points": 42}
         body = compose_hn_body("기사 본문", discussion)
         self.assertEqual(
             body,
-            "스토리 텍스트\n\n---\n\n기사 본문\n\n---\n\n## Hacker News 댓글\n\n- **a**: c1",
+            "스토리 텍스트\n\n---\n\n기사 본문\n\n---\n\n"
+            "## Hacker News Comments\n\nStory score: 42 points\n\n- **a**: c1",
         )
 
     def test_compose_hn_body_empty_without_anything(self):
@@ -117,7 +121,7 @@ class HNDiscussionTests(unittest.TestCase):
 
         self.assertEqual(posts[0].external_id, "100")
         self.assertIn("기사 본문", posts[0].content_markdown)
-        self.assertIn("## Hacker News 댓글", posts[0].content_markdown)
+        self.assertIn("## Hacker News Comments", posts[0].content_markdown)
         self.assertEqual(posts[0].likes, 10)
         # 정본 링크는 HN 토론 페이지, 원문 URL은 extra.original_url로 보존된다.
         self.assertEqual(posts[0].url, "https://news.ycombinator.com/item?id=100")

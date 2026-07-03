@@ -197,7 +197,7 @@ class EnrichmentQualityTests(unittest.TestCase):
 
         self.assertEqual(
             item["content_markdown"],
-            f"{topic_body}\n\n---\n\n## 원문 전문\n\n{original}",
+            f"{topic_body}\n\n---\n\n## Original Article\n\n{original}",
         )
 
 
