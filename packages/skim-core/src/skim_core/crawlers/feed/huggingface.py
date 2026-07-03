@@ -75,7 +75,7 @@ class HuggingFaceCrawler:
             platform=item.get("platform", self.platform),
             author=item.get("author", ""),
             title=item.get("title", ""),
-            content=item.get("title", ""),
+            content="",
             timestamp=item.get("published", ""),
             url=item.get("url", ""),
             summary=item.get("summary", ""),

@@ -59,7 +59,8 @@ class HackerNewsCrawler:
                 post = Post(
                     platform="hackernews",
                     author=item.get("by", "unknown"),
-                    content=item.get("title", ""),
+                    title=item.get("title", ""),
+                    content="",
                     timestamp=ts,
                     url=item.get("url") or f"https://news.ycombinator.com/item?id={story_id}",
                     likes=item.get("score", 0),
@@ -67,7 +68,7 @@ class HackerNewsCrawler:
                     external_id=str(story_id),
                 )
                 posts.append(post)
-                typer.echo(f"   [{i + 1}/{count}] {post.content[:60]}")
+                typer.echo(f"   [{i + 1}/{count}] {(post.title or '')[:60]}")
             except Exception as e:
                 typer.echo(f"   [{i + 1}/{count}] 스킵 (에러: {e})")
 
@@ -78,7 +79,7 @@ class HackerNewsCrawler:
             platform=item.get("platform", self.platform),
             author=item.get("author", ""),
             title=item.get("title", ""),
-            content=item.get("title", ""),
+            content="",
             timestamp=item.get("published", ""),
             url=item.get("url", ""),
             summary=item.get("summary", ""),
