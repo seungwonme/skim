@@ -297,6 +297,125 @@ class SocialAPIMetadataTests(unittest.TestCase):
         # reference_time KST 18:00 → 2h ago = KST 16:00 → UTC 07:00
         self.assertEqual(timestamp, "2026-04-08T07:00:00+00:00")
 
+    def test_threads_parse_thread_collects_attached_image_urls(self):
+        crawler = ThreadsAPICrawler.__new__(ThreadsAPICrawler)
+        thread = {
+            "thread_items": [
+                {
+                    "post": {
+                        "pk": "1",
+                        "code": "IMG1",
+                        "taken_at": 1712534400,
+                        "user": {"username": "aiden"},
+                        "caption": {"text": "사진 있는 글"},
+                        "image_versions2": {
+                            "candidates": [
+                                {"url": "https://cdn.threads.net/img-large.jpg", "width": 1080},
+                                {"url": "https://cdn.threads.net/img-small.jpg", "width": 320},
+                            ]
+                        },
+                        "carousel_media": [
+                            {
+                                "image_versions2": {
+                                    "candidates": [
+                                        {"url": "https://cdn.threads.net/carousel-1.jpg"}
+                                    ]
+                                }
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+
+        post = getattr(crawler, "_parse_thread")(thread)
+
+        self.assertIsNotNone(post)
+        self.assertEqual(
+            post.images,
+            [
+                "https://cdn.threads.net/img-large.jpg",
+                "https://cdn.threads.net/carousel-1.jpg",
+            ],
+        )
+
+    def test_x_parse_single_tweet_collects_photo_cdn_urls(self):
+        crawler = XAPICrawler.__new__(XAPICrawler)
+        tweet = {
+            "legacy": {
+                "full_text": "photo tweet https://t.co/media",
+                "created_at": "Wed Oct 10 20:19:24 +0000 2018",
+                "id_str": "1050118621198921728",
+                "entities": {
+                    "media": [
+                        {
+                            "url": "https://t.co/media",
+                            "type": "photo",
+                            "media_url_https": "https://pbs.twimg.com/media/abc.jpg",
+                        }
+                    ]
+                },
+            },
+            "core": {
+                "user_results": {"result": {"legacy": {"screen_name": "jack"}}}
+            },
+        }
+
+        post = getattr(crawler, "_parse_single_tweet")(tweet)
+
+        self.assertIsNotNone(post)
+        self.assertEqual(post.images, ["https://pbs.twimg.com/media/abc.jpg"])
+
+    def test_reddit_extract_image_urls_covers_direct_preview_and_gallery(self):
+        from skim_core.crawlers.api.reddit import RedditAPICrawler
+
+        urls = RedditAPICrawler._extract_image_urls(
+            {
+                "url_overridden_by_dest": "https://i.redd.it/direct.png",
+                "preview": {
+                    "images": [
+                        {"source": {"url": "https://preview.redd.it/p.jpg?width=640&amp;s=x"}}
+                    ]
+                },
+                "media_metadata": {
+                    "m1": {"s": {"u": "https://preview.redd.it/g1.jpg?auto=webp&amp;s=y"}}
+                },
+            }
+        )
+
+        self.assertEqual(
+            urls,
+            [
+                "https://i.redd.it/direct.png",
+                "https://preview.redd.it/p.jpg?width=640&s=x",
+                "https://preview.redd.it/g1.jpg?auto=webp&s=y",
+            ],
+        )
+
+    def test_linkedin_extract_image_urls_picks_largest_vector_artifact(self):
+        crawler = LinkedInAPICrawler.__new__(LinkedInAPICrawler)
+        content = {
+            "images": [
+                {
+                    "attributes": [
+                        {
+                            "vectorImage": {
+                                "rootUrl": "https://media.licdn.com/dms/image/v2/abc/",
+                                "artifacts": [
+                                    {"width": 800, "fileIdentifyingUrlPathSegment": "800.jpg"},
+                                    {"width": 1280, "fileIdentifyingUrlPathSegment": "1280.jpg"},
+                                ],
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+
+        urls = getattr(crawler, "_extract_image_urls")(content)
+
+        self.assertEqual(urls, ["https://media.licdn.com/dms/image/v2/abc/1280.jpg"])
+
 
 if __name__ == "__main__":
     unittest.main()

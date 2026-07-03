@@ -14,6 +14,11 @@ from ...models import Post
 
 def _item_to_post(item: dict) -> Post:
     """피드 항목을 Post 객체로 변환"""
+    extras = {
+        key: value
+        for key, value in item.items()
+        if key in ("enrichment_method", "enrichment_error", "image", "description") and value
+    }
     return Post(
         platform="every.to",
         author=item.get("author", ""),
@@ -25,6 +30,7 @@ def _item_to_post(item: dict) -> Post:
         source=item.get("platform", ""),
         content_markdown=item.get("content_markdown", ""),
         word_count=item.get("word_count"),
+        **extras,
     )
 
 

@@ -237,6 +237,24 @@ class RedditAPICrawler:
 
         return posts, data.get("after")
 
+    @staticmethod
+    def _extract_image_urls(post_data: dict) -> List[str]:
+        """직접 이미지 링크, preview 원본, 갤러리에서 이미지 CDN URL을 수집합니다."""
+        urls: List[str] = []
+        dest = post_data.get("url_overridden_by_dest") or ""
+        if dest.split("?")[0].lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".webp")):
+            urls.append(dest)
+        for img in (post_data.get("preview") or {}).get("images") or []:
+            src = (img.get("source") or {}).get("url")
+            if src:
+                # reddit preview URL은 HTML 이스케이프된 상태로 온다
+                urls.append(src.replace("&amp;", "&"))
+        for meta in ((post_data.get("media_metadata") or {}) or {}).values():
+            src = ((meta or {}).get("s") or {}).get("u")
+            if src:
+                urls.append(src.replace("&amp;", "&"))
+        return list(dict.fromkeys(urls))
+
     def parse_post(self, post_data: dict) -> Optional[Post]:
         """Reddit 단일 listing item을 Post로 변환합니다."""
         external_id = post_data.get("id")
@@ -254,6 +272,8 @@ class RedditAPICrawler:
         if created_utc:
             timestamp = datetime.fromtimestamp(created_utc, tz=timezone.utc).isoformat()
 
+        image_urls = self._extract_image_urls(post_data)
+
         return Post(
             platform="reddit",
             author=post_data.get("author", "unknown"),
@@ -270,6 +290,7 @@ class RedditAPICrawler:
             upvote_ratio=post_data.get("upvote_ratio"),
             is_self=post_data.get("is_self"),
             over_18=post_data.get("over_18"),
+            **({"images": image_urls} if image_urls else {}),
         )
 
     def parse_rss_entry(self, entry: dict, subreddit: str) -> Optional[Post]:

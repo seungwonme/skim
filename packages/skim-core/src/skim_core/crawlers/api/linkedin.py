@@ -244,6 +244,8 @@ class LinkedInAPICrawler:
             url = f"{LINKEDIN_BASE_URL}/feed/update/{activity_urn}/"
 
         likes, comments, shares, views = self._resolve_engagement(item, urn_index)
+        # actor(프로필 사진)를 피하기 위해 게시글 content 서브트리에서만 이미지를 찾는다
+        image_urls = self._extract_image_urls(item.get("content"))
 
         return Post(
             platform="linkedin",
@@ -257,7 +259,31 @@ class LinkedInAPICrawler:
             views=views,
             source="unofficial",
             external_id=activity_id,
+            **({"images": image_urls} if image_urls else {}),
         )
+
+    def _extract_image_urls(self, node: Any) -> list[str]:
+        """Voyager vectorImage(rootUrl + artifacts)에서 최대 해상도 이미지 URL을 수집합니다."""
+        urls: list[str] = []
+        if isinstance(node, dict):
+            root = node.get("rootUrl")
+            artifacts = node.get("artifacts")
+            if isinstance(root, str) and isinstance(artifacts, list) and artifacts:
+                largest = max(
+                    (a for a in artifacts if isinstance(a, dict)),
+                    key=lambda a: a.get("width", 0),
+                    default=None,
+                )
+                segment = (largest or {}).get("fileIdentifyingUrlPathSegment")
+                if segment:
+                    urls.append(root + segment)
+            else:
+                for value in node.values():
+                    urls.extend(self._extract_image_urls(value))
+        elif isinstance(node, list):
+            for value in node:
+                urls.extend(self._extract_image_urls(value))
+        return list(dict.fromkeys(urls))
 
     def _extract_activity_urn(self, item: dict) -> str:
         candidates = [

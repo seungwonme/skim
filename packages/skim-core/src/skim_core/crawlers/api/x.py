@@ -293,11 +293,15 @@ class XAPICrawler:
                 media.extend(media_container.get("media") or [])
             media_fallbacks = []
             media_alt_texts = []
+            image_urls = []
             for m in media:
                 media_url = m.get("url", "")
                 alt_text = (m.get("ext_alt_text") or "").strip()
                 if alt_text:
                     media_alt_texts.append(alt_text)
+                # 사진 첨부의 CDN 원본 URL(pbs.twimg.com)을 보존한다
+                if m.get("type") == "photo" and m.get("media_url_https"):
+                    image_urls.append(m["media_url_https"])
                 media_link = (
                     m.get("expanded_url") or m.get("display_url") or m.get("media_url_https")
                 )
@@ -330,6 +334,7 @@ class XAPICrawler:
                 views=views,
                 external_id=tweet_id or None,
                 content_status=content_status,
+                **({"images": list(dict.fromkeys(image_urls))} if image_urls else {}),
             )
 
         except Exception as e:

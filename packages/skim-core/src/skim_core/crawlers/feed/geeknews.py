@@ -123,8 +123,9 @@ class GeekNewsCrawler:
         extras = {
             key: value
             for key, value in item.items()
-            if key in ("original_url", "enrichment_method", "enrichment_error")
-            and value is not None
+            if key
+            in ("original_url", "enrichment_method", "enrichment_error", "image", "description")
+            and value
         }
         return Post(
             platform=item.get("platform", self.platform),

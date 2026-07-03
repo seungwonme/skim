@@ -253,8 +253,9 @@ class ThreadsAPICrawler:
         user = first_post.get("user", {})
         author = user.get("username", "Unknown")
 
-        # 같은 작성자의 self-reply chain 내용 합치기
+        # 같은 작성자의 self-reply chain 내용 합치기 + 첨부 이미지 CDN URL 수집
         contents = []
+        image_urls = []
         for item in thread_items:
             post_data = item.get("post", {})
             item_user = post_data.get("user", {})
@@ -265,6 +266,10 @@ class ThreadsAPICrawler:
             text = caption.get("text", "") if caption else ""
             if text:
                 contents.append(text)
+            for media in (post_data, *(post_data.get("carousel_media") or [])):
+                candidates = (media.get("image_versions2") or {}).get("candidates") or []
+                if candidates and candidates[0].get("url"):
+                    image_urls.append(candidates[0]["url"])
 
         if not contents:
             return None
@@ -301,4 +306,5 @@ class ThreadsAPICrawler:
             comments=reply_count,
             reposts=repost_count,
             external_id=str(external_id) if external_id else None,
+            **({"images": list(dict.fromkeys(image_urls))} if image_urls else {}),
         )
