@@ -69,6 +69,7 @@ def list_channel_videos(channel_id: str, channel_name: str, years: int = 1) -> L
                 timestamp=published.isoformat(),
                 url=f"https://www.youtube.com/watch?v={video_id}",
                 source=f"youtube/{channel_name}",
+                external_id=video_id,
             )
         )
     return posts

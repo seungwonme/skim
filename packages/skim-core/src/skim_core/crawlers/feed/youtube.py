@@ -4,11 +4,12 @@
 """
 
 import json
+import re
 import sqlite3
 import subprocess
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, List
+from typing import Any, List, Optional
 
 from ...db import get_connection
 from ...enrichment import enrich_with_content
@@ -36,6 +37,15 @@ def _drop_known_urls(items: List[dict]) -> List[dict]:
     return [it for it in items if it.get("url", "") not in known]
 
 
+_VIDEO_ID_RE = re.compile(r"(?:v=|/shorts/|youtu\.be/|/embed/)([\w-]{11})")
+
+
+def youtube_video_id(url: str) -> Optional[str]:
+    """URL에서 YouTube video ID를 추출한다. 제목이 바뀌어도 불변인 정체성."""
+    match = _VIDEO_ID_RE.search(url or "")
+    return match.group(1) if match else None
+
+
 def _item_to_post(item: dict) -> Post:
     """피드 항목을 Post 객체로 변환"""
     return Post(
@@ -49,6 +59,7 @@ def _item_to_post(item: dict) -> Post:
         source=item.get("platform", ""),
         content_markdown=item.get("content_markdown", ""),
         word_count=item.get("word_count"),
+        external_id=youtube_video_id(item.get("url", "")),
     )
 
 
