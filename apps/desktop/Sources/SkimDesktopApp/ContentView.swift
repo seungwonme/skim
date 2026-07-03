@@ -17,6 +17,7 @@ struct ContentView: View {
     @State private var sortOrder = SortOrder.newest
     @State private var showManager = false
     @State private var managerTab = ManagerTab.sources
+    @State private var columnVisibility = NavigationSplitViewVisibility.all
     @State private var sourceFilter: String?
     @State private var channelPosts: [DashboardPost] = []
     @State private var loadedYears: [String: Int] = [:]
@@ -79,18 +80,17 @@ struct ContentView: View {
     }
 
     var body: some View {
-        HSplitView {
-            libraryPane
-                .frame(minWidth: 220, idealWidth: 248, maxWidth: 300)
-
-            feedPane
-                .frame(minWidth: 390, idealWidth: 460)
-
+        NavigationSplitView(columnVisibility: $columnVisibility) {
+            sidebarList
+                .navigationSplitViewColumnWidth(min: 200, ideal: 232, max: 300)
+        } content: {
+            feedList
+                .navigationSplitViewColumnWidth(min: 340, ideal: 420)
+        } detail: {
             readerPane
-                .frame(minWidth: 520, idealWidth: 680)
+                .navigationSplitViewColumnWidth(min: 500, ideal: 700)
         }
-        .background(Design.windowBackground)
-        .frame(minWidth: 1240, minHeight: 760)
+        .frame(minWidth: 1180, minHeight: 720)
         .task {
             loadDashboard()
         }
@@ -110,159 +110,152 @@ struct ContentView: View {
         }
     }
 
-    private var libraryPane: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text("Skim")
-                .font(.system(size: 26, weight: .bold, design: .serif))
+    private var sidebarSelection: Binding<SidebarItem?> {
+        Binding(
+            get: {
+                if let sourceFilter {
+                    return .channel(String(sourceFilter.dropFirst("youtube/".count)))
+                }
+                if let platformFilter {
+                    return .platform(platformFilter)
+                }
+                return .all
+            },
+            set: { newValue in
+                switch newValue {
+                case .all, nil:
+                    platformFilter = nil
+                    sourceFilter = nil
+                case let .platform(name):
+                    platformFilter = name
+                    sourceFilter = nil
+                case let .channel(name):
+                    selectChannel(name)
+                }
+            }
+        )
+    }
 
-            ScrollView {
-                LazyVStack(spacing: 3) {
-                    platformRow(name: nil, title: "전체", count: snapshot.posts.count)
-                    ForEach(platformCounts, id: \.name) { entry in
-                        platformRow(name: entry.name, title: entry.name, count: entry.count)
-                        if entry.name == "youtube", platformFilter == "youtube" {
-                            youtubeChannelRows
-                        }
+    private var sidebarList: some View {
+        List(selection: sidebarSelection) {
+            Section("피드") {
+                Label("전체", systemImage: "tray.full")
+                    .badge(snapshot.posts.count)
+                    .tag(SidebarItem.all)
+                ForEach(platformCounts, id: \.name) { entry in
+                    Label {
+                        Text(entry.name)
+                    } icon: {
+                        Image(systemName: "circle.fill")
+                            .font(.system(size: 8))
+                            .foregroundStyle(platformColor(entry.name))
+                    }
+                    .badge(entry.count)
+                    .tag(SidebarItem.platform(entry.name))
+                }
+            }
+            if platformFilter == "youtube" {
+                Section("YouTube 채널") {
+                    ForEach(snapshot.sources.filter { $0.platform == "youtube" }.sorted { $0.displayName < $1.displayName }) { source in
+                        Label(source.displayName, systemImage: "play.rectangle")
+                            .tag(SidebarItem.channel(source.displayName))
                     }
                 }
             }
-            .scrollIndicators(.hidden)
+        }
+        .listStyle(.sidebar)
+        .navigationTitle("Skim")
+    }
 
-            Spacer(minLength: 8)
+    private var feedTitle: String {
+        sourceFilter.map { String($0.dropFirst("youtube/".count)) } ?? platformFilter ?? "전체"
+    }
 
-            VStack(alignment: .leading, spacing: 10) {
-                Button {
-                    showManager = true
-                } label: {
-                    Label("소스/크레덴셜 관리", systemImage: "gearshape")
+    private var feedList: some View {
+        Group {
+            if let loadError {
+                ContentUnavailableView("데이터를 불러오지 못했습니다", systemImage: "exclamationmark.triangle", description: Text(loadError))
+            } else if sortedPosts.isEmpty {
+                ContentUnavailableView("결과 없음", systemImage: "tray", description: Text("검색어나 필터를 조정하세요."))
+            } else {
+                List(selection: $selectedPostID) {
+                    ForEach(sortedPosts) { post in
+                        feedRow(post)
+                            .tag(post.id)
+                    }
+                    if sourceFilter != nil {
+                        loadMoreButton
+                            .listRowSeparator(.hidden)
+                    }
                 }
-                .buttonStyle(.borderless)
+                .listStyle(.inset)
+            }
+        }
+        .searchable(text: $searchText, placement: .toolbar, prompt: "제목, 소스, 요약 검색")
+        .navigationTitle(feedTitle)
+        .navigationSubtitle(channelBusyMessage ?? "\(filteredPosts.count.formatted())개")
+        .toolbar {
+            ToolbarItemGroup {
+                Menu {
+                    Picker("정렬", selection: $sortOrder) {
+                        ForEach(SortOrder.allCases, id: \.self) { order in
+                            Text(order.rawValue).tag(order)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                } label: {
+                    Label("정렬", systemImage: "arrow.up.arrow.down")
+                }
                 Button {
                     loadDashboard()
                 } label: {
                     Label("새로고침", systemImage: "arrow.clockwise")
                 }
-                .buttonStyle(.borderless)
-                Text(snapshot.databasePath.isEmpty ? "data/skim.db" : snapshot.databasePath)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                Button {
+                    showManager = true
+                } label: {
+                    Label("소스/크레덴셜 관리", systemImage: "gearshape")
+                }
             }
         }
-        .padding(18)
-        .background(Design.sidebarBackground)
     }
 
-    private var youtubeChannelRows: some View {
-        ForEach(snapshot.sources.filter { $0.platform == "youtube" }.sorted { $0.displayName < $1.displayName }) { source in
-            channelRow(source.displayName)
-        }
-    }
-
-    private func channelRow(_ name: String) -> some View {
-        let filterValue = "youtube/\(name)"
-        let isSelected = sourceFilter == filterValue
-        return Button {
-            selectChannel(name)
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "play.rectangle")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                Text(name)
-                    .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
-                    .foregroundStyle(Design.primaryText)
-                    .lineLimit(1)
-                Spacer()
-            }
-            .padding(.leading, 24)
-            .padding(.trailing, 10)
-            .frame(height: 26)
-            .background(isSelected ? Design.selectedBackground : Color.clear, in: RoundedRectangle(cornerRadius: 6))
-            .contentShape(RoundedRectangle(cornerRadius: 6))
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func platformRow(name: String?, title: String, count: Int) -> some View {
-        let isSelected = platformFilter == name
-        return Button {
-            platformFilter = name
-            sourceFilter = nil
-        } label: {
-            HStack(spacing: 9) {
+    private func feedRow(_ post: DashboardPost) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
                 Circle()
-                    .fill(name.map(platformColor) ?? Design.primaryText.opacity(0.55))
+                    .fill(platformColor(post.platform))
                     .frame(width: 7, height: 7)
-                Text(title)
-                    .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
-                    .foregroundStyle(Design.primaryText)
+                Text(post.source ?? post.platform)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
                 Spacer()
-                Text(count.formatted())
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(.secondary)
+                Text(displayDate(post))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             }
-            .padding(.horizontal, 10)
-            .frame(height: 30)
-            .background(isSelected ? Design.selectedBackground : Color.clear, in: RoundedRectangle(cornerRadius: 6))
-            .contentShape(RoundedRectangle(cornerRadius: 6))
-        }
-        .buttonStyle(.plain)
-    }
-
-    private var feedPane: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .center) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(sourceFilter.map { String($0.dropFirst("youtube/".count)) } ?? platformFilter ?? "전체")
-                        .font(.system(size: 22, weight: .semibold, design: .serif))
-                    Text(channelBusyMessage ?? "\(filteredPosts.count.formatted())개")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Picker("정렬", selection: $sortOrder) {
-                    ForEach(SortOrder.allCases, id: \.self) { order in
-                        Text(order.rawValue).tag(order)
+            Text(post.displayTitle)
+                .font(.system(size: 13, weight: .semibold))
+                .lineLimit(2)
+            Text(cardPreview(post))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+            if post.likes != nil || post.comments != nil {
+                HStack(spacing: 10) {
+                    if let likes = post.likes {
+                        Label(likes.formatted(), systemImage: "hand.thumbsup")
+                    }
+                    if let comments = post.comments {
+                        Label(comments.formatted(), systemImage: "text.bubble")
                     }
                 }
-                .pickerStyle(.menu)
-                .labelsHidden()
-                .fixedSize()
-            }
-
-            TextField("제목, 소스, 요약 검색", text: $searchText)
-                .textFieldStyle(.plain)
-                .padding(.horizontal, 12)
-                .frame(height: 38)
-                .background(Design.inputBackground, in: RoundedRectangle(cornerRadius: 7))
-
-            if let loadError {
-                ContentUnavailableView("데이터를 불러오지 못했습니다", systemImage: "exclamationmark.triangle", description: Text(loadError))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if filteredPosts.isEmpty {
-                ContentUnavailableView("결과 없음", systemImage: "tray", description: Text("검색어나 플랫폼 필터를 조정하세요."))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 10) {
-                        ForEach(sortedPosts) { post in
-                            feedCard(post)
-                        }
-                        if sourceFilter != nil {
-                            loadMoreButton
-                        }
-                    }
-                    .padding(.bottom, 18)
-                }
-                .scrollIndicators(.automatic)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
             }
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 20)
-        .background(Design.feedBackground)
+        .padding(.vertical, 4)
     }
 
     private var loadMoreButton: some View {
@@ -328,7 +321,7 @@ struct ContentView: View {
                         .lineLimit(1)
                 }
                 Text(post.displayTitle)
-                    .font(.system(size: 26, weight: .semibold, design: .serif))
+                    .font(.title2.weight(.semibold))
                     .lineSpacing(2)
                     .lineLimit(2)
                     .textSelection(.enabled)
@@ -448,7 +441,7 @@ struct ContentView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("크레덴셜")
-                        .font(.system(size: 22, weight: .semibold, design: .serif))
+                        .font(.title3.weight(.semibold))
                     Text("저장된 계정 \(snapshot.credentials.count.formatted())개")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -491,7 +484,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 20) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(credentialForm.id == nil ? "크레덴셜 추가" : "크레덴셜 수정")
-                        .font(.system(size: 30, weight: .semibold, design: .serif))
+                        .font(.title.weight(.semibold))
                     Text("메타데이터는 SQLite에 저장하고, 비밀번호는 macOS 키체인에 저장합니다. 서비스 이름은 skim.desktop.<플랫폼> 형식입니다.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
@@ -597,63 +590,6 @@ struct ContentView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .background(Design.panelBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    private func feedCard(_ post: DashboardPost) -> some View {
-        Button {
-            selectedPostID = post.id
-        } label: {
-            HStack(alignment: .top, spacing: 12) {
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(platformColor(post.platform))
-                    .frame(width: 4)
-
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 8) {
-                        platformBadge(post.platform)
-                        Text(displayDate(post))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                    }
-
-                    Text(post.displayTitle)
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(Design.primaryText)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-
-                    Text(cardPreview(post))
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(3)
-                        .multilineTextAlignment(.leading)
-
-                    HStack(spacing: 10) {
-                        Text(post.source ?? post.author)
-                            .lineLimit(1)
-                        if let likes = post.likes {
-                            Label(likes.formatted(), systemImage: "hand.thumbsup")
-                                .labelStyle(.titleAndIcon)
-                        }
-                        if let comments = post.comments {
-                            Label(comments.formatted(), systemImage: "text.bubble")
-                                .labelStyle(.titleAndIcon)
-                        }
-                    }
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                }
-            }
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(selectedPostID == post.id ? Design.selectedBackground : Design.cardBackground, in: RoundedRectangle(cornerRadius: 8))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(selectedPostID == post.id ? Design.green.opacity(0.5) : Design.hairline, lineWidth: 1)
-            )
-        }
-        .buttonStyle(.plain)
     }
 
     private func credentialRow(_ credential: PlatformCredential) -> some View {
@@ -1189,6 +1125,12 @@ private enum SortOrder: String, CaseIterable {
     case newest = "최신순"
     case likes = "점수순"
     case comments = "댓글순"
+}
+
+private enum SidebarItem: Hashable {
+    case all
+    case platform(String)
+    case channel(String)
 }
 
 private enum ManagerTab: Equatable {
