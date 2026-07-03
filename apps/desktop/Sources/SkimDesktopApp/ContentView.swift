@@ -704,12 +704,21 @@ struct ContentView: View {
     }
 
     private func readerMarkdown(_ post: DashboardPost) -> String {
-        if let markdown = post.contentMarkdown?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !markdown.isEmpty
+        var markdown: String
+        if let body = post.contentMarkdown?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !body.isEmpty
         {
-            return markdown
+            markdown = body
+        } else {
+            markdown = post.summary ?? post.content
         }
-        return post.summary ?? post.content
+
+        // SNS 첨부/og:image 중 본문에 아직 없는 것만 뒤에 붙인다 (인라인 이미지와 중복 방지)
+        let attached = post.imageURLs.filter { !markdown.contains($0) }
+        if !attached.isEmpty {
+            markdown += "\n\n" + attached.map { "![](\($0))" }.joined(separator: "\n\n")
+        }
+        return markdown
     }
 
     private func inputBorder(isFocused: Bool) -> some View {
@@ -806,18 +815,25 @@ struct ContentView: View {
     }
 
     private func loadDashboard() {
-        do {
-            let database = try SkimDatabase(path: WorkspaceLocator.defaultDatabasePath())
-            try database.ensureSchema()
-            snapshot = try database.loadDashboard(limit: 180)
-            if let selectedPostID, snapshot.posts.contains(where: { $0.id == selectedPostID }) {
-                self.selectedPostID = selectedPostID
-            } else {
-                selectedPostID = snapshot.posts.first?.id
+        let databasePath = WorkspaceLocator.defaultDatabasePath()
+        Task { @MainActor in
+            do {
+                // 본문 포함 180건 로드를 메인 스레드에서 돌리면 실행/새로고침마다 UI가 멈춘다.
+                let loaded = try await Task.detached(priority: .userInitiated) {
+                    let database = try SkimDatabase(path: databasePath)
+                    try database.ensureSchema()
+                    return try database.loadDashboard(limit: 180)
+                }.value
+                snapshot = loaded
+                if let selectedPostID, loaded.posts.contains(where: { $0.id == selectedPostID }) {
+                    self.selectedPostID = selectedPostID
+                } else {
+                    selectedPostID = loaded.posts.first?.id
+                }
+                loadError = nil
+            } catch {
+                loadError = localizedError(error)
             }
-            loadError = nil
-        } catch {
-            loadError = localizedError(error)
         }
     }
 
@@ -979,6 +995,9 @@ private struct ReaderMarkdownWebView: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
+        // 크롤링된 외부 콘텐츠 뷰어라 페이지 JS가 필요 없다. 실행 표면을 닫는다.
+        // (네이티브 evaluateJavaScript 기반 높이 측정에는 영향 없음)
+        configuration.defaultWebpagePreferences.allowsContentJavaScript = false
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = false

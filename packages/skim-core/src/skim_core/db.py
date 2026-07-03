@@ -13,12 +13,16 @@ import json
 import os
 import socket
 import sqlite3
+import sys
 from pathlib import Path
 from typing import Optional
 
 from .paths import DATA_DIR
 
 DB_PATH = DATA_DIR / "skim.db"
+
+# API형 플랫폼은 본문이 content_markdown이 아니라 content에 담긴다 (word_count 정규화용).
+_API_BODY_PLATFORMS = {"linkedin", "threads", "x", "reddit"}
 
 SCHEMA = """\
 CREATE TABLE IF NOT EXISTS posts (
@@ -169,6 +173,46 @@ def init_db(db_path: Optional[Path] = None) -> None:
     conn.close()
 
 
+def migrate_canonical_body(db_path: Optional[Path] = None) -> dict:
+    """기존 데이터를 정본 본문 모델로 이행한다 (일회성, 멱등).
+
+    1. API형(linkedin/threads/x/reddit): 본문이 content에만 있던 과거 행을
+       content_markdown으로 승격하고 word_count를 채운다.
+    2. Feed형: content에 제목이 중복 저장된 과거 행에서 content를 비운다
+       (제목은 title, 본문은 content_markdown에 있으므로).
+
+    Returns: 변경 건수 요약 dict.
+    """
+    conn = get_connection(db_path)
+    api_list = ",".join(f"'{p}'" for p in sorted(_API_BODY_PLATFORMS))
+    try:
+        promoted = 0
+        rows = conn.execute(
+            f"""SELECT id, content FROM posts
+                WHERE platform IN ({api_list})
+                  AND (content_markdown IS NULL OR TRIM(content_markdown) = '')
+                  AND content IS NOT NULL AND TRIM(content) != ''"""
+        ).fetchall()
+        for row_id, content in rows:
+            body = content.strip()
+            conn.execute(
+                "UPDATE posts SET content_markdown = ?, "
+                "word_count = COALESCE(NULLIF(word_count, 0), ?) WHERE id = ?",
+                (body, len(body.split()), row_id),
+            )
+            promoted += 1
+
+        cleared = conn.execute(
+            f"""UPDATE posts SET content = ''
+                WHERE platform NOT IN ({api_list})
+                  AND content IS NOT NULL AND content != '' AND content = title"""
+        ).rowcount
+        conn.commit()
+        return {"api_promoted": promoted, "feed_content_cleared": cleared}
+    finally:
+        conn.close()
+
+
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
     """SQLite ADD COLUMN IF NOT EXISTS 대체 (3.43 까지도 미지원).
 
@@ -270,8 +314,30 @@ def save_posts(
     """Post 객체 리스트를 DB에 저장합니다. 중복은 무시. 저장된 건수 반환."""
     conn = get_connection(db_path)
     saved = 0
+    errors = 0
+    last_error: Optional[str] = None
     for post in posts:
         data = post.model_dump() if hasattr(post, "model_dump") else post
+
+        # 본문 정본화: API형 플랫폼은 본문이 content에 오므로 content_markdown으로 승격한다.
+        # 이렇게 하면 content_markdown이 전 플랫폼 공통 본문 필드가 된다 (Feed형은 이미 그렇다).
+        # 판정과 저장 모두 Post의 platform을 우선한다 (인자는 fallback).
+        # 혼합 배치에서 인자 platform으로 저장하면 row가 오라벨링된다.
+        row_platform = data.get("platform") or platform
+
+        if row_platform in _API_BODY_PLATFORMS and not (
+            data.get("content_markdown") or ""
+        ).strip():
+            body = (data.get("content") or "").strip()
+            if body:
+                data["content_markdown"] = body
+
+        # word_count 정규화: 미계산이면 정본 본문(content_markdown)에서 센다.
+        if not data.get("word_count"):
+            body = (data.get("content_markdown") or "").strip()
+            if body:
+                data["word_count"] = len(body.split())
+
         # extra 필드: Post 모델의 extra="allow"로 들어온 추가 필드
         known_fields = {
             "platform",
@@ -295,13 +361,21 @@ def save_posts(
 
         url = (data.get("url") or "").strip()
 
-        # external_id가 없으면 content 해시로 대체 (NULL은 UNIQUE 제약 무시됨)
+        # external_id가 없으면 해시로 대체 (NULL은 UNIQUE 제약 무시됨).
+        # URL이 있으면 URL 기준으로 해시해 "같은 작성자의 동일 본문, 다른 글" 충돌을 막고,
+        # 재크롤 시 본문이 바뀌어도 같은 글로 인식되게 한다.
         ext_id = data.get("external_id")
+        has_own_id = bool(ext_id)
         if not ext_id:
-            hash_src = f"{platform}:{data.get('author', '')}:{data.get('content', '')}"
+            if url:
+                hash_src = f"{row_platform}:{data.get('author', '')}:{url}"
+            else:
+                hash_src = f"{row_platform}:{data.get('author', '')}:{data.get('content', '')}"
             ext_id = hashlib.sha256(hash_src.encode()).hexdigest()[:16]
 
-        if url:
+        # 해시 id인 경우만 같은 URL의 기존 row에 병합한다. 크롤러가 준 진짜 id를
+        # URL 일치만으로 덮어쓰면 같은 링크의 서로 다른 글(예: HN 중복 제출)이 유실된다.
+        if url and not has_own_id:
             row = conn.execute(
                 """
                 SELECT external_id FROM posts
@@ -309,7 +383,7 @@ def save_posts(
                 ORDER BY id
                 LIMIT 1
                 """,
-                (platform, url),
+                (row_platform, url),
             ).fetchone()
             if row and row["external_id"]:
                 ext_id = row["external_id"]
@@ -380,7 +454,7 @@ def save_posts(
                        OR (posts.extra IS NULL OR TRIM(posts.extra) = '')
                        OR json_extract(posts.extra, '$.enrichment_method') = 'failed'""",
                 (
-                    platform,
+                    row_platform,
                     source or data.get("source"),
                     ext_id,
                     data.get("author", ""),
@@ -400,10 +474,18 @@ def save_posts(
             )
             if conn.execute("SELECT changes()").fetchone()[0] > 0:
                 saved += 1
-        except sqlite3.Error:
+        except sqlite3.Error as e:
+            # 개별 row 실패는 배치를 살리되, 전량 실패가 성공처럼 보이지 않게 집계한다.
+            errors += 1
+            last_error = str(e)
             continue
     conn.commit()
     conn.close()
+    if errors:
+        print(
+            f"[skim] save_posts: {errors}개 저장 실패 (마지막 오류: {last_error})",
+            file=sys.stderr,
+        )
     return saved
 
 

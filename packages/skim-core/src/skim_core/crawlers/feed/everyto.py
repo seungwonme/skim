@@ -14,24 +14,30 @@ from ...models import Post
 
 def _item_to_post(item: dict) -> Post:
     """피드 항목을 Post 객체로 변환"""
+    extras = {
+        key: value
+        for key, value in item.items()
+        if key in ("enrichment_method", "enrichment_error", "image", "description") and value
+    }
     return Post(
-        platform="every.to",
+        platform="everyto",
         author=item.get("author", ""),
         title=item.get("title", ""),
-        content=item.get("title", ""),
+        content="",
         timestamp=item.get("published", ""),
         url=item.get("url", ""),
         summary=item.get("summary", ""),
         source=item.get("platform", ""),
         content_markdown=item.get("content_markdown", ""),
         word_count=item.get("word_count"),
+        **extras,
     )
 
 
 class EveryToCrawler:
     """Every.to 멀티 칼럼 RSS 피드 크롤러"""
 
-    platform: str = "every.to"
+    platform: str = "everyto"
 
     async def crawl(self, **options: Any) -> List[Post]:
         """

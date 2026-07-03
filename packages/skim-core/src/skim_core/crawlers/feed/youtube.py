@@ -4,15 +4,36 @@
 """
 
 import json
+import sqlite3
 import subprocess
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, List
 
+from ...db import get_connection
 from ...enrichment import enrich_with_content
 from ...feed_config import YOUTUBE_CHANNELS
 from ...feed_utils import fetch_feed
 from ...models import Post
+
+
+def _drop_known_urls(items: List[dict]) -> List[dict]:
+    """yt-dlp fallback은 날짜 필터가 불가능해 매번 같은 최신 영상을 되돌려준다.
+    이미 저장된 영상은 제외해 transcript 재추출 낭비를 막는다."""
+    if not items:
+        return items
+    try:
+        conn = get_connection()
+        placeholders = ",".join("?" for _ in items)
+        rows = conn.execute(
+            f"SELECT url FROM posts WHERE platform='youtube' AND url IN ({placeholders})",
+            [it.get("url", "") for it in items],
+        ).fetchall()
+        conn.close()
+    except sqlite3.Error:
+        return items
+    known = {r["url"] for r in rows}
+    return [it for it in items if it.get("url", "") not in known]
 
 
 def _item_to_post(item: dict) -> Post:
@@ -21,7 +42,7 @@ def _item_to_post(item: dict) -> Post:
         platform="youtube",
         author=item.get("author", ""),
         title=item.get("title", ""),
-        content=item.get("title", ""),
+        content="",
         timestamp=item.get("published", ""),
         url=item.get("url", ""),
         summary=item.get("summary", ""),
@@ -125,7 +146,7 @@ class YouTubeCrawler:
                 rss_failed += 1
                 if rss_failed == 1 and debug:
                     print("  RSS 실패 — yt-dlp fallback 사용")
-                longform = _fetch_via_ytdlp(name, channel_id, since)
+                longform = _drop_known_urls(_fetch_via_ytdlp(name, channel_id, since))
 
             if longform:
                 print(f"  -> {name}: {len(longform)}개 새 영상")

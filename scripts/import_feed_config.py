@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 from pathlib import Path
 
 from skim_core.db import DB_PATH, get_connection, init_db
@@ -18,17 +19,23 @@ def load_feed_config() -> dict[str, str]:
 
 def preview_import(db_path: Path) -> dict:
     """Return the import preview without mutating the database."""
-    init_db(db_path)
     channels = load_feed_config()
-    conn = get_connection(db_path)
 
-    existing = {
-        row["canonical_id"]
-        for row in conn.execute(
-            "SELECT canonical_id FROM tracked_sources WHERE platform = 'youtube'"
-        ).fetchall()
-    }
-    conn.close()
+    # preview는 dry-run 계약이다. DB 파일/스키마를 생성하지 않는다.
+    existing: set[str] = set()
+    if db_path.exists():
+        conn = get_connection(db_path)
+        try:
+            existing = {
+                row["canonical_id"]
+                for row in conn.execute(
+                    "SELECT canonical_id FROM tracked_sources WHERE platform = 'youtube'"
+                ).fetchall()
+            }
+        except sqlite3.OperationalError:
+            pass  # tracked_sources 테이블이 없으면 전부 신규로 본다
+        finally:
+            conn.close()
 
     incoming = [
         {
@@ -53,6 +60,7 @@ def preview_import(db_path: Path) -> dict:
 
 def run_import(db_path: Path) -> dict:
     """Insert missing YouTube channels into tracked_sources."""
+    init_db(db_path)
     preview = preview_import(db_path)
     conn = get_connection(db_path)
 

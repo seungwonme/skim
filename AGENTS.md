@@ -13,14 +13,16 @@ Shared AI working guide for this repository. `CLAUDE.md` imports this file.
 
 ```bash
 # 의존성 설치
-pnpm install
+pnpm install   # husky/commitlint 훅용
 uv sync
 uv run playwright install
+brew install just
 
-# 루트 품질 게이트
-pnpm lint
-pnpm test
-pnpm build
+# 루트 품질 게이트 (justfile이 태스크 단일 진입점)
+just lint
+just test
+just build   # desktop 앱 빌드
+just dev     # desktop 앱 실행
 
 # Python 개별 도구
 uv run pytest tests -v
@@ -75,6 +77,13 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
                        SQLite 저장 + JSON 파일
 ```
 
+### 데이터 계약: DB는 소비 준비가 끝난 상태다
+
+- `posts.content_markdown`은 **추출이 완료된 정본 본문**이다. 이 DB를 읽는 소비자(AI, digest, 데스크톱 앱, research)는 재추출 절차 없이 그대로 사용한다고 가정한다.
+- 따라서 추출 완결성은 크롤러의 책임이다. 저장 시점에 링크 원문 본문, 플랫폼 자체 본문(Ask/Show HN 텍스트, GeekNews 한국어 요약), 토론(HN 상위 댓글)까지 채워야 한다. "링크만 저장"은 계약 위반이다.
+- 예외는 `--no-content` 명시 실행뿐이며, 그 행은 다음 크롤 upsert로 본문이 채워질 때까지 미완성으로 간주한다.
+- 크롤러가 본문에 합성하는 섹션 라벨은 항상 영어로 쓴다 (예: `## Hacker News Comments`, `## Original Article`). 가용한 메타데이터(작성자, 작성시각, 점수)는 텍스트에 함께 표기한다.
+
 ### Crawler 유형과 패턴
 
 모든 크롤러는 `packages/skim-core/src/skim_core/crawlers/base.py`의 `Crawler` Protocol을 구현하고, `packages/skim-core/src/skim_core/crawlers/__init__.py`의 `REGISTRY`에 등록된다.
@@ -126,7 +135,8 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
 
 ## Tooling
 
-- JS/TS: `pnpm` workspace + `turbo` + `biome`
+- 태스크 러너: `just` (justfile)
+- Node: husky/commitlint 훅용으로만 `pnpm` 유지 (JS/TS 소스 없음)
 - Python: `uv` workspace
 - Swift desktop: `apps/desktop`
 - Git hooks: `husky`

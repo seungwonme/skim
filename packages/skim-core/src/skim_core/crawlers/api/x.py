@@ -74,8 +74,8 @@ class XAPICrawler:
             raise typer.Exit(1)
 
         if self.debug_mode:
-            typer.echo(f"ct0: {ct0[:20]}...")
-            typer.echo(f"auth_token: {auth_token[:20]}...")
+            # 시크릿 값은 일부라도 로그에 남기지 않는다.
+            typer.echo(f"ct0: {len(ct0)}자, auth_token: {len(auth_token)}자 로드됨")
 
     def _load_cookies(self) -> Dict[str, str]:
         """세션 파일에서 쿠키 로드"""
@@ -293,11 +293,15 @@ class XAPICrawler:
                 media.extend(media_container.get("media") or [])
             media_fallbacks = []
             media_alt_texts = []
+            image_urls = []
             for m in media:
                 media_url = m.get("url", "")
                 alt_text = (m.get("ext_alt_text") or "").strip()
                 if alt_text:
                     media_alt_texts.append(alt_text)
+                # 사진 첨부의 CDN 원본 URL(pbs.twimg.com)을 보존한다
+                if m.get("type") == "photo" and m.get("media_url_https"):
+                    image_urls.append(m["media_url_https"])
                 media_link = (
                     m.get("expanded_url") or m.get("display_url") or m.get("media_url_https")
                 )
@@ -330,11 +334,12 @@ class XAPICrawler:
                 views=views,
                 external_id=tweet_id or None,
                 content_status=content_status,
+                **({"images": list(dict.fromkeys(image_urls))} if image_urls else {}),
             )
 
         except Exception as e:
-            if self.debug_mode:
-                typer.echo(f"  트윗 파싱 오류: {e}")
+            # 스키마 변경으로 파싱이 깨져도 조용히 누락되지 않게 항상 알린다.
+            typer.echo(f"  [!] 트윗 파싱 오류(건너뜀): {e}")
             return None
 
     def _parse_timestamp(self, created_at: str) -> str:

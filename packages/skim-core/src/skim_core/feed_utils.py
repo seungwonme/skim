@@ -54,16 +54,28 @@ def fetch_feed(url: str, source_name: str, since: datetime, quiet: bool = False)
         return []
 
     results = []
+    skipped_undated = 0
     for entry in feed.entries:
         entry_dt = parse_entry_date(entry)
+        if entry_dt is None:
+            # 날짜 없는 엔트리는 since 판정이 불가능해 제외한다. 조용히 사라지지 않게 집계.
+            skipped_undated += 1
+            continue
         if not is_within_range(entry_dt, since):
             continue
+
+        content_html = ""
+        if entry.get("content"):
+            content_html = entry["content"][0].get("value", "")
+        if not content_html:
+            content_html = entry.get("summary", "")
 
         results.append(
             {
                 "platform": source_name,
                 "title": entry.get("title", ""),
                 "url": entry.get("link", ""),
+                "content_html": content_html,
                 "author": (
                     entry.get("author", "")
                     or (
@@ -72,6 +84,7 @@ def fetch_feed(url: str, source_name: str, since: datetime, quiet: bool = False)
                         else ""
                     )
                 ),
+                "external_id": entry.get("id", ""),
                 "published": entry_dt.isoformat() if entry_dt else "",
                 "summary": (
                     re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", entry.get("summary") or "")).strip()[
@@ -80,5 +93,8 @@ def fetch_feed(url: str, source_name: str, since: datetime, quiet: bool = False)
                 ),
             }
         )
+
+    if skipped_undated and not quiet:
+        print(f"  [!] {source_name}: 날짜 없는 엔트리 {skipped_undated}개 제외")
 
     return results

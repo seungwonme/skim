@@ -47,6 +47,7 @@ class RedditAPICrawler:
         self.debug_mode = debug_mode
         self.session_path = session_path
         self.session = session or requests.Session()
+        self._owns_session = session is None
         self.session.headers.update(
             {
                 "User-Agent": REDDIT_USER_AGENT,
@@ -60,7 +61,12 @@ class RedditAPICrawler:
         count = options.get("count", 10)
         subreddit = options.get("subreddit")
         sort = options.get("sort", "hot")
-        return self.fetch_listing(count=count, subreddit=subreddit, sort=sort)
+        try:
+            return self.fetch_listing(count=count, subreddit=subreddit, sort=sort)
+        finally:
+            # 크롤러 인스턴스는 1회성이다. 직접 만든 세션은 커넥션 풀을 정리한다.
+            if self._owns_session:
+                self.session.close()
 
     def fetch_listing(
         self,
@@ -81,7 +87,11 @@ class RedditAPICrawler:
         posts: List[Post] = []
         after: Optional[str] = None
 
-        while len(posts) < count:
+        # 전량 필터된 페이지가 이어져도 무한 호출하지 않게 페이지 상한을 둔다.
+        max_pages = 10
+        for _ in range(max_pages):
+            if len(posts) >= count:
+                break
             remaining = count - len(posts)
             url = self.build_listing_url(
                 subreddit=normalized_subreddit,
@@ -103,7 +113,8 @@ class RedditAPICrawler:
             page_posts, after = self.parse_listing(listing)
             posts.extend(page_posts)
 
-            if not after or not page_posts:
+            # 페이지가 전량 필터돼도 after cursor가 남아 있으면 다음 페이지를 이어서 본다.
+            if not after:
                 break
 
         return posts[:count]
@@ -226,6 +237,24 @@ class RedditAPICrawler:
 
         return posts, data.get("after")
 
+    @staticmethod
+    def _extract_image_urls(post_data: dict) -> List[str]:
+        """직접 이미지 링크, preview 원본, 갤러리에서 이미지 CDN URL을 수집합니다."""
+        urls: List[str] = []
+        dest = post_data.get("url_overridden_by_dest") or ""
+        if dest.split("?")[0].lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".webp")):
+            urls.append(dest)
+        for img in (post_data.get("preview") or {}).get("images") or []:
+            src = (img.get("source") or {}).get("url")
+            if src:
+                # reddit preview URL은 HTML 이스케이프된 상태로 온다
+                urls.append(src.replace("&amp;", "&"))
+        for meta in ((post_data.get("media_metadata") or {}) or {}).values():
+            src = ((meta or {}).get("s") or {}).get("u")
+            if src:
+                urls.append(src.replace("&amp;", "&"))
+        return list(dict.fromkeys(urls))
+
     def parse_post(self, post_data: dict) -> Optional[Post]:
         """Reddit 단일 listing item을 Post로 변환합니다."""
         external_id = post_data.get("id")
@@ -243,6 +272,8 @@ class RedditAPICrawler:
         if created_utc:
             timestamp = datetime.fromtimestamp(created_utc, tz=timezone.utc).isoformat()
 
+        image_urls = self._extract_image_urls(post_data)
+
         return Post(
             platform="reddit",
             author=post_data.get("author", "unknown"),
@@ -259,6 +290,7 @@ class RedditAPICrawler:
             upvote_ratio=post_data.get("upvote_ratio"),
             is_self=post_data.get("is_self"),
             over_18=post_data.get("over_18"),
+            **({"images": image_urls} if image_urls else {}),
         )
 
     def parse_rss_entry(self, entry: dict, subreddit: str) -> Optional[Post]:

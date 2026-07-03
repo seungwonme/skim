@@ -1,0 +1,31 @@
+"""
+@file test_producthunt_redirect.py
+@description PH 피드 content_html에서 제품 외부 사이트 리다이렉트(/r/p/{id})를
+              추출하는 _redirect_url 파서 회귀 테스트.
+"""
+
+from __future__ import annotations
+
+from skim_core.crawlers.feed.producthunt import _redirect_url
+
+_CONTENT_HTML = (
+    "<p>Shared, searchable memory for every AI coding agent</p>"
+    '<p><a href="https://www.producthunt.com/products/scritty">Discussion</a> | '
+    '<a href="https://www.producthunt.com/r/p/1185930?app_id=339">Link</a></p>'
+)
+
+
+def test_extracts_rp_redirect() -> None:
+    item = {"content_html": _CONTENT_HTML, "url": "https://www.producthunt.com/products/scritty"}
+    assert _redirect_url(item) == "https://www.producthunt.com/r/p/1185930?app_id=339"
+
+
+def test_falls_back_to_url_when_no_redirect() -> None:
+    item = {"content_html": "<p>no link here</p>", "url": "https://www.producthunt.com/products/x"}
+    assert _redirect_url(item) == "https://www.producthunt.com/products/x"
+
+
+def test_ignores_discussion_link_picks_rp() -> None:
+    # Discussion(/products) 링크가 먼저 나와도 /r/p 링크만 골라야 한다.
+    item = {"content_html": _CONTENT_HTML, "url": ""}
+    assert "/r/p/" in _redirect_url(item)

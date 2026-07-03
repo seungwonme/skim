@@ -40,10 +40,10 @@ class HackerNewsTimestampTests(unittest.TestCase):
             "skim_core.crawlers.feed.hackernews.requests.get",
             side_effect=[fake_top, fake_item],
         ):
-            posts = crawler._fetch_top_stories(1)
+            items = crawler._fetch_top_story_items(1)
 
-        self.assertEqual(len(posts), 1)
-        self.assertEqual(posts[0].timestamp, "2023-11-14T22:13:20+00:00")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["published"], "2023-11-14T22:13:20+00:00")
 
     def test_hackernews_firebase_mode_empty_time_is_empty(self):
         crawler = HackerNewsCrawler()
@@ -62,9 +62,9 @@ class HackerNewsTimestampTests(unittest.TestCase):
             "skim_core.crawlers.feed.hackernews.requests.get",
             side_effect=[fake_top, fake_item],
         ):
-            posts = crawler._fetch_top_stories(1)
+            items = crawler._fetch_top_story_items(1)
 
-        self.assertEqual(posts[0].timestamp, "")
+        self.assertEqual(items[0]["published"], "")
 
 
 class GeekNewsTimestampTests(unittest.TestCase):

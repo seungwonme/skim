@@ -1,2 +1,2 @@
 #!/usr/bin/env sh
-pnpm test && pnpm typecheck && pnpm build
+just test && just build

@@ -65,6 +65,7 @@ class LinkedInAPICrawler:
         self.debug_mode = debug_mode
         self.session_path = session_path
         self.session = session or requests.Session()
+        self._owns_session = session is None
         self.session.headers.update(
             {
                 "Accept": "application/vnd.linkedin.normalized+json+2.1",
@@ -82,7 +83,12 @@ class LinkedInAPICrawler:
 
     async def crawl(self, **options) -> List[Post]:
         count = options.get("count", 5)
-        return self.fetch_feed(count=count)
+        try:
+            return self.fetch_feed(count=count)
+        finally:
+            # 크롤러 인스턴스는 1회성이다. 직접 만든 세션은 커넥션 풀을 정리한다.
+            if self._owns_session:
+                self.session.close()
 
     def fetch_feed(self, *, count: int) -> List[Post]:
         """LinkedIn 홈 피드 게시글을 수집합니다."""
@@ -270,6 +276,8 @@ class LinkedInAPICrawler:
             url = f"{LINKEDIN_BASE_URL}/feed/update/{activity_urn}/"
 
         likes, comments, shares, views = self._resolve_engagement(item, urn_index)
+        # actor(프로필 사진)를 피하기 위해 게시글 content 서브트리에서만 이미지를 찾는다
+        image_urls = self._extract_image_urls(item.get("content"))
 
         return Post(
             platform="linkedin",
@@ -283,6 +291,7 @@ class LinkedInAPICrawler:
             views=views,
             source="unofficial",
             external_id=activity_id,
+            **({"images": image_urls} if image_urls else {}),
         )
 
     @staticmethod
@@ -296,6 +305,29 @@ class LinkedInAPICrawler:
             if isinstance(value, str) and ("promoted" in value.lower() or "광고" in value):
                 return True
         return False
+
+    def _extract_image_urls(self, node: Any) -> list[str]:
+        """Voyager vectorImage(rootUrl + artifacts)에서 최대 해상도 이미지 URL을 수집합니다."""
+        urls: list[str] = []
+        if isinstance(node, dict):
+            root = node.get("rootUrl")
+            artifacts = node.get("artifacts")
+            if isinstance(root, str) and isinstance(artifacts, list) and artifacts:
+                largest = max(
+                    (a for a in artifacts if isinstance(a, dict)),
+                    key=lambda a: a.get("width", 0),
+                    default=None,
+                )
+                segment = (largest or {}).get("fileIdentifyingUrlPathSegment")
+                if segment:
+                    urls.append(root + segment)
+            else:
+                for value in node.values():
+                    urls.extend(self._extract_image_urls(value))
+        elif isinstance(node, list):
+            for value in node:
+                urls.extend(self._extract_image_urls(value))
+        return list(dict.fromkeys(urls))
 
     def _extract_activity_urn(self, item: dict) -> str:
         candidates = [

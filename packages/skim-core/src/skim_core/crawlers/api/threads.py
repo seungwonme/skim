@@ -92,7 +92,11 @@ class ThreadsAPICrawler:
     async def crawl(self, **options) -> List[Post]:
         count = options.get("count", 5)
         user_id = options.get("user_id")
-        return await self._crawl_impl(count, user_id)
+        try:
+            return await self._crawl_impl(count, user_id)
+        finally:
+            # 크롤러 인스턴스는 1회성이다. 세션 커넥션 풀을 정리한다.
+            self.session.close()
 
     async def _crawl_impl(self, count: int = 5, user_id: Optional[str] = None) -> List[Post]:
         """
@@ -113,7 +117,11 @@ class ThreadsAPICrawler:
         posts: List[Post] = []
         max_id: Optional[str] = None
 
-        while len(posts) < count:
+        # 파싱 불가 스레드만 이어질 때 피드 끝까지 무한정 넘기지 않도록 페이지 상한을 둔다.
+        max_pages = 10
+        for _ in range(max_pages):
+            if len(posts) >= count:
+                break
             threads, max_id = self._fetch_feed(user_id=user_id, max_id=max_id)
 
             if not threads:
@@ -169,8 +177,8 @@ class ThreadsAPICrawler:
             return [], None
 
         if resp.status_code != 200:
-            if self.debug_mode:
-                typer.echo(f"  타임라인 API 오류: {resp.status_code}")
+            # rate limit/서버 오류를 정상 빈 피드처럼 숨기지 않는다.
+            typer.echo(f"  [!] 타임라인 API 오류: HTTP {resp.status_code}")
             return [], None
 
         result = resp.json()
@@ -211,8 +219,8 @@ class ThreadsAPICrawler:
             return [], None
 
         if resp.status_code != 200:
-            if self.debug_mode:
-                typer.echo(f"  사용자 피드 API 오류: {resp.status_code}")
+            # rate limit/서버 오류를 정상 빈 피드처럼 숨기지 않는다.
+            typer.echo(f"  [!] 사용자 피드 API 오류: HTTP {resp.status_code}")
             return [], None
 
         data = resp.json()
@@ -245,8 +253,9 @@ class ThreadsAPICrawler:
         user = first_post.get("user", {})
         author = user.get("username", "Unknown")
 
-        # 같은 작성자의 self-reply chain 내용 합치기
+        # 같은 작성자의 self-reply chain 내용 합치기 + 첨부 이미지 CDN URL 수집
         contents = []
+        image_urls = []
         for item in thread_items:
             post_data = item.get("post", {})
             item_user = post_data.get("user", {})
@@ -257,6 +266,10 @@ class ThreadsAPICrawler:
             text = caption.get("text", "") if caption else ""
             if text:
                 contents.append(text)
+            for media in (post_data, *(post_data.get("carousel_media") or [])):
+                candidates = (media.get("image_versions2") or {}).get("candidates") or []
+                if candidates and candidates[0].get("url"):
+                    image_urls.append(candidates[0]["url"])
 
         if not contents:
             return None
@@ -293,4 +306,5 @@ class ThreadsAPICrawler:
             comments=reply_count,
             reposts=repost_count,
             external_id=str(external_id) if external_id else None,
+            **({"images": list(dict.fromkeys(image_urls))} if image_urls else {}),
         )

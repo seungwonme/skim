@@ -18,6 +18,7 @@ from skim_core.db import (
     finish_run,
     get_connection,
     init_db,
+    migrate_canonical_body,
     save_posts,
     save_run,
     update_run_progress,
@@ -91,7 +92,11 @@ __version__ = "0.2.0"
 async def run_single_crawler(platform: str, options: dict) -> List[Post]:
     """단일 크롤러를 실행합니다."""
     crawler_cls = REGISTRY[platform]
-    crawler = crawler_cls()
+    try:
+        # API 크롤러는 debug_mode를 생성자에서 소비하므로 생성 시점에 주입한다.
+        crawler = crawler_cls(debug_mode=bool(options.get("debug", False)))
+    except TypeError:
+        crawler = crawler_cls()
     return await crawler.crawl(**options)
 
 
@@ -245,7 +250,8 @@ def crawl(  # noqa: C901 — CLI 진입점으로 플랫폼별 분기가 불가�
         typer.echo(
             f"\n완료: 총 {total_saved}개 저장 (run #{run_id}, 실패: {', '.join(failed_platforms)})"
         )
-        return
+        # cron/모니터링이 실패를 감지할 수 있게 비정상 종료 코드를 반환한다.
+        raise typer.Exit(1)
 
     finish_run(run_id, "success", total_saved, "전체 플랫폼 처리 완료")
     typer.echo(f"\n완료: 총 {total_saved}개 저장 (run #{run_id})")
@@ -304,6 +310,16 @@ def platforms():
 def version():
     """버전 정보를 출력합니다."""
     typer.echo(f"SNS Crawler v{__version__}")
+
+
+@app.command()
+def migrate(db: Optional[Path] = typer.Option(None, "--db", help="SQLite DB 경로")):
+    """기존 데이터를 정본 본문 모델로 이행합니다 (content_markdown 통일). 멱등."""
+    result = migrate_canonical_body(db)
+    typer.echo(
+        f"API 본문 승격: {result['api_promoted']}건, "
+        f"Feed content 정리: {result['feed_content_cleared']}건"
+    )
 
 
 @app.command()

@@ -3,6 +3,8 @@
 import io
 import inspect
 import unittest
+
+import typer
 from unittest.mock import AsyncMock, patch
 
 import skim_cli.cli as main
@@ -219,15 +221,17 @@ class CrawlPersistenceTests(unittest.TestCase):
         run_single_crawler.side_effect = [RuntimeError("boom"), self.sample_posts]
         save_posts.return_value = 1
 
-        main.crawl(
-            platforms=["threads", "reddit"],
-            count=1,
-            days=None,
-            output=None,
-            debug=False,
-            no_content=True,
-            user_id=None,
-        )
+        # 플랫폼 실패 시 cron이 감지할 수 있게 비정상 종료 코드를 낸다.
+        with self.assertRaises(typer.Exit):
+            main.crawl(
+                platforms=["threads", "reddit"],
+                count=1,
+                days=None,
+                output=None,
+                debug=False,
+                no_content=True,
+                user_id=None,
+            )
 
         init_db_mock.assert_called_once()
         save_run_mock.assert_called_once_with()

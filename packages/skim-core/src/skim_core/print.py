@@ -189,7 +189,8 @@ def print_post_preview(post, platform: str) -> None:
     context = _logging_context.get_context_info()
     typer.echo(f"\n📄 [{context.get('operation_id', 'unknown')}] 첫 번째 게시글 미리보기:")
     typer.echo(f"   📝 작성자: {post.author}")
-    typer.echo(f"   📄 내용: {post.content[:100]}...")
+    preview = post.title or post.content_markdown or post.content or ""
+    typer.echo(f"   📄 내용: {preview[:100]}...")
     typer.echo(f"   📅 시간: {post.timestamp}")
 
     # 플랫폼별 추가 정보
