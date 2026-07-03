@@ -505,6 +505,30 @@ def _apply_youtube_summary_fallback(item: dict) -> bool:
     return True
 
 
+def _geeknews_topic_body_from_html(html: str) -> Optional[str]:
+    """토픽 페이지 HTML에서 큐레이터 요약(.topic_contents)을 마크다운으로 추출"""
+    soup = BeautifulSoup(html, "html.parser")
+    node = soup.select_one(".topic_contents")
+    if not node:
+        return None
+    lines = []
+    for el in node.find_all(["p", "li", "h1", "h2", "h3", "blockquote"]):
+        text = el.get_text(" ", strip=True)
+        if text:
+            lines.append(f"- {text}" if el.name == "li" else text)
+    body = "\n".join(dict.fromkeys(lines)) if lines else node.get_text(" ", strip=True)
+    return body.strip() or None
+
+
+def fetch_geeknews_topic_body(topic_url: str) -> Optional[str]:
+    """긱뉴스 토픽 페이지에서 한국어 요약 본문을 가져온다"""
+    try:
+        r = requests.get(topic_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        return _geeknews_topic_body_from_html(r.text)
+    except Exception:
+        return None
+
+
 def resolve_geeknews_original_url(topic_url: str) -> Optional[str]:
     """긱뉴스 토픽 페이지에서 원문 URL을 추출"""
     try:
@@ -560,9 +584,12 @@ def enrich_with_content(items: List[dict]) -> List[dict]:
                     print(f"    [!] 자막 추출 실패: {e}")
             continue
 
-        # GeekNews: 토픽 페이지에서 원문 URL을 추출한 뒤 원문에 defuddle
+        # GeekNews: 토픽 페이지의 한국어 요약을 1차 본문으로 삼고, 원문 추출은 뒤에 붙인다.
+        # 원문이 랜딩/디렉터리 페이지라 내비게이션 잡문이 추출돼도 본문이 무너지지 않는다.
         if item["platform"] == "geeknews" and "news.hada.io/topic" in url:
+            topic_body = fetch_geeknews_topic_body(url)
             original_url = resolve_geeknews_original_url(url)
+            data = None
             if original_url:
                 item["original_url"] = original_url
                 print(f"    -> 원문: {original_url[:60]}")
@@ -574,8 +601,17 @@ def enrich_with_content(items: List[dict]) -> List[dict]:
                     item["enrichment_method"] = method
                     if error:
                         item["enrichment_error"] = error
-            else:
+            elif not topic_body:
                 data = defuddle(url)
+
+            if topic_body:
+                original_md = (data or {}).get("content_markdown", "").strip()
+                merged = topic_body
+                if original_md:
+                    merged += "\n\n---\n\n## 원문 전문\n\n" + original_md
+                data = dict(data or {})
+                data["content_markdown"] = merged
+                data["word_count"] = len(merged.split())
         elif (
             item["platform"].startswith("ailabs")
             or item["platform"].startswith("blogs")
