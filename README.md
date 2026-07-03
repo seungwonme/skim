@@ -51,12 +51,13 @@ Skim collects posts from multiple public feeds and session-based social sources,
 ## Install
 
 ```bash
-pnpm install
+pnpm install   # husky/commitlint git hooks
 uv sync
 uv run playwright install
+brew install just
 ```
 
-Python requires 3.12+. Node tooling uses `pnpm` and `turbo`; Python tooling uses `uv`.
+Python requires 3.12+. Tasks run through `just`; Python tooling uses `uv`.
 
 ## Usage
 
@@ -132,10 +133,11 @@ On macOS, credentials can be stored in Keychain. SQLite keeps only the Keychain 
 ## Development
 
 ```bash
-pnpm lint
-pnpm test
-pnpm build
-pnpm typecheck
+just lint
+just test
+just build    # desktop app
+just dev      # run desktop app
+just format
 ```
 
 Python-only checks:

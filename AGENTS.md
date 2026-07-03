@@ -13,14 +13,16 @@ Shared AI working guide for this repository. `CLAUDE.md` imports this file.
 
 ```bash
 # 의존성 설치
-pnpm install
+pnpm install   # husky/commitlint 훅용
 uv sync
 uv run playwright install
+brew install just
 
-# 루트 품질 게이트
-pnpm lint
-pnpm test
-pnpm build
+# 루트 품질 게이트 (justfile이 태스크 단일 진입점)
+just lint
+just test
+just build   # desktop 앱 빌드
+just dev     # desktop 앱 실행
 
 # Python 개별 도구
 uv run pytest tests -v
@@ -132,7 +134,8 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
 
 ## Tooling
 
-- JS/TS: `pnpm` workspace + `turbo` + `biome`
+- 태스크 러너: `just` (justfile)
+- Node: husky/commitlint 훅용으로만 `pnpm` 유지 (JS/TS 소스 없음)
 - Python: `uv` workspace
 - Swift desktop: `apps/desktop`
 - Git hooks: `husky`
