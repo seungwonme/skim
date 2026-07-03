@@ -14,7 +14,9 @@ struct ContentView: View {
     @State private var platformFilter: String?
     @State private var readerContentMode = ReaderContentMode.markdown
     @State private var readerMarkdownHeight: CGFloat = 520
-    @State private var activeSection = AppSection.feed
+    @State private var sortOrder = SortOrder.newest
+    @State private var showManager = false
+    @State private var managerTab = ManagerTab.sources
     @State private var credentialForm = CredentialForm()
     @State private var credentialNotice: Notice?
     @State private var pendingDeleteCredential: PlatformCredential?
@@ -42,39 +44,54 @@ struct ContentView: View {
         }
     }
 
+    private var sortedPosts: [DashboardPost] {
+        switch sortOrder {
+        case .newest:
+            filteredPosts.sorted { sortDate($0) > sortDate($1) }
+        case .likes:
+            filteredPosts.sorted { ($0.likes ?? -1) > ($1.likes ?? -1) }
+        case .comments:
+            filteredPosts.sorted { ($0.comments ?? -1) > ($1.comments ?? -1) }
+        }
+    }
+
     private var selectedPost: DashboardPost? {
-        filteredPosts.first { $0.id == selectedPostID }
-            ?? filteredPosts.first
+        sortedPosts.first { $0.id == selectedPostID }
+            ?? sortedPosts.first
             ?? snapshot.posts.first
     }
 
-    private var platforms: [String] {
-        Array(Set(snapshot.posts.map(\.platform))).sorted()
+    private var platformCounts: [(name: String, count: Int)] {
+        Dictionary(grouping: snapshot.posts, by: \.platform)
+            .map { (name: $0.key, count: $0.value.count) }
+            .sorted { $0.count > $1.count }
+    }
+
+    private func sortDate(_ post: DashboardPost) -> String {
+        // timestamp는 ISO("...T..."), crawledAt은 "YYYY-MM-DD HH:MM:SS" — 구분자만 통일하면 사전순 비교 가능
+        (post.timestamp?.isEmpty == false ? post.timestamp! : post.crawledAt)
+            .replacingOccurrences(of: "T", with: " ")
     }
 
     var body: some View {
         HSplitView {
             libraryPane
-                .frame(minWidth: 286, idealWidth: 318, maxWidth: 360)
+                .frame(minWidth: 220, idealWidth: 248, maxWidth: 300)
 
-            if activeSection == .feed {
-                feedPane
-                    .frame(minWidth: 390, idealWidth: 460)
+            feedPane
+                .frame(minWidth: 390, idealWidth: 460)
 
-                readerPane
-                    .frame(minWidth: 520, idealWidth: 680)
-            } else {
-                credentialsPane
-                    .frame(minWidth: 430, idealWidth: 510)
-
-                credentialEditorPane
-                    .frame(minWidth: 520, idealWidth: 640)
-            }
+            readerPane
+                .frame(minWidth: 520, idealWidth: 680)
         }
         .background(Design.windowBackground)
         .frame(minWidth: 1240, minHeight: 760)
         .task {
             loadDashboard()
+        }
+        .sheet(isPresented: $showManager) {
+            managerSheet
+                .frame(width: 1040, height: 660)
         }
         .alert("크레덴셜을 삭제할까요?", isPresented: deleteAlertBinding) {
             Button("삭제", role: .destructive) {
@@ -90,99 +107,90 @@ struct ContentView: View {
 
     private var libraryPane: some View {
         VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Skim")
-                    .font(.system(size: 28, weight: .bold, design: .serif))
-                Text("로컬 시그널 데스크")
-                    .font(.callout.weight(.medium))
-                    .foregroundStyle(.secondary)
-            }
+            Text("Skim")
+                .font(.system(size: 26, weight: .bold, design: .serif))
 
-            VStack(spacing: 10) {
-                metricTile(symbol: "doc.text", title: "포스트", value: snapshot.summary.postsCount.formatted())
-                metricTile(symbol: "antenna.radiowaves.left.and.right", title: "소스", value: snapshot.summary.sourcesCount.formatted())
-                metricTile(symbol: "key", title: "크레덴셜", value: snapshot.summary.credentialsCount.formatted())
-                metricTile(symbol: "line.3.horizontal.decrease.circle", title: "표시 중", value: filteredPosts.count.formatted())
-            }
-
-            HStack(spacing: 8) {
-                modeButton(.feed, symbol: "tray.full")
-                modeButton(.credentials, symbol: "key")
-            }
-
-            VStack(alignment: .leading, spacing: 10) {
-                sectionLabel("구독")
-                HStack(spacing: 8) {
-                    TextField("youtube.com/@채널", text: $youtubeInput)
-                        .textFieldStyle(.plain)
-                        .padding(.horizontal, 10)
-                        .frame(height: 34)
-                        .background(Design.inputBackground, in: RoundedRectangle(cornerRadius: 7))
-                    Button {
-                        addYouTubeSource()
-                    } label: {
-                        Image(systemName: "plus")
-                            .frame(width: 30, height: 30)
+            ScrollView {
+                LazyVStack(spacing: 3) {
+                    platformRow(name: nil, title: "전체", count: snapshot.posts.count)
+                    ForEach(platformCounts, id: \.name) { entry in
+                        platformRow(name: entry.name, title: entry.name, count: entry.count)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(youtubeInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .help("YouTube 소스 추가")
-                }
-                if let sourceMessage {
-                    Text(sourceMessage.text)
-                        .font(.caption)
-                        .foregroundStyle(sourceMessage.isError ? Color.red : Design.green)
-                        .lineLimit(2)
                 }
             }
-
-            VStack(alignment: .leading, spacing: 10) {
-                sectionLabel("소스")
-                if snapshot.sources.isEmpty {
-                    emptyLine("추적 중인 소스 없음")
-                } else {
-                    ScrollView {
-                        LazyVStack(spacing: 6) {
-                            ForEach(snapshot.sources.prefix(18)) { source in
-                                sourceRow(source)
-                            }
-                        }
-                    }
-                    .scrollIndicators(.hidden)
-                }
-            }
+            .scrollIndicators(.hidden)
 
             Spacer(minLength: 8)
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text(snapshot.databasePath.isEmpty ? "data/skim.db" : snapshot.databasePath)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .truncationMode(.middle)
+            VStack(alignment: .leading, spacing: 10) {
+                Button {
+                    showManager = true
+                } label: {
+                    Label("소스/크레덴셜 관리", systemImage: "gearshape")
+                }
+                .buttonStyle(.borderless)
                 Button {
                     loadDashboard()
                 } label: {
                     Label("새로고침", systemImage: "arrow.clockwise")
                 }
                 .buttonStyle(.borderless)
+                Text(snapshot.databasePath.isEmpty ? "data/skim.db" : snapshot.databasePath)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
         }
-        .padding(22)
+        .padding(18)
         .background(Design.sidebarBackground)
+    }
+
+    private func platformRow(name: String?, title: String, count: Int) -> some View {
+        let isSelected = platformFilter == name
+        return Button {
+            platformFilter = name
+        } label: {
+            HStack(spacing: 9) {
+                Circle()
+                    .fill(name.map(platformColor) ?? Design.primaryText.opacity(0.55))
+                    .frame(width: 7, height: 7)
+                Text(title)
+                    .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
+                    .foregroundStyle(Design.primaryText)
+                    .lineLimit(1)
+                Spacer()
+                Text(count.formatted())
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 30)
+            .background(isSelected ? Design.selectedBackground : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+            .contentShape(RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
     }
 
     private var feedPane: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack {
+            HStack(alignment: .center) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("수집함")
+                    Text(platformFilter ?? "전체")
                         .font(.system(size: 22, weight: .semibold, design: .serif))
-                    Text("로드된 \(snapshot.posts.count.formatted())개 중 \(filteredPosts.count.formatted())개 표시")
+                    Text("\(filteredPosts.count.formatted())개")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                Picker("정렬", selection: $sortOrder) {
+                    ForEach(SortOrder.allCases, id: \.self) { order in
+                        Text(order.rawValue).tag(order)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .fixedSize()
             }
 
             TextField("제목, 소스, 요약 검색", text: $searchText)
@@ -190,8 +198,6 @@ struct ContentView: View {
                 .padding(.horizontal, 12)
                 .frame(height: 38)
                 .background(Design.inputBackground, in: RoundedRectangle(cornerRadius: 7))
-
-            platformBar
 
             if let loadError {
                 ContentUnavailableView("데이터를 불러오지 못했습니다", systemImage: "exclamationmark.triangle", description: Text(loadError))
@@ -202,7 +208,7 @@ struct ContentView: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 10) {
-                        ForEach(filteredPosts) { post in
+                        ForEach(sortedPosts) { post in
                             feedCard(post)
                         }
                     }
@@ -214,22 +220,6 @@ struct ContentView: View {
         .padding(.horizontal, 18)
         .padding(.vertical, 20)
         .background(Design.feedBackground)
-    }
-
-    private var platformBar: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 6) {
-                filterChip(title: "전체", isSelected: platformFilter == nil) {
-                    platformFilter = nil
-                }
-                ForEach(platforms, id: \.self) { platform in
-                    filterChip(title: platform, isSelected: platformFilter == platform) {
-                        platformFilter = platform
-                    }
-                }
-            }
-        }
-        .scrollIndicators(.hidden)
     }
 
     private var readerPane: some View {
@@ -295,6 +285,88 @@ struct ContentView: View {
         .padding(.horizontal, 30)
         .padding(.vertical, 18)
         .background(Design.readerBackground)
+    }
+
+    private var managerSheet: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Picker("", selection: $managerTab) {
+                    Text("소스").tag(ManagerTab.sources)
+                    Text("크레덴셜").tag(ManagerTab.credentials)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 240)
+                Spacer()
+                Button("닫기") {
+                    showManager = false
+                }
+                .keyboardShortcut(.cancelAction)
+            }
+            .padding(16)
+
+            Divider()
+
+            if managerTab == .sources {
+                sourcesManagerPane
+            } else {
+                HSplitView {
+                    credentialsPane
+                        .frame(minWidth: 400, idealWidth: 450)
+                    credentialEditorPane
+                        .frame(minWidth: 480)
+                }
+            }
+        }
+        .background(Design.windowBackground)
+    }
+
+    private var sourcesManagerPane: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 10) {
+                sectionLabel("YouTube 구독 추가")
+                HStack(spacing: 8) {
+                    TextField("youtube.com/@채널", text: $youtubeInput)
+                        .textFieldStyle(.plain)
+                        .padding(.horizontal, 10)
+                        .frame(height: 34)
+                        .frame(maxWidth: 420)
+                        .background(Design.inputBackground, in: RoundedRectangle(cornerRadius: 7))
+                    Button {
+                        addYouTubeSource()
+                    } label: {
+                        Image(systemName: "plus")
+                            .frame(width: 30, height: 30)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(youtubeInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                if let sourceMessage {
+                    Text(sourceMessage.text)
+                        .font(.caption)
+                        .foregroundStyle(sourceMessage.isError ? Color.red : Design.green)
+                        .lineLimit(2)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                sectionLabel("추적 중인 소스 \(snapshot.sources.count.formatted())개")
+                if snapshot.sources.isEmpty {
+                    emptyLine("추적 중인 소스 없음")
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 6) {
+                            ForEach(snapshot.sources) { source in
+                                sourceRow(source)
+                            }
+                        }
+                    }
+                    .scrollIndicators(.automatic)
+                }
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Design.feedBackground)
     }
 
     private var credentialsPane: some View {
@@ -427,39 +499,6 @@ struct ContentView: View {
         .background(Design.readerBackground)
     }
 
-    private func metricTile(symbol: String, title: String, value: String) -> some View {
-        HStack(spacing: 11) {
-            Image(systemName: symbol)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(Design.green)
-                .frame(width: 28, height: 28)
-                .background(Design.green.opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title.uppercased())
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
-                Text(value)
-                    .font(.title3.weight(.semibold))
-            }
-            Spacer()
-        }
-        .padding(12)
-        .background(Design.panelBackground, in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    private func modeButton(_ section: AppSection, symbol: String) -> some View {
-        Button {
-            activeSection = section
-        } label: {
-            Label(section.title, systemImage: symbol)
-                .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(.plain)
-        .padding(.vertical, 9)
-        .foregroundStyle(activeSection == section ? Color.white : Design.primaryText)
-        .background(activeSection == section ? Design.green : Design.panelBackground, in: RoundedRectangle(cornerRadius: 8))
-    }
-
     private func sourceRow(_ source: TrackedSource) -> some View {
         HStack(spacing: 10) {
             Circle()
@@ -510,7 +549,7 @@ struct ContentView: View {
                         .lineLimit(2)
                         .multilineTextAlignment(.leading)
 
-                    Text(post.summary ?? post.content)
+                    Text(cardPreview(post))
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                         .lineLimit(3)
@@ -726,18 +765,6 @@ struct ContentView: View {
             .stroke(isFocused ? Design.green.opacity(0.85) : Design.hairline, lineWidth: isFocused ? 1.5 : 1)
     }
 
-    private func filterChip(title: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(isSelected ? Color.white : Design.primaryText)
-                .padding(.horizontal, 10)
-                .frame(height: 28)
-                .background(isSelected ? Design.green : Design.inputBackground, in: Capsule())
-        }
-        .buttonStyle(.plain)
-    }
-
     private func platformBadge(_ platform: String) -> some View {
         Text(platform.uppercased())
             .font(.caption2.weight(.bold))
@@ -790,6 +817,15 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(12)
             .background(Design.panelBackground.opacity(0.7), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func cardPreview(_ post: DashboardPost) -> String {
+        // hnrss summary는 "Article URL: ..." 메타 텍스트라 미리보기로 부적합 — 본문으로 대체
+        if let summary = post.summary, !summary.isEmpty, !summary.hasPrefix("Article URL:") {
+            return summary
+        }
+        let body = post.contentMarkdown?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return body.isEmpty ? post.content : String(body.prefix(300))
     }
 
     private func displayDate(_ post: DashboardPost) -> String {
@@ -967,16 +1003,15 @@ private struct Notice: Equatable {
     let isError: Bool
 }
 
-private enum AppSection: Equatable {
-    case feed
-    case credentials
+private enum SortOrder: String, CaseIterable {
+    case newest = "최신순"
+    case likes = "점수순"
+    case comments = "댓글순"
+}
 
-    var title: String {
-        switch self {
-        case .feed: "피드"
-        case .credentials: "크레덴셜"
-        }
-    }
+private enum ManagerTab: Equatable {
+    case sources
+    case credentials
 }
 
 private enum ReaderContentMode: Equatable {
