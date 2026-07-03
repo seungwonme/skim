@@ -285,6 +285,44 @@ class SocialAPIMetadataTests(unittest.TestCase):
         self.assertEqual(posts[0].reposts, 1)
         self.assertEqual(posts[0].views, 50)
 
+    def test_linkedin_extract_post_skips_promoted(self):
+        crawler = LinkedInAPICrawler.__new__(LinkedInAPICrawler)
+        item = {
+            "commentary": {
+                "text": {"text": "지금 광고 리포트를 확인해 보세요. 자세한 내용은 링크로."}
+            },
+            "actor": {
+                "name": {"text": "AB180"},
+                "subDescription": {"text": "Promoted"},
+            },
+            "entityUrn": (
+                "urn:li:fsd_update:(urn:li:activity:7471124424193122304,MAIN_FEED,EMPTY,DEFAULT,false)"
+            ),
+        }
+
+        post = getattr(crawler, "_extract_post")(item, {})
+
+        self.assertIsNone(post)
+
+    def test_linkedin_classify_redirect_detects_session_rejection(self):
+        from types import SimpleNamespace
+
+        from skim_core.crawlers.api.linkedin import _classify_redirect
+
+        cases = [
+            ("https://www.linkedin.com/uas/login?session_redirect=...", "login"),
+            ("/checkpoint/challenge/abc", "checkpoint"),
+            ("https://www.linkedin.com/authwall?trk=...", "authwall"),
+            ("https://www.linkedin.com/voyager/api/feed/updatesV2", "self-redirect-loop"),
+            ("https://www.linkedin.com/feed/", "redirect"),
+        ]
+        for location, expected in cases:
+            response = SimpleNamespace(
+                headers={"location": location},
+                url="https://www.linkedin.com/voyager/api/feed/updatesV2",
+            )
+            self.assertEqual(_classify_redirect(response), expected, msg=location)
+
     def test_linkedin_parse_relative_timestamp_supports_accessibility_copy(self):
         crawler = LinkedInAPICrawler.__new__(LinkedInAPICrawler)
         reference_time = datetime(2026, 4, 8, 18, 0, 0, tzinfo=timezone(timedelta(hours=9)))
