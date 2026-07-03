@@ -25,6 +25,12 @@ def _redirect_url(item: dict) -> str:
 
 def _item_to_post(item: dict) -> Post:
     """피드 항목을 Post 객체로 변환"""
+    extras = {
+        key: value
+        for key, value in item.items()
+        if key in ("enrichment_method", "enrichment_error")
+        and value is not None
+    }
     return Post(
         platform="producthunt",
         author=item.get("author", ""),
@@ -36,6 +42,7 @@ def _item_to_post(item: dict) -> Post:
         source=item.get("platform", ""),
         content_markdown=item.get("content_markdown", ""),
         word_count=item.get("word_count"),
+        **extras,
     )
 
 
