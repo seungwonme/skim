@@ -250,12 +250,26 @@ public enum WorkspaceLocator {
             .deletingLastPathComponent() // repo root
     }
 
+    /// `.claude/worktrees/<name>` 안이면 실제 repo root로 탈출한다.
+    /// worktree의 임시 data/skim.db를 정본으로 잡는 혼선을 막는다.
+    private static func escapingWorktree(_ url: URL) -> URL {
+        let components = url.pathComponents
+        guard let index = components.firstIndex(of: ".claude"),
+              components.indices.contains(index + 1),
+              components[index + 1] == "worktrees"
+        else {
+            return url
+        }
+        let repoPath = NSString.path(withComponents: Array(components[..<index]))
+        return URL(fileURLWithPath: repoPath, isDirectory: true)
+    }
+
     public static func workspaceRoot(from currentDirectory: URL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)) -> URL {
         if let override = ProcessInfo.processInfo.environment["SKIM_WORKSPACE_ROOT"], !override.isEmpty {
             return URL(fileURLWithPath: override, isDirectory: true)
         }
 
-        var candidate = currentDirectory
+        var candidate = escapingWorktree(currentDirectory)
         for _ in 0..<8 {
             if FileManager.default.fileExists(atPath: candidate.appending(path: "packages/skim-core").path) {
                 return candidate
@@ -269,8 +283,9 @@ public enum WorkspaceLocator {
 
         // cwd 상위에서 마커를 못 찾으면 빌드된 소스 위치의 리포 루트로 폴백한다.
         // 무관한 폴더에서 실행했을 때 그 자리에 빈 data/skim.db를 만들어버리는 것을 막는다.
-        if FileManager.default.fileExists(atPath: sourceRepoRoot.appending(path: "packages/skim-core").path) {
-            return sourceRepoRoot
+        let sourceRoot = escapingWorktree(sourceRepoRoot)
+        if FileManager.default.fileExists(atPath: sourceRoot.appending(path: "packages/skim-core").path) {
+            return sourceRoot
         }
         return currentDirectory
     }
