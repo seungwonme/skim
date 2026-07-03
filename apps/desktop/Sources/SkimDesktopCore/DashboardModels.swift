@@ -239,6 +239,17 @@ public struct PlatformCredentialDraft: Equatable, Sendable {
 }
 
 public enum WorkspaceLocator {
+    /// 로컬 빌드 시점의 리포 루트. #filePath는
+    /// <repo>/apps/desktop/Sources/SkimDesktopCore/DashboardModels.swift 를 가리킨다.
+    private static var sourceRepoRoot: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // SkimDesktopCore
+            .deletingLastPathComponent() // Sources
+            .deletingLastPathComponent() // desktop
+            .deletingLastPathComponent() // apps
+            .deletingLastPathComponent() // repo root
+    }
+
     public static func workspaceRoot(from currentDirectory: URL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)) -> URL {
         if let override = ProcessInfo.processInfo.environment["SKIM_WORKSPACE_ROOT"], !override.isEmpty {
             return URL(fileURLWithPath: override, isDirectory: true)
@@ -256,6 +267,11 @@ public enum WorkspaceLocator {
             candidate = parent
         }
 
+        // cwd 상위에서 마커를 못 찾으면 빌드된 소스 위치의 리포 루트로 폴백한다.
+        // 무관한 폴더에서 실행했을 때 그 자리에 빈 data/skim.db를 만들어버리는 것을 막는다.
+        if FileManager.default.fileExists(atPath: sourceRepoRoot.appending(path: "packages/skim-core").path) {
+            return sourceRepoRoot
+        }
         return currentDirectory
     }
 
