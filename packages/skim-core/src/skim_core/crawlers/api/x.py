@@ -74,8 +74,8 @@ class XAPICrawler:
             raise typer.Exit(1)
 
         if self.debug_mode:
-            typer.echo(f"ct0: {ct0[:20]}...")
-            typer.echo(f"auth_token: {auth_token[:20]}...")
+            # 시크릿 값은 일부라도 로그에 남기지 않는다.
+            typer.echo(f"ct0: {len(ct0)}자, auth_token: {len(auth_token)}자 로드됨")
 
     def _load_cookies(self) -> Dict[str, str]:
         """세션 파일에서 쿠키 로드"""
@@ -333,8 +333,8 @@ class XAPICrawler:
             )
 
         except Exception as e:
-            if self.debug_mode:
-                typer.echo(f"  트윗 파싱 오류: {e}")
+            # 스키마 변경으로 파싱이 깨져도 조용히 누락되지 않게 항상 알린다.
+            typer.echo(f"  [!] 트윗 파싱 오류(건너뜀): {e}")
             return None
 
     def _parse_timestamp(self, created_at: str) -> str:

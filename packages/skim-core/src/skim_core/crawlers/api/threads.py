@@ -113,7 +113,11 @@ class ThreadsAPICrawler:
         posts: List[Post] = []
         max_id: Optional[str] = None
 
-        while len(posts) < count:
+        # 파싱 불가 스레드만 이어질 때 피드 끝까지 무한정 넘기지 않도록 페이지 상한을 둔다.
+        max_pages = 10
+        for _ in range(max_pages):
+            if len(posts) >= count:
+                break
             threads, max_id = self._fetch_feed(user_id=user_id, max_id=max_id)
 
             if not threads:
@@ -169,8 +173,8 @@ class ThreadsAPICrawler:
             return [], None
 
         if resp.status_code != 200:
-            if self.debug_mode:
-                typer.echo(f"  타임라인 API 오류: {resp.status_code}")
+            # rate limit/서버 오류를 정상 빈 피드처럼 숨기지 않는다.
+            typer.echo(f"  [!] 타임라인 API 오류: HTTP {resp.status_code}")
             return [], None
 
         result = resp.json()
@@ -211,8 +215,8 @@ class ThreadsAPICrawler:
             return [], None
 
         if resp.status_code != 200:
-            if self.debug_mode:
-                typer.echo(f"  사용자 피드 API 오류: {resp.status_code}")
+            # rate limit/서버 오류를 정상 빈 피드처럼 숨기지 않는다.
+            typer.echo(f"  [!] 사용자 피드 API 오류: HTTP {resp.status_code}")
             return [], None
 
         data = resp.json()
