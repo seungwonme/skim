@@ -389,6 +389,10 @@ public final class SkimDatabase {
         }
     }
 
+    public func deleteTrackedSource(id: Int64) throws {
+        try execute("DELETE FROM tracked_sources WHERE id = ?", bindings: [.integer(id)])
+    }
+
     public func deleteCredential(id: Int64, deleteKeychain: Bool = true) throws {
         guard let credential = try fetchCredential(id: id) else {
             return
