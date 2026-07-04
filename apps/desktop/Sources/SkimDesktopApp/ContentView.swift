@@ -22,6 +22,7 @@ struct ContentView: View {
     @State private var channelPosts: [DashboardPost] = []
     @State private var loadedYears: [String: Int] = [:]
     @State private var channelBusyMessage: String?
+    @State private var exhaustedChannels: Set<String> = []
     @State private var transcribingPostID: DashboardPost.ID?
     @State private var credentialForm = CredentialForm()
     @State private var credentialNotice: Notice?
@@ -194,7 +195,7 @@ struct ContentView: View {
                                 }
                             }
                     }
-                    if sourceFilter != nil {
+                    if canLoadMoreChannel {
                         loadMoreButton
                             .listRowSeparator(.hidden)
                     }
@@ -253,6 +254,7 @@ struct ContentView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
+            transcribeIndicator(post)
             if post.likes != nil || post.comments != nil {
                 HStack(spacing: 10) {
                     if let likes = post.likes {
@@ -267,6 +269,33 @@ struct ContentView: View {
             }
         }
         .padding(.vertical, 4)
+        .opacity(isTranscribeBlocked(post) ? 0.5 : 1)
+    }
+
+    /// 전사 중인 영상은 하나뿐이라, 리스트에서 진행/대기 상태를 시각화한다
+    @ViewBuilder
+    private func transcribeIndicator(_ post: DashboardPost) -> some View {
+        if transcribingPostID == post.id {
+            HStack(spacing: 5) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("전사 중")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(Design.red)
+            }
+        } else if isTranscribeBlocked(post) {
+            Label("다른 영상 전사 중 - 대기", systemImage: "hourglass")
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    /// 자막 없는 YouTube 영상인데 다른 영상이 전사 중이라 지금은 시작할 수 없음
+    private func isTranscribeBlocked(_ post: DashboardPost) -> Bool {
+        transcribingPostID != nil
+            && transcribingPostID != post.id
+            && post.platform == "youtube"
+            && (post.contentMarkdown ?? "").isEmpty
     }
 
     private var loadMoreButton: some View {
@@ -286,6 +315,24 @@ struct ContentView: View {
 
     private var currentChannelYears: Int {
         sourceFilter.flatMap { loadedYears[$0] } ?? 1
+    }
+
+    /// 채널 뷰이고 아직 마지막 영상까지 소진되지 않은 경우에만 더 불러오기 노출
+    private var canLoadMoreChannel: Bool {
+        guard let sourceFilter else {
+            return false
+        }
+        return !exhaustedChannels.contains(sourceFilter)
+    }
+
+    private func transcribeButtonTitle(_ post: DashboardPost) -> String {
+        if transcribingPostID == post.id {
+            return "전사 중"
+        }
+        if transcribingPostID != nil {
+            return "다른 영상 전사 중"
+        }
+        return "자막 전사"
     }
 
     private var readerPane: some View {
@@ -344,8 +391,8 @@ struct ContentView: View {
                         transcribe(post)
                     } label: {
                         Label(
-                            transcribingPostID == post.id ? "전사 중" : "자막 전사",
-                            systemImage: "captions.bubble"
+                            transcribeButtonTitle(post),
+                            systemImage: transcribingPostID == post.id ? "hourglass" : "captions.bubble"
                         )
                     }
                     .buttonStyle(.bordered)
@@ -1035,20 +1082,28 @@ struct ContentView: View {
         }
     }
 
+    private func fetchChannelPosts(source: String) async throws -> [DashboardPost] {
+        let databasePath = WorkspaceLocator.defaultDatabasePath()
+        return try await Task.detached(priority: .userInitiated) {
+            let database = try SkimDatabase(path: databasePath)
+            return try database.fetchPosts(source: source)
+        }.value
+    }
+
+    private func applyChannelPosts(_ posts: [DashboardPost]) {
+        channelPosts = posts
+        if !posts.contains(where: { $0.id == selectedPostID }) {
+            selectedPostID = posts.first?.id
+        }
+    }
+
     private func reloadChannelPosts() {
-        guard let sourceFilter else {
+        guard let source = sourceFilter else {
             return
         }
-        let databasePath = WorkspaceLocator.defaultDatabasePath()
         Task { @MainActor in
             do {
-                channelPosts = try await Task.detached(priority: .userInitiated) {
-                    let database = try SkimDatabase(path: databasePath)
-                    return try database.fetchPosts(source: sourceFilter)
-                }.value
-                if !channelPosts.contains(where: { $0.id == selectedPostID }) {
-                    selectedPostID = channelPosts.first?.id
-                }
+                applyChannelPosts(try await fetchChannelPosts(source: source))
             } catch {
                 loadError = localizedError(error)
             }
@@ -1062,16 +1117,34 @@ struct ContentView: View {
         let channel = String(sourceFilter.dropFirst("youtube/".count))
         let years = (loadedYears[sourceFilter] ?? 1) + 1
         loadedYears[sourceFilter] = years
-        runChannelBackfill(channel: channel, years: years)
+        runChannelBackfill(channel: channel, years: years, autoRetry: true)
     }
 
-    private func runChannelBackfill(channel: String, years: Int) {
+    private func runChannelBackfill(channel: String, years: Int, autoRetry: Bool = false) {
+        guard let source = sourceFilter else {
+            return
+        }
+        let beforeCount = channelPosts.count
         channelBusyMessage = "\(channel) \(years)년치 영상 목록 수집 중..."
         Task { @MainActor in
             do {
                 _ = try await runSkim(["youtube-history", "--channel", channel, "--years", "\(years)"])
+                var posts = try await fetchChannelPosts(source: source)
+                applyChannelPosts(posts)
+
+                // 새 영상이 안 늘면 그 연도 구간이 빈 것 — 한 번 더 과거로 확장해 마지막 영상인지 확인
+                if autoRetry, posts.count == beforeCount {
+                    let nextYears = years + 1
+                    loadedYears[source] = nextYears
+                    channelBusyMessage = "\(channel) \(nextYears)년치 영상 목록 수집 중..."
+                    _ = try await runSkim(["youtube-history", "--channel", channel, "--years", "\(nextYears)"])
+                    posts = try await fetchChannelPosts(source: source)
+                    applyChannelPosts(posts)
+                    if posts.count == beforeCount {
+                        exhaustedChannels.insert(source)
+                    }
+                }
                 channelBusyMessage = nil
-                reloadChannelPosts()
             } catch {
                 channelBusyMessage = nil
                 sourceMessage = Notice(text: localizedError(error), isError: true)
