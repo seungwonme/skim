@@ -27,6 +27,7 @@ struct ContentView: View {
     @State private var credentialForm = CredentialForm()
     @State private var credentialNotice: Notice?
     @State private var pendingDeleteCredential: PlatformCredential?
+    @State private var pendingDeleteSource: TrackedSource?
     @State private var isSavingCredential = false
     @State private var isLoadingMore = false
     @State private var hasMorePosts = true
@@ -122,6 +123,16 @@ struct ContentView: View {
             }
         } message: {
             Text(pendingDeleteCredential.map { "\($0.platform) / \($0.loginIdentifier)" } ?? "")
+        }
+        .alert("구독을 삭제할까요?", isPresented: deleteSourceAlertBinding) {
+            Button("삭제", role: .destructive) {
+                deletePendingSource()
+            }
+            Button("취소", role: .cancel) {
+                pendingDeleteSource = nil
+            }
+        } message: {
+            Text(pendingDeleteSource.map { "\($0.displayName)" } ?? "")
         }
     }
 
@@ -672,6 +683,13 @@ struct ContentView: View {
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(Design.amber)
             }
+            Button(role: .destructive) {
+                pendingDeleteSource = source
+            } label: {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(Color.red)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
@@ -1096,6 +1114,39 @@ struct ContentView: View {
         } catch {
             credentialNotice = Notice(text: localizedError(error), isError: true)
             pendingDeleteCredential = nil
+        }
+    }
+
+    private var deleteSourceAlertBinding: Binding<Bool> {
+        Binding(
+            get: { pendingDeleteSource != nil },
+            set: { isPresented in
+                if !isPresented {
+                    pendingDeleteSource = nil
+                }
+            }
+        )
+    }
+
+    private func deletePendingSource() {
+        guard let source = pendingDeleteSource else {
+            return
+        }
+
+        do {
+            let database = try SkimDatabase(path: WorkspaceLocator.defaultDatabasePath())
+            try database.ensureSchema()
+            try database.deleteTrackedSource(id: source.id)
+            if sourceFilter == "youtube/\(source.displayName)" {
+                sourceFilter = nil
+                channelPosts = []
+            }
+            sourceMessage = Notice(text: "\(source.displayName) 삭제됨", isError: false)
+            pendingDeleteSource = nil
+            loadDashboard()
+        } catch {
+            sourceMessage = Notice(text: localizedError(error), isError: true)
+            pendingDeleteSource = nil
         }
     }
 
