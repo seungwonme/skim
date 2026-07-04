@@ -17,4 +17,6 @@ Crawlers stay in the Python packages.
 swift test --package-path apps/desktop
 swift build --package-path apps/desktop
 swift run --package-path apps/desktop SkimDesktopSmoke --fixture
+scripts/build-app.sh              # install /Applications/Skim.app
+scripts/build-app.sh ~/Applications
 ```

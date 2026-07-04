@@ -25,6 +25,10 @@ e2e:
 build:
     swift build --package-path apps/desktop
 
+# 데스크톱 앱 번들 빌드 + 설치 (기본 /Applications)
+install-desktop *args:
+    scripts/build-app.sh {{args}}
+
 # 포매터
 format:
     uv run black packages tests scripts --config pyproject.toml

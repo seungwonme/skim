@@ -28,6 +28,9 @@ let package = Package(
             dependencies: [
                 "SkimDesktopCore",
                 .product(name: "Down", package: "Down")
+            ],
+            resources: [
+                .process("Resources")
             ]
         ),
         .executableTarget(
