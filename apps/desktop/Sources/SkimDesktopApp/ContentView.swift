@@ -24,6 +24,7 @@ struct ContentView: View {
     @State private var channelBusyMessage: String?
     @State private var exhaustedChannels: Set<String> = []
     @State private var transcribingPostID: DashboardPost.ID?
+    @State private var transcribeError: String?
     @State private var credentialForm = CredentialForm()
     @State private var credentialNotice: Notice?
     @State private var pendingDeleteCredential: PlatformCredential?
@@ -406,44 +407,53 @@ struct ContentView: View {
     }
 
     private func readerTopBar(_ post: DashboardPost) -> some View {
-        HStack(alignment: .top, spacing: 16) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) {
-                    platformBadge(post.platform)
-                    Text(post.source ?? post.author)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 16) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        platformBadge(post.platform)
+                        Text(post.source ?? post.author)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Text(post.displayTitle)
+                        .font(.title2.weight(.semibold))
+                        .lineSpacing(2)
+                        .lineLimit(2)
+                        .textSelection(.enabled)
                 }
-                Text(post.displayTitle)
-                    .font(.title2.weight(.semibold))
-                    .lineSpacing(2)
-                    .lineLimit(2)
-                    .textSelection(.enabled)
+                Spacer(minLength: 16)
+                HStack(spacing: 10) {
+                    if post.platform == "youtube", (post.contentMarkdown ?? "").isEmpty {
+                        Button {
+                            transcribe(post)
+                        } label: {
+                            Label(
+                                transcribeButtonTitle(post),
+                                systemImage: transcribingPostID == post.id ? "hourglass" : "captions.bubble"
+                            )
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(transcribingPostID != nil)
+                    }
+                    readerModeToggle
+                    if let url = post.url {
+                        Button {
+                            NSWorkspace.shared.open(url)
+                        } label: {
+                            Label("열기", systemImage: "arrow.up.right")
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
             }
-            Spacer(minLength: 16)
-            HStack(spacing: 10) {
-                if post.platform == "youtube", (post.contentMarkdown ?? "").isEmpty {
-                    Button {
-                        transcribe(post)
-                    } label: {
-                        Label(
-                            transcribeButtonTitle(post),
-                            systemImage: transcribingPostID == post.id ? "hourglass" : "captions.bubble"
-                        )
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(transcribingPostID != nil)
-                }
-                readerModeToggle
-                if let url = post.url {
-                    Button {
-                        NSWorkspace.shared.open(url)
-                    } label: {
-                        Label("열기", systemImage: "arrow.up.right")
-                    }
-                    .buttonStyle(.bordered)
-                }
+            if let transcribeError {
+                Text("전사 실패: \(transcribeError)")
+                    .font(.caption)
+                    .foregroundStyle(Color.red)
+                    .textSelection(.enabled)
+                    .lineLimit(3)
             }
         }
         .padding(.horizontal, 30)
@@ -1258,13 +1268,14 @@ struct ContentView: View {
             return
         }
         transcribingPostID = post.id
+        transcribeError = nil
         Task { @MainActor in
             do {
                 _ = try await runSkim(["youtube-transcribe", url.absoluteString])
                 reloadChannelPosts()
                 loadDashboard()
             } catch {
-                sourceMessage = Notice(text: localizedError(error), isError: true)
+                transcribeError = localizedError(error)
             }
             transcribingPostID = nil
         }
@@ -1285,6 +1296,13 @@ struct ContentView: View {
             process.executableURL = URL(fileURLWithPath: uv)
             process.arguments = ["run", "skim"] + arguments
             process.currentDirectoryURL = workspace
+            // Finder/LaunchServices로 띄운 앱은 셸 프로필(PATH)을 물려받지 않아
+            // yt-dlp/ffmpeg 같은 ~/.local/bin, Homebrew 도구를 못 찾는다.
+            var environment = ProcessInfo.processInfo.environment
+            let extraPaths = ["/opt/homebrew/bin", "/usr/local/bin", "\(NSHomeDirectory())/.local/bin"]
+            let existingPath = environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
+            environment["PATH"] = (extraPaths + [existingPath]).joined(separator: ":")
+            process.environment = environment
             let pipe = Pipe()
             process.standardOutput = pipe
             process.standardError = pipe
