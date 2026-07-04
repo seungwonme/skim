@@ -402,6 +402,83 @@ class SocialAPIMetadataTests(unittest.TestCase):
         self.assertIsNotNone(post)
         self.assertEqual(post.images, ["https://pbs.twimg.com/media/abc.jpg"])
 
+    @staticmethod
+    def _x_tweet(
+        tweet_id,
+        text,
+        conv_id,
+        reply_to_status=None,
+        reply_to_user=None,
+        author_id="A",
+        screen="aiden",
+    ):
+        return {
+            "legacy": {
+                "full_text": text,
+                "id_str": tweet_id,
+                "conversation_id_str": conv_id,
+                "created_at": "Wed Oct 10 20:19:24 +0000 2018",
+                "in_reply_to_status_id_str": reply_to_status,
+                "in_reply_to_user_id_str": reply_to_user,
+            },
+            "core": {
+                "user_results": {
+                    "result": {"rest_id": author_id, "legacy": {"screen_name": screen}}
+                }
+            },
+        }
+
+    def test_x_parse_tweets_merges_self_reply_thread(self):
+        crawler = XAPICrawler.__new__(XAPICrawler)
+        crawler.debug_mode = False
+        # 재조회를 끄고 응답 내 조각만으로 병합되는지 검증(폴백 경로)
+        crawler._fetch_thread_detail = lambda conv_id: None
+
+        raw = [
+            {
+                "root": self._x_tweet("100", "첫 트윗", "100"),
+                "r1": self._x_tweet("101", "이어지는 둘째", "100", "100", "A"),
+                "r2": self._x_tweet("102", "이어지는 셋째", "100", "101", "A"),
+            }
+        ]
+
+        posts = crawler._parse_tweets(raw, 10)
+
+        self.assertEqual(len(posts), 1)
+        self.assertEqual(
+            posts[0].content, "첫 트윗\n\n---\n\n이어지는 둘째\n\n---\n\n이어지는 셋째"
+        )
+        self.assertEqual(posts[0].external_id, "100")
+        self.assertEqual(posts[0].url, "https://x.com/aiden/status/100")
+
+    def test_x_parse_tweets_keeps_standalone_and_excludes_other_replies(self):
+        crawler = XAPICrawler.__new__(XAPICrawler)
+        crawler.debug_mode = False
+        crawler._fetch_thread_detail = lambda conv_id: None
+
+        raw = [
+            {
+                # 단독 트윗
+                "solo": self._x_tweet("200", "혼자 글", "200"),
+                # 남의 스레드에 내가 단 답글 + 그 스레드 작성자 self-reply
+                "root": self._x_tweet("300", "남 루트", "300", author_id="B", screen="bob"),
+                "b_reply": self._x_tweet(
+                    "301", "남 self-reply", "300", "300", "B", author_id="B", screen="bob"
+                ),
+                "my_reply": self._x_tweet(
+                    "302", "내 답글", "300", "300", "B", author_id="A", screen="aiden"
+                ),
+            }
+        ]
+
+        posts = crawler._parse_tweets(raw, 10)
+
+        # 단독 1개 + bob 스레드 병합 1개. 내(aiden) 답글은 bob 스레드에서 제외됨.
+        contents = {p.content for p in posts}
+        self.assertIn("혼자 글", contents)
+        self.assertIn("남 루트\n\n---\n\n남 self-reply", contents)
+        self.assertEqual(len(posts), 2)
+
     def test_reddit_extract_image_urls_covers_direct_preview_and_gallery(self):
         from skim_core.crawlers.api.reddit import RedditAPICrawler
 

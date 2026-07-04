@@ -146,8 +146,8 @@ public final class SkimDatabase {
         }
     }
 
-    public func fetchRecentPosts(limit: Int = 50) throws -> [DashboardPost] {
-        try fetchPosts(where: "1=1", bindings: [], limit: limit)
+    public func fetchRecentPosts(limit: Int = 50, offset: Int = 0) throws -> [DashboardPost] {
+        try fetchPosts(where: "1=1", bindings: [], limit: limit, offset: offset)
     }
 
     /// 특정 소스(예: "youtube/LangChain")의 게시글 — 채널 히스토리 브라우징용
@@ -155,7 +155,12 @@ public final class SkimDatabase {
         try fetchPosts(where: "source = ?", bindings: [.text(source)], limit: limit)
     }
 
-    private func fetchPosts(where clause: String, bindings: [SQLiteBinding], limit: Int) throws -> [DashboardPost] {
+    private func fetchPosts(
+        where clause: String,
+        bindings: [SQLiteBinding],
+        limit: Int,
+        offset: Int = 0
+    ) throws -> [DashboardPost] {
         try query(
             """
             SELECT id, platform, source, external_id, author, title, content, url, timestamp,
@@ -163,9 +168,9 @@ public final class SkimDatabase {
             FROM posts
             WHERE \(clause)
             ORDER BY datetime(COALESCE(NULLIF(timestamp, ''), crawled_at)) DESC, id DESC
-            LIMIT ?
+            LIMIT ? OFFSET ?
             """,
-            bindings: bindings + [.integer(Int64(max(1, limit)))]
+            bindings: bindings + [.integer(Int64(max(1, limit))), .integer(Int64(max(0, offset)))]
         ) { statement in
             DashboardPost(
                 id: sqlite3_column_int64(statement, 0),
