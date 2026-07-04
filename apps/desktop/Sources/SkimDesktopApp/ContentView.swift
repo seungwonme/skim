@@ -263,7 +263,7 @@ struct ContentView: View {
                 Button {
                     showManager = true
                 } label: {
-                    Label("소스/크레덴셜 관리", systemImage: "gearshape")
+                    Label("유튜브 채널/크레덴셜 관리", systemImage: "gearshape")
                 }
             }
         }
@@ -455,7 +455,7 @@ struct ContentView: View {
         VStack(spacing: 0) {
             HStack {
                 Picker("", selection: $managerTab) {
-                    Text("소스").tag(ManagerTab.sources)
+                    Text("유튜브 채널").tag(ManagerTab.sources)
                     Text("크레덴셜").tag(ManagerTab.credentials)
                 }
                 .pickerStyle(.segmented)
@@ -513,9 +513,9 @@ struct ContentView: View {
             }
 
             VStack(alignment: .leading, spacing: 10) {
-                sectionLabel("추적 중인 소스 \(snapshot.sources.count.formatted())개")
+                sectionLabel("추적 중인 유튜브 채널 \(snapshot.sources.count.formatted())개")
                 if snapshot.sources.isEmpty {
-                    emptyLine("추적 중인 소스 없음")
+                    emptyLine("추적 중인 유튜브 채널 없음")
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 6) {
@@ -694,6 +694,12 @@ struct ContentView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .background(Design.panelBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if let url = URL(string: source.handleOrURL ?? "") {
+                NSWorkspace.shared.open(url)
+            }
+        }
     }
 
     private func credentialRow(_ credential: PlatformCredential) -> some View {
