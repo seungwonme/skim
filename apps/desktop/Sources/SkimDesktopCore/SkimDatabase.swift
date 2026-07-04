@@ -146,16 +146,16 @@ public final class SkimDatabase {
         }
     }
 
-    public func fetchRecentPosts(limit: Int = 50) throws -> [DashboardPost] {
+    public func fetchRecentPosts(limit: Int = 50, offset: Int = 0) throws -> [DashboardPost] {
         try query(
             """
             SELECT id, platform, source, external_id, author, title, content, url, timestamp,
                    likes, comments, summary, content_markdown, word_count, crawled_at, extra
             FROM posts
             ORDER BY datetime(COALESCE(NULLIF(timestamp, ''), crawled_at)) DESC, id DESC
-            LIMIT ?
+            LIMIT ? OFFSET ?
             """,
-            bindings: [.integer(Int64(max(1, limit)))]
+            bindings: [.integer(Int64(max(1, limit))), .integer(Int64(max(0, offset)))]
         ) { statement in
             DashboardPost(
                 id: sqlite3_column_int64(statement, 0),

@@ -19,6 +19,9 @@ struct ContentView: View {
     @State private var credentialNotice: Notice?
     @State private var pendingDeleteCredential: PlatformCredential?
     @State private var isSavingCredential = false
+    @State private var isLoadingMore = false
+    @State private var hasMorePosts = true
+    private let pageSize = 200
     @FocusState private var focusedCredentialField: CredentialField?
 
     private var filteredPosts: [DashboardPost] {
@@ -204,6 +207,15 @@ struct ContentView: View {
                     LazyVStack(spacing: 10) {
                         ForEach(filteredPosts) { post in
                             feedCard(post)
+                                .onAppear {
+                                    if post.id == snapshot.posts.last?.id {
+                                        loadMorePosts()
+                                    }
+                                }
+                        }
+                        if isLoadingMore {
+                            ProgressView()
+                                .padding(.vertical, 8)
                         }
                     }
                     .padding(.bottom, 18)
@@ -816,21 +828,57 @@ struct ContentView: View {
 
     private func loadDashboard() {
         let databasePath = WorkspaceLocator.defaultDatabasePath()
+        let size = pageSize
         Task { @MainActor in
             do {
-                // 본문 포함 180건 로드를 메인 스레드에서 돌리면 실행/새로고침마다 UI가 멈춘다.
+                // 본문 포함 첫 페이지 로드를 메인 스레드에서 돌리면 실행/새로고침마다 UI가 멈춘다.
+                // 나머지는 스크롤 끝에서 loadMorePosts()가 페이지 단위로 이어 로드한다.
                 let loaded = try await Task.detached(priority: .userInitiated) {
                     let database = try SkimDatabase(path: databasePath)
                     try database.ensureSchema()
-                    return try database.loadDashboard(limit: 180)
+                    return try database.loadDashboard(limit: size)
                 }.value
                 snapshot = loaded
+                hasMorePosts = loaded.posts.count >= size
                 if let selectedPostID, loaded.posts.contains(where: { $0.id == selectedPostID }) {
                     self.selectedPostID = selectedPostID
                 } else {
                     selectedPostID = loaded.posts.first?.id
                 }
                 loadError = nil
+            } catch {
+                loadError = localizedError(error)
+            }
+        }
+    }
+
+    /// 스크롤이 마지막 게시물에 닿으면 다음 페이지를 이어 로드한다(무한 스크롤).
+    private func loadMorePosts() {
+        guard hasMorePosts, !isLoadingMore else { return }
+        isLoadingMore = true
+        let databasePath = WorkspaceLocator.defaultDatabasePath()
+        let size = pageSize
+        let offset = snapshot.posts.count
+        Task { @MainActor in
+            defer { isLoadingMore = false }
+            do {
+                let more = try await Task.detached(priority: .userInitiated) {
+                    let database = try SkimDatabase(path: databasePath)
+                    try database.ensureSchema()
+                    return try database.fetchRecentPosts(limit: size, offset: offset)
+                }.value
+                guard !more.isEmpty else {
+                    hasMorePosts = false
+                    return
+                }
+                snapshot = DashboardSnapshot(
+                    summary: snapshot.summary,
+                    posts: snapshot.posts + more,
+                    sources: snapshot.sources,
+                    credentials: snapshot.credentials,
+                    databasePath: snapshot.databasePath
+                )
+                hasMorePosts = more.count >= size
             } catch {
                 loadError = localizedError(error)
             }
