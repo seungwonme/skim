@@ -426,7 +426,9 @@ struct ContentView: View {
                 }
                 readerModeToggle
                 if let url = post.url {
-                    Link(destination: url) {
+                    Button {
+                        NSWorkspace.shared.open(url)
+                    } label: {
                         Label("열기", systemImage: "arrow.up.right")
                     }
                     .buttonStyle(.bordered)

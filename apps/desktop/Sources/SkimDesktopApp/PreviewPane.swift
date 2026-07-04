@@ -1,3 +1,4 @@
+import AppKit
 import SkimDesktopCore
 import SwiftUI
 import WebKit
@@ -13,7 +14,7 @@ struct PreviewPane: View {
                     Text("YouTube 미리보기")
                         .font(.headline)
                     Spacer()
-                    Link("외부에서 열기", destination: originalURL)
+                    Button("외부에서 열기") { NSWorkspace.shared.open(originalURL) }
                 }
                 YouTubeWebPreview(embedURL: embedURL, videoID: videoID)
                     .frame(minHeight: 260)
@@ -28,7 +29,7 @@ struct PreviewPane: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .textSelection(.enabled)
-                Link("외부에서 열기", destination: url)
+                Button("외부에서 열기") { NSWorkspace.shared.open(url) }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(16)
