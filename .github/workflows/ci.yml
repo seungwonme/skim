@@ -50,3 +50,6 @@ jobs:
 
       - name: Build
         run: just build
+
+      - name: Desktop e2e
+        run: just e2e
