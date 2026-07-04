@@ -696,9 +696,20 @@ struct ContentView: View {
         .background(Design.panelBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
         .contentShape(Rectangle())
         .onTapGesture {
-            if let url = URL(string: source.handleOrURL ?? "") {
+            openSourcePage(source)
+        }
+    }
+
+    private func openSourcePage(_ source: TrackedSource) {
+        guard source.platform == "youtube" else {
+            if let url = source.handleOrURL.flatMap(URL.init(string:)) {
                 NSWorkspace.shared.open(url)
             }
+            return
+        }
+        let path = source.canonicalID.hasPrefix("@") ? source.canonicalID : "channel/\(source.canonicalID)"
+        if let url = URL(string: "https://www.youtube.com/\(path)/about") {
+            NSWorkspace.shared.open(url)
         }
     }
 
