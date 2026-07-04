@@ -55,13 +55,24 @@ struct ContentView: View {
     }
 
     private var sortedPosts: [DashboardPost] {
+        // 일반 피드는 DB가 정렬 기준대로 전체에서 정렬해 로드하므로 순서를 그대로 둔다.
+        // 채널 모드(sourceFilter)는 로드된 전체에서 클라이언트 정렬한다.
+        guard sourceFilter != nil else { return filteredPosts }
         switch sortOrder {
         case .newest:
-            filteredPosts.sorted { sortDate($0) > sortDate($1) }
+            return filteredPosts.sorted { sortDate($0) > sortDate($1) }
         case .likes:
-            filteredPosts.sorted { ($0.likes ?? -1) > ($1.likes ?? -1) }
+            return filteredPosts.sorted { ($0.likes ?? -1) > ($1.likes ?? -1) }
         case .comments:
-            filteredPosts.sorted { ($0.comments ?? -1) > ($1.comments ?? -1) }
+            return filteredPosts.sorted { ($0.comments ?? -1) > ($1.comments ?? -1) }
+        }
+    }
+
+    private var dbSort: SkimDatabase.PostSort {
+        switch sortOrder {
+        case .newest: .newest
+        case .likes: .likes
+        case .comments: .comments
         }
     }
 
@@ -195,9 +206,21 @@ struct ContentView: View {
                                 }
                             }
                     }
-                    if canLoadMoreChannel {
+                    if sourceFilter != nil {
                         loadMoreButton
                             .listRowSeparator(.hidden)
+                    } else if isLoadingMore {
+                        HStack {
+                            Spacer()
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("더 불러오는 중…")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                        }
+                        .padding(.vertical, 6)
+                        .listRowSeparator(.hidden)
                     }
                 }
                 .listStyle(.inset)
@@ -206,6 +229,9 @@ struct ContentView: View {
         .searchable(text: $searchText, placement: .toolbar, prompt: "제목, 소스, 요약 검색")
         .navigationTitle(feedTitle)
         .navigationSubtitle(channelBusyMessage ?? "\(filteredPosts.count.formatted())개")
+        .onChange(of: sortOrder) { _, _ in
+            if sourceFilter == nil { loadDashboard() }
+        }
         .toolbar {
             ToolbarItemGroup {
                 Menu {
@@ -922,6 +948,7 @@ struct ContentView: View {
     private func loadDashboard() {
         let databasePath = WorkspaceLocator.defaultDatabasePath()
         let size = pageSize
+        let sort = dbSort
         Task { @MainActor in
             do {
                 // 본문 포함 첫 페이지 로드를 메인 스레드에서 돌리면 실행/새로고침마다 UI가 멈춘다.
@@ -929,7 +956,7 @@ struct ContentView: View {
                 let loaded = try await Task.detached(priority: .userInitiated) {
                     let database = try SkimDatabase(path: databasePath)
                     try database.ensureSchema()
-                    return try database.loadDashboard(limit: size)
+                    return try database.loadDashboard(limit: size, sort: sort)
                 }.value
                 snapshot = loaded
                 hasMorePosts = loaded.posts.count >= size
@@ -952,13 +979,14 @@ struct ContentView: View {
         let databasePath = WorkspaceLocator.defaultDatabasePath()
         let size = pageSize
         let offset = snapshot.posts.count
+        let sort = dbSort
         Task { @MainActor in
             defer { isLoadingMore = false }
             do {
                 let more = try await Task.detached(priority: .userInitiated) {
                     let database = try SkimDatabase(path: databasePath)
                     try database.ensureSchema()
-                    return try database.fetchRecentPosts(limit: size, offset: offset)
+                    return try database.fetchRecentPosts(limit: size, offset: offset, sort: sort)
                 }.value
                 guard !more.isEmpty else {
                     hasMorePosts = false
@@ -1243,7 +1271,7 @@ private struct Notice: Equatable {
 
 private enum SortOrder: String, CaseIterable {
     case newest = "최신순"
-    case likes = "점수순"
+    case likes = "추천순"
     case comments = "댓글순"
 }
 

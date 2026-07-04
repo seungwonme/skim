@@ -86,10 +86,10 @@ public final class SkimDatabase {
         )
     }
 
-    public func loadDashboard(limit: Int = 80) throws -> DashboardSnapshot {
+    public func loadDashboard(limit: Int = 80, sort: PostSort = .newest) throws -> DashboardSnapshot {
         DashboardSnapshot(
             summary: try fetchSummary(),
-            posts: try fetchRecentPosts(limit: limit),
+            posts: try fetchRecentPosts(limit: limit, sort: sort),
             sources: try fetchTrackedSources(),
             credentials: try fetchCredentials(),
             databasePath: path.path
@@ -146,8 +146,31 @@ public final class SkimDatabase {
         }
     }
 
-    public func fetchRecentPosts(limit: Int = 50, offset: Int = 0) throws -> [DashboardPost] {
-        try fetchPosts(where: "1=1", bindings: [], limit: limit, offset: offset)
+    /// 피드 정렬 기준. DB의 ORDER BY로 내려가 전체 대상 정렬 + 무한 스크롤과 일관되게 동작한다.
+    public enum PostSort: String, Sendable {
+        case newest
+        case likes
+        case comments
+
+        var orderClause: String {
+            let recency = "datetime(COALESCE(NULLIF(timestamp, ''), crawled_at)) DESC, id DESC"
+            switch self {
+            case .newest:
+                return recency
+            case .likes:
+                return "COALESCE(likes, -1) DESC, \(recency)"
+            case .comments:
+                return "COALESCE(comments, -1) DESC, \(recency)"
+            }
+        }
+    }
+
+    public func fetchRecentPosts(
+        limit: Int = 50,
+        offset: Int = 0,
+        sort: PostSort = .newest
+    ) throws -> [DashboardPost] {
+        try fetchPosts(where: "1=1", bindings: [], limit: limit, offset: offset, sort: sort)
     }
 
     /// 특정 소스(예: "youtube/LangChain")의 게시글 — 채널 히스토리 브라우징용
@@ -159,7 +182,8 @@ public final class SkimDatabase {
         where clause: String,
         bindings: [SQLiteBinding],
         limit: Int,
-        offset: Int = 0
+        offset: Int = 0,
+        sort: PostSort = .newest
     ) throws -> [DashboardPost] {
         try query(
             """
@@ -167,7 +191,7 @@ public final class SkimDatabase {
                    likes, comments, summary, content_markdown, word_count, crawled_at, extra
             FROM posts
             WHERE \(clause)
-            ORDER BY datetime(COALESCE(NULLIF(timestamp, ''), crawled_at)) DESC, id DESC
+            ORDER BY \(sort.orderClause)
             LIMIT ? OFFSET ?
             """,
             bindings: bindings + [.integer(Int64(max(1, limit))), .integer(Int64(max(0, offset)))]
