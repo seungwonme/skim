@@ -205,10 +205,11 @@ struct ContentView: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 10) {
-                        ForEach(filteredPosts) { post in
+                        ForEach(Array(filteredPosts.enumerated()), id: \.element.id) { index, post in
                             feedCard(post)
                                 .onAppear {
-                                    if post.id == snapshot.posts.last?.id {
+                                    // 목록 끝 근처(뒤에서 8번째 이내)가 보이면 다음 페이지를 이어 로드
+                                    if index >= filteredPosts.count - 8 {
                                         loadMorePosts()
                                     }
                                 }
