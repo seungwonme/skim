@@ -1253,6 +1253,6 @@ sqlite3 data/skim.db 'SELECT topic, result_count, crawled_platforms FROM researc
 
 ## TODO
 
-- research_runs → Tauri desktop UI에 이력 탭으로 노출 (v1)
+- research_runs → Swift desktop UI에 이력 탭으로 노출 (v1)
 - 크롤 결과 중 방금 저장된 post만 별도 표기 (새 것 vs 기존)
 - 크롤 타임아웃 옵션 (`--refresh-timeout 60`)

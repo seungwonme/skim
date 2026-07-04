@@ -10,10 +10,12 @@ BIN="$(swift build --package-path "$ROOT/apps/desktop" --show-bin-path)"
 swift build --package-path "$ROOT/apps/desktop"
 
 FIXTURE="$(mktemp -d)"
+APP_BUNDLE_DIR="$(mktemp -d)"
 APP_PID=""
 cleanup() {
     [ -n "$APP_PID" ] && kill "$APP_PID" 2>/dev/null || true
     [ -n "$FIXTURE" ] && /bin/rm -rf -- "$FIXTURE"
+    [ -n "$APP_BUNDLE_DIR" ] && /bin/rm -rf -- "$APP_BUNDLE_DIR"
 }
 trap cleanup EXIT
 
@@ -29,6 +31,13 @@ VALUES ('hackernews', 'e2e-1', 'e2e', 'E2E fixture post', 'body', '# E2E fixture
 
 echo "== smoke: seeded fixture =="
 "$BIN/SkimDesktopSmoke" | tee /dev/stderr | grep -q "recent_posts=1"
+
+echo "== app bundle install smoke =="
+"$ROOT/scripts/build-app.sh" "$APP_BUNDLE_DIR"
+test -x "$APP_BUNDLE_DIR/Skim.app/Contents/MacOS/Skim"
+test -f "$APP_BUNDLE_DIR/Skim.app/Contents/Resources/SkimIcon.icns"
+plutil -extract CFBundleIdentifier raw "$APP_BUNDLE_DIR/Skim.app/Contents/Info.plist" | grep -q "dev.aidenahn.skim"
+codesign --verify "$APP_BUNDLE_DIR/Skim.app"
 
 echo "== app boot =="
 "$BIN/SkimDesktop" &

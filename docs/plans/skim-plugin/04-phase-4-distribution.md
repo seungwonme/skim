@@ -79,7 +79,7 @@ echo "Sync complete."
 
 ## 버전 관리 전략 (codex review #13 대응)
 
-**플러그인 릴리즈와 Tauri desktop 릴리즈를 분리**한다. desktop 앱은 research 기능을 소비하지 않으므로 동시 bump 강제는 불필요한 release train 결합.
+**플러그인 릴리즈와 Swift desktop 릴리즈를 분리**한다. desktop 앱은 research 기능을 소비하지 않으므로 동시 bump 강제는 불필요한 release train 결합.
 
 | 소스 | 버전 위치 | 플러그인 릴리즈 시 bump? |
 |---|---|---|
@@ -87,7 +87,7 @@ echo "Sync complete."
 | Python 패키지 (skim-core) | `packages/skim-core/pyproject.toml` | **예** |
 | 플러그인 | `.claude-plugin/plugin.json` `version` | **예** |
 | SKILL.md | frontmatter `version` | **예** |
-| Tauri 앱 | `apps/desktop/src-tauri/Cargo.toml`, `tauri.conf.json`, `apps/desktop/package.json` | 아니오 — 독립 release train |
+| Swift desktop 앱 | `apps/desktop/Package.swift`, `scripts/build-app.sh` generated `Info.plist` | 아니오 — 독립 release train |
 
 **규칙**: 플러그인/CLI 4곳은 동일 semver 로 동기 bump. desktop 은 해당 앱이 새 research 기능을 소비하기 시작할 때만 함께 bump.
 
@@ -151,7 +151,7 @@ uv run --from "git+file://$(pwd)" skim research "test" --refresh never --emit js
 
 ## 릴리즈 절차 (수동, v0)
 
-1. `Phase 1~3` 전 테스트 통과 확인: `pnpm test` + `uv run pytest tests -v`
+1. `Phase 1~3` 전 테스트 통과 확인: `just test` + 필요한 경우 `just e2e`
 2. 버전 bump (4개 파일: skim-cli/skim-core pyproject, plugin.json, SKILL.md). desktop 은 제외
 3. `CHANGELOG.md` 업데이트
 4. `bash scripts/sync-plugin.sh` 로 로컬 동기화 후 Claude Code 재시작하여 `/skim test` 수동 검증

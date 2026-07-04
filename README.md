@@ -115,6 +115,8 @@ printf '%s\n' "$PASSWORD" | uv run skim login threads --identifier user@example.
 ```bash
 swift run --package-path apps/desktop SkimDesktop
 swift build --package-path apps/desktop
+just install-desktop                 # install /Applications/Skim.app
+scripts/build-app.sh ~/Applications  # install to a custom folder
 ```
 
 The desktop app reads the same local workspace as the CLI. It can manage tracked sources and credentials, then browse `data/skim.db`.
@@ -138,6 +140,7 @@ just test     # Python pytest + Swift unit tests
 just e2e      # desktop e2e smoke (fixture DB + real app boot)
 just build    # desktop app
 just dev      # run desktop app
+just install-desktop
 just format
 ```
 

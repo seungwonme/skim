@@ -10,8 +10,6 @@ __pycache__/
 .Python
 build/
 node_modules/
-apps/desktop/dist/
-apps/desktop/src-tauri/target/
 .turbo/
 develop-eggs/
 dist/
@@ -19,8 +17,6 @@ downloads/
 eggs/
 .eggs/
 lib/
-!apps/desktop/src/lib/
-!apps/desktop/src/lib/**
 lib64/
 parts/
 sdist/
@@ -163,6 +159,8 @@ cython_debug/
 # Local agent/reference workspaces
 /refs/
 /worktrees/
+/.claude/worktrees/
+/prompts/
 
 # OMX 상태 파일은 로컬 세션 전용
 .omx/state/
