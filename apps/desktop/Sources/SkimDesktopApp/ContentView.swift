@@ -683,6 +683,13 @@ struct ContentView: View {
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(Design.amber)
             }
+            Button {
+                openSourcePage(source)
+            } label: {
+                Image(systemName: "info.circle")
+            }
+            .buttonStyle(.borderless)
+            .help("유튜브 채널 정보 열기")
             Button(role: .destructive) {
                 pendingDeleteSource = source
             } label: {
@@ -694,10 +701,6 @@ struct ContentView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .background(Design.panelBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
-        .contentShape(Rectangle())
-        .onTapGesture {
-            openSourcePage(source)
-        }
     }
 
     private func openSourcePage(_ source: TrackedSource) {
