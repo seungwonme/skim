@@ -12,9 +12,14 @@ lint:
     uv run flake8 packages tests scripts
     uv run pylint packages/skim-core/src/skim_core packages/skim-cli/src/skim_cli scripts
 
-# Python 테스트
+# 테스트 (Python + Swift)
 test:
     uv run pytest tests -q
+    swift test --package-path apps/desktop
+
+# 데스크톱 e2e 스모크 (fixture DB + 실제 앱 부팅)
+e2e:
+    sh scripts/desktop-e2e.sh
 
 # 데스크톱 앱 빌드
 build:

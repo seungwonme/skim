@@ -134,7 +134,8 @@ On macOS, credentials can be stored in Keychain. SQLite keeps only the Keychain 
 
 ```bash
 just lint
-just test
+just test     # Python pytest + Swift unit tests
+just e2e      # desktop e2e smoke (fixture DB + real app boot)
 just build    # desktop app
 just dev      # run desktop app
 just format

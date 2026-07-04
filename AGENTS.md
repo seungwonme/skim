@@ -20,7 +20,8 @@ brew install just
 
 # 루트 품질 게이트 (justfile이 태스크 단일 진입점)
 just lint
-just test
+just test    # Python pytest + Swift 유닛 테스트
+just e2e     # desktop e2e 스모크 (fixture DB + 실제 앱 부팅)
 just build   # desktop 앱 빌드
 just dev     # desktop 앱 실행
 
