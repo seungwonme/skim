@@ -15,9 +15,12 @@ CDP로 추출한 세션 쿠키를 재사용하여 인증합니다.
 - typer: CLI 출력
 """
 
+import asyncio
 import json
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 import typer
 
@@ -41,6 +44,7 @@ class XAPICrawler:
         self.platform_name = "X"
         self.debug_mode = debug_mode
         self.session_path = SESSION_PATH
+        self._scraper = None
         self._setup_client()
 
     def _setup_client(self) -> None:
@@ -149,7 +153,7 @@ class XAPICrawler:
         )
 
         # screen_name → user_id 변환
-        users = scraper.users([screen_name])
+        users = self._run_off_loop(lambda: scraper.users([screen_name]))
         if not users:
             typer.echo(f"  사용자 @{screen_name}을 찾을 수 없습니다")
             return []
@@ -163,7 +167,18 @@ class XAPICrawler:
         if self.debug_mode:
             typer.echo(f"  user_id: {uid}")
 
-        return scraper.tweets([uid], limit=count)
+        return self._run_off_loop(lambda: scraper.tweets([uid], limit=count))
+
+    def _run_off_loop(self, fn: Callable):
+        """Scraper._run은 asyncio.run()을 쓰므로 실행 중인 이벤트 루프 안(예: CLI의
+        asyncio.run → crawl)에서 직접 호출하면 RuntimeError가 난다. 루프가 돌고
+        있으면 별도 스레드에서 실행해 격리한다."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return fn()
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            return executor.submit(fn).result()
 
     def _extract_user_id(self, user_data: dict) -> Optional[int]:
         """중첩된 응답에서 user_id 추출"""
@@ -193,21 +208,163 @@ class XAPICrawler:
         return None
 
     def _parse_tweets(self, raw_data: list[dict], count: int) -> List[Post]:
-        """API 응답을 Post 모델로 변환"""
-        posts: List[Post] = []
+        """API 응답을 Post 모델로 변환
 
+        같은 작성자가 self-reply로 이어단 스레드(줄줄이 글)는 하나의 Post로 병합한다.
+        스레드로 판명되면 conversation 전체를 TweetDetail로 재조회해 응답에 잘려 온
+        뒷부분까지 완전 복원하고, 재조회 실패 시 응답 내 조각으로 폴백한다.
+        """
+        tweets: list[dict] = []
         for entry in raw_data:
-            tweet_results = self._extract_tweet_results(entry)
-            for tweet in tweet_results:
-                post = self._parse_single_tweet(tweet)
-                if post:
-                    posts.append(post)
-                    if self.debug_mode:
-                        typer.echo(f"  @{post.author}: {post.content[:60]}...")
-                    if len(posts) >= count:
-                        return posts
+            tweets.extend(self._extract_tweet_results(entry))
 
-        return posts
+        # 트윗별 메타(작성자/대화 id/self-reply 여부) 부착, RT·파싱불가 제외
+        parsed: list[tuple[dict, dict]] = []
+        for tweet in tweets:
+            meta = self._tweet_meta(tweet)
+            if meta and not meta["is_rt"]:
+                parsed.append((tweet, meta))
+
+        # conversation(스레드) 단위로 응답 내 조각을 모은다
+        conv_groups: dict[str, list[tuple[dict, dict]]] = defaultdict(list)
+        for tweet, meta in parsed:
+            conv_groups[meta["conv_id"]].append((tweet, meta))
+
+        posts: List[Post] = []
+        done_conv: set[str] = set()
+        for tweet, meta in parsed:
+            if len(posts) >= count:
+                break
+            conv = meta["conv_id"]
+            if conv in done_conv:
+                continue
+            group = conv_groups[conv]
+            # 그룹 안에 작성자 자신에게 단 답글이 있으면 self-reply 스레드다
+            is_thread = any(
+                gm["reply_to_user"] and gm["reply_to_user"] == gm["author_id"] for _, gm in group
+            )
+            if is_thread:
+                done_conv.add(conv)
+                post = self._build_thread_post(conv, group)
+            else:
+                post = self._parse_single_tweet(tweet)
+            if post:
+                posts.append(post)
+                if self.debug_mode:
+                    typer.echo(f"  @{post.author}: {post.content[:60]}...")
+
+        return posts[:count]
+
+    def _tweet_meta(self, tweet: dict) -> Optional[dict]:
+        """스레드 그룹핑에 필요한 최소 메타 추출"""
+        legacy = tweet.get("legacy", {})
+        tweet_id = legacy.get("id_str")
+        if not legacy or not tweet_id:
+            return None
+        core = tweet.get("core", {}).get("user_results", {}).get("result", {})
+        return {
+            "id": tweet_id,
+            "conv_id": legacy.get("conversation_id_str") or tweet_id,
+            "reply_to_status": legacy.get("in_reply_to_status_id_str"),
+            "reply_to_user": legacy.get("in_reply_to_user_id_str"),
+            "author_id": core.get("rest_id"),
+            "author_screen": core.get("legacy", {}).get("screen_name", "Unknown"),
+            "is_rt": legacy.get("full_text", "").startswith("RT @"),
+            "created_at": legacy.get("created_at", ""),
+        }
+
+    def _build_thread_post(
+        self, conv_id: str, fallback_group: list[tuple[dict, dict]]
+    ) -> Optional[Post]:
+        """self-reply 스레드를 하나의 Post로 병합한다.
+
+        conversation 루트(id == conv_id)로 TweetDetail을 재조회해 작성자 본인의
+        모든 self-reply를 시간순(트윗 id 오름차순 = snowflake 시간순)으로 이어붙인다.
+        재조회가 실패하거나 비면 응답에 이미 담긴 조각으로 병합한다.
+        """
+        detail = self._fetch_thread_detail(conv_id)
+        source = detail if detail else [tweet for tweet, _ in fallback_group]
+
+        indexed: dict[str, tuple[dict, dict]] = {}
+        for tweet in source:
+            meta = self._tweet_meta(tweet)
+            if meta and not meta["is_rt"]:
+                indexed[meta["id"]] = (tweet, meta)
+        if not indexed:
+            return None
+
+        # 스레드 주인 = 루트 트윗 작성자(없으면 가장 이른 트윗 작성자)
+        root = indexed.get(conv_id) or min(indexed.values(), key=lambda x: int(x[1]["id"]))
+        root_author = root[1]["author_id"]
+
+        own = [pair for pair in indexed.values() if pair[1]["author_id"] == root_author]
+        own.sort(key=lambda pair: int(pair[1]["id"]))
+        if len(own) <= 1:
+            # 이어지는 self-reply가 실제로 없으면 단독 트윗으로 처리
+            return self._parse_single_tweet(root[0])
+
+        texts: list[str] = []
+        image_urls: list[str] = []
+        for tweet, _ in own:
+            content, images, _ = self._clean_content_and_media(tweet)
+            if content:
+                texts.append(content)
+            image_urls.extend(images)
+        if not texts:
+            return None
+        content = "\n\n---\n\n".join(texts) if len(texts) > 1 else texts[0]
+
+        root_tweet, root_meta = root
+        author = root_meta["author_screen"]
+        tweet_id = root_meta["id"]
+        root_legacy = root_tweet.get("legacy", {})
+        views = root_tweet.get("views", {}).get("count")
+        return Post(
+            platform="x",
+            author=author,
+            content=content,
+            timestamp=self._parse_timestamp(root_meta["created_at"]),
+            url=f"https://x.com/{author}/status/{tweet_id}" if tweet_id else None,
+            likes=root_legacy.get("favorite_count", 0),
+            comments=root_legacy.get("reply_count", 0),
+            reposts=root_legacy.get("retweet_count", 0),
+            views=int(views) if views else None,
+            external_id=tweet_id or None,
+            **({"images": list(dict.fromkeys(image_urls))} if image_urls else {}),
+        )
+
+    def _fetch_thread_detail(self, conv_id: str) -> Optional[list[dict]]:
+        """TweetDetail로 conversation 전체를 재조회해 트윗 객체 목록을 반환한다."""
+        try:
+            scraper = self._get_scraper()
+            if scraper is None:
+                return None
+            detail = self._run_off_loop(lambda: scraper.tweets_details([int(conv_id)]))
+        except Exception as e:  # noqa: BLE001 - 재조회 실패는 폴백으로 흡수
+            if self.debug_mode:
+                typer.echo(f"  스레드 상세 조회 실패(응답 내 조각으로 폴백): {e}")
+            return None
+        tweets: list[dict] = []
+        for entry in detail or []:
+            tweets.extend(self._extract_tweet_results(entry))
+        return tweets or None
+
+    def _get_scraper(self):
+        """TweetDetail 재조회용 Scraper (세션 쿠키 재사용, lazy 생성)"""
+        if getattr(self, "_scraper", None) is not None:
+            return self._scraper
+        try:
+            from twitter.scraper import Scraper  # pylint: disable=import-outside-toplevel
+
+            cookies = self._load_cookies()
+            self._scraper = Scraper(
+                cookies={"ct0": cookies["ct0"], "auth_token": cookies["auth_token"]},
+                debug=1 if self.debug_mode else 0,
+                save=False,
+            )
+        except Exception:  # noqa: BLE001 - Scraper 불가 시 재조회 스킵
+            self._scraper = None
+        return self._scraper
 
     def _extract_tweet_results(self, entry: dict) -> list[dict]:
         """중첩된 응답에서 tweet result 객체 추출"""
@@ -245,13 +402,8 @@ class XAPICrawler:
             if not legacy:
                 return None
 
-            # 콘텐츠
-            content = legacy.get("full_text", "")
-            if not content:
-                return None
-
             # 리트윗 제외
-            if content.startswith("RT @"):
+            if legacy.get("full_text", "").startswith("RT @"):
                 return None
 
             # 작성자
@@ -276,51 +428,9 @@ class XAPICrawler:
             if views:
                 views = int(views)
 
-            # t.co URL을 실제 URL로 교체
-            urls = legacy.get("entities", {}).get("urls", [])
-            for u in urls:
-                short = u.get("url", "")
-                expanded = u.get("expanded_url", "")
-                if short and expanded:
-                    content = content.replace(short, expanded)
-
-            # 미디어 URL 제거
-            media = []
-            for media_container in (
-                legacy.get("entities", {}),
-                legacy.get("extended_entities", {}),
-            ):
-                media.extend(media_container.get("media") or [])
-            media_fallbacks = []
-            media_alt_texts = []
-            image_urls = []
-            for m in media:
-                media_url = m.get("url", "")
-                alt_text = (m.get("ext_alt_text") or "").strip()
-                if alt_text:
-                    media_alt_texts.append(alt_text)
-                # 사진 첨부의 CDN 원본 URL(pbs.twimg.com)을 보존한다
-                if m.get("type") == "photo" and m.get("media_url_https"):
-                    image_urls.append(m["media_url_https"])
-                media_link = (
-                    m.get("expanded_url") or m.get("display_url") or m.get("media_url_https")
-                )
-                if media_link:
-                    media_fallbacks.append(media_link)
-                if media_url:
-                    content = content.replace(media_url, "").strip()
-
-            content = content.strip()
-            content_status = None
-            if not content:
-                if media_alt_texts:
-                    content = "\n".join(media_alt_texts)
-                    content_status = "media_alt_text"
-                elif media_fallbacks:
-                    content = "\n".join(dict.fromkeys(media_fallbacks))
-                    content_status = "media_link"
-                else:
-                    return None
+            content, image_urls, content_status = self._clean_content_and_media(tweet)
+            if content is None:
+                return None
 
             return Post(
                 platform="x",
@@ -341,6 +451,62 @@ class XAPICrawler:
             # 스키마 변경으로 파싱이 깨져도 조용히 누락되지 않게 항상 알린다.
             typer.echo(f"  [!] 트윗 파싱 오류(건너뜀): {e}")
             return None
+
+    def _clean_content_and_media(
+        self, tweet: dict
+    ) -> tuple[Optional[str], list[str], Optional[str]]:
+        """트윗 본문에서 t.co 링크를 실제 URL로 펴고 미디어 URL을 정리한다.
+
+        Returns:
+            (content, image_urls, content_status).
+            본문이 비고 대체할 미디어도 없으면 content는 None.
+        """
+        legacy = tweet.get("legacy", {})
+        content = legacy.get("full_text", "")
+
+        # t.co URL을 실제 URL로 교체
+        for u in legacy.get("entities", {}).get("urls", []):
+            short = u.get("url", "")
+            expanded = u.get("expanded_url", "")
+            if short and expanded:
+                content = content.replace(short, expanded)
+
+        # 미디어 URL 제거
+        media = []
+        for media_container in (
+            legacy.get("entities", {}),
+            legacy.get("extended_entities", {}),
+        ):
+            media.extend(media_container.get("media") or [])
+        media_fallbacks = []
+        media_alt_texts = []
+        image_urls = []
+        for m in media:
+            media_url = m.get("url", "")
+            alt_text = (m.get("ext_alt_text") or "").strip()
+            if alt_text:
+                media_alt_texts.append(alt_text)
+            # 사진 첨부의 CDN 원본 URL(pbs.twimg.com)을 보존한다
+            if m.get("type") == "photo" and m.get("media_url_https"):
+                image_urls.append(m["media_url_https"])
+            media_link = m.get("expanded_url") or m.get("display_url") or m.get("media_url_https")
+            if media_link:
+                media_fallbacks.append(media_link)
+            if media_url:
+                content = content.replace(media_url, "").strip()
+
+        content = content.strip()
+        content_status = None
+        if not content:
+            if media_alt_texts:
+                content = "\n".join(media_alt_texts)
+                content_status = "media_alt_text"
+            elif media_fallbacks:
+                content = "\n".join(dict.fromkeys(media_fallbacks))
+                content_status = "media_link"
+            else:
+                return None, [], None
+        return content, image_urls, content_status
 
     def _parse_timestamp(self, created_at: str) -> str:
         """X 타임스탬프 파싱 (예: 'Wed Oct 10 20:19:24 +0000 2018')"""
