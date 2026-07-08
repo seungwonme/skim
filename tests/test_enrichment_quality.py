@@ -132,6 +132,32 @@ class EnrichmentQualityTests(unittest.TestCase):
         self.assertEqual(item["word_count"], 7)
         self.assertEqual(item["original_url"], "https://example.com/dynamic")
 
+    def test_enrich_with_content_uses_feed_html_when_article_fetch_fails(self):
+        body = "full feed body " * 70
+        item = {
+            "platform": "blogs",
+            "title": "Feed-backed article",
+            "url": "https://discuss.example/t/feed-backed/1",
+            "content_html": f"<article><p>{body}</p></article>",
+        }
+
+        with (
+            patch(
+                "skim_core.enrichment.extract_article_content",
+                return_value=(None, "failed", "http fetch failed"),
+            ),
+            patch(
+                "skim_core.enrichment._extract_feed_content_html",
+                return_value={"content_markdown": body, "word_count": len(body.split())},
+            ),
+        ):
+            enrich_with_content([item])
+
+        self.assertEqual(item["content_markdown"], body)
+        self.assertEqual(item["word_count"], 210)
+        self.assertEqual(item["enrichment_method"], "feed-content")
+        self.assertNotIn("enrichment_error", item)
+
     def test_geeknews_topic_body_from_html_extracts_bullets(self):
         html = (
             '<div class="topic_contents">'

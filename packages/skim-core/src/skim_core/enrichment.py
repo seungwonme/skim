@@ -330,6 +330,26 @@ def extract_article_content(url: str, title: str) -> tuple[Optional[dict], str, 
     return fallback, best_method, f"{thin_reason_1}; {thin_reason_2}"
 
 
+def _extract_feed_content_html(item: dict) -> Optional[dict]:
+    html = (item.get("content_html") or "").strip()
+    if not html:
+        return None
+    return _trafilatura_extract(html, item.get("url", ""))
+
+
+def _extract_article_or_feed_content(item: dict, target_url: str) -> tuple[Optional[dict], str, Optional[str]]:
+    title = item.get("title", "")
+    data, method, error = extract_article_content(target_url, title)
+    if _is_content_usable(data, title):
+        return data, method, error
+
+    feed_data = _extract_feed_content_html(item)
+    if _is_content_usable(feed_data, title):
+        return feed_data, "feed-content", None
+
+    return data, method, error
+
+
 def extract_youtube_transcript(url: str, timeout: int = 60) -> Optional[dict]:
     """yt-dlp로 YouTube 자막을 추출하고 srt_to_txt.sh로 정리"""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -620,7 +640,7 @@ def enrich_with_content(items: List[dict]) -> List[dict]:
             # ailabs/blogs: trafilatura 기반 파이썬 본문 추출 (defuddle hang 회피)
             # producthunt: /products SPA(403) 대신 제품 외부 사이트 리다이렉트를 추출 대상으로 사용
             target_url = item.get("enrich_url") or url
-            data, method, error = extract_article_content(target_url, item.get("title", ""))
+            data, method, error = _extract_article_or_feed_content(item, target_url)
             if error:
                 item["enrichment_error"] = error
                 print(f"    [!] enrichment 경고: {error}")
