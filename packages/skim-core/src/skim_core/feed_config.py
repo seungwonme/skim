@@ -52,6 +52,7 @@ PERSONAL_BLOGS = {
     "Addy Osmani": "https://addyosmani.com/rss.xml",
     "Phil Schmid": "https://www.philschmid.de/rss",
     "Tidy First (Kent Beck)": "https://tidyfirst.substack.com/feed",
+    "PyTorchKR News": "https://discuss.pytorch.kr/c/news/14.rss",
 }
 
 # AI 빅테크 블로그/뉴스 (RSS + HTML 스크래핑 혼합)
