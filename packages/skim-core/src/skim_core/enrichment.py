@@ -337,7 +337,9 @@ def _extract_feed_content_html(item: dict) -> Optional[dict]:
     return _trafilatura_extract(html, item.get("url", ""))
 
 
-def _extract_article_or_feed_content(item: dict, target_url: str) -> tuple[Optional[dict], str, Optional[str]]:
+def _extract_article_or_feed_content(
+    item: dict, target_url: str
+) -> tuple[Optional[dict], str, Optional[str]]:
     title = item.get("title", "")
     data, method, error = extract_article_content(target_url, title)
     if _is_content_usable(data, title):
@@ -564,6 +566,33 @@ def resolve_geeknews_original_url(topic_url: str) -> Optional[str]:
     return None
 
 
+def _enrich_article_item(item: dict, url: str) -> Optional[dict]:
+    """ailabs/blogs/producthunt 공통 본문 추출 (trafilatura 기반, defuddle hang 회피).
+
+    producthunt는 /products SPA(403) 대신 제품 외부 사이트 리다이렉트를 추출 대상으로 쓴다.
+    품질 게이트를 통과 못하면 enrichment_method="failed"로 표시한다 (DB upsert는 이 마커를
+    "재시도 가능"으로 해석해 다음 크롤링에서 더 좋은 본문이 오면 덮어쓴다). 단 producthunt는
+    외부 사이트 추출이 실패해도 제품 태그라인을 본문 최저선으로 남긴다 - 없으면 digest에서
+    항목이 조용히 사라진다.
+    """
+    target_url = item.get("enrich_url") or url
+    data, method, error = _extract_article_or_feed_content(item, target_url)
+    if error:
+        item["enrichment_error"] = error
+        print(f"    [!] enrichment 경고: {error}")
+    if not _is_content_usable(data, item.get("title", "")):
+        tagline = (item.get("tagline") or "").strip()
+        if tagline:
+            data = {"content_markdown": tagline, "word_count": len(tagline.split())}
+        else:
+            data = None
+            item.setdefault("enrichment_error", "content not usable")
+        method = "failed"
+    item["enrichment_method"] = method
+    print(f"    -> method={method}")
+    return data
+
+
 def enrich_with_content(items: List[dict]) -> List[dict]:
     """각 항목에 defuddle로 원문 콘텐츠 추가"""
     targets = list(items)
@@ -637,22 +666,7 @@ def enrich_with_content(items: List[dict]) -> List[dict]:
             or item["platform"].startswith("blogs")
             or item["platform"] == "producthunt"
         ):
-            # ailabs/blogs: trafilatura 기반 파이썬 본문 추출 (defuddle hang 회피)
-            # producthunt: /products SPA(403) 대신 제품 외부 사이트 리다이렉트를 추출 대상으로 사용
-            target_url = item.get("enrich_url") or url
-            data, method, error = _extract_article_or_feed_content(item, target_url)
-            if error:
-                item["enrichment_error"] = error
-                print(f"    [!] enrichment 경고: {error}")
-            # 기본 품질 게이트를 통과 못하면 본문을 채우지 않고
-            # enrichment_method="failed"로 표시. DB upsert는 이 마커를 "재시도 가능"으로
-            # 해석해 다음 크롤링에서 더 좋은 본문이 오면 덮어쓴다.
-            if not _is_content_usable(data, item.get("title", "")):
-                data = None
-                method = "failed"
-                item.setdefault("enrichment_error", "content not usable")
-            item["enrichment_method"] = method
-            print(f"    -> method={method}")
+            data = _enrich_article_item(item, url)
         else:
             data = defuddle(url)
 
@@ -685,7 +699,7 @@ def _pdf_page_text(page) -> str:
     blocks = [b for b in page.get_text("blocks") if b[6] == 0 and b[4].strip()]
     left = sorted((b for b in blocks if b[0] < mid), key=lambda b: b[1])
     right = sorted((b for b in blocks if b[0] >= mid), key=lambda b: b[1])
-    return "\n".join(b[4].strip() for b in (left + right))
+    return "\n".join(b[4].strip() for b in left + right)
 
 
 def extract_pdf_text(pdf_url: str, timeout: int = 30, min_words: int = 100) -> Optional[dict]:
@@ -768,10 +782,16 @@ def enrich_papers_with_content(items: List[dict]) -> List[dict]:
                     item["enrichment_method"] = "failed"
                     print("    -> HTML/PDF/abstract 모두 없음")
 
-    html_n = sum(1 for it in targets if it.get("enrichment_method") is None and it.get("word_count", 0) > 0)
+    html_n = sum(
+        1 for it in targets if it.get("enrichment_method") is None and it.get("word_count", 0) > 0
+    )
     pdf_n = sum(1 for it in targets if it.get("enrichment_method") == "pdf")
     abstract_n = sum(
-        1 for it in targets if it.get("enrichment_method") == "failed" and it.get("word_count", 0) > 0
+        1
+        for it in targets
+        if it.get("enrichment_method") == "failed" and it.get("word_count", 0) > 0
     )
-    print(f"  -> HTML {html_n}개, PDF {pdf_n}개, abstract 폴백 {abstract_n}개 / 총 {len(targets)}개")
+    print(
+        f"  -> HTML {html_n}개, PDF {pdf_n}개, abstract 폴백 {abstract_n}개 / 총 {len(targets)}개"
+    )
     return items
