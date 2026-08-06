@@ -2,7 +2,7 @@
 @file threads_api.py
 @description Threads API 기반 크롤러 (브라우저 없이 동작)
 
-Instagram Private API를 사용하여 Threads 게시글을 수집합니다.
+Threads 웹앱이 쓰는 GraphQL persisted query를 그대로 호출합니다.
 CDP로 추출한 세션 쿠키를 재사용하여 인증합니다.
 
 주요 기능:
@@ -17,6 +17,7 @@ CDP로 추출한 세션 쿠키를 재사용하여 인증합니다.
 """
 
 import json
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -26,10 +27,69 @@ import typer
 from ...models import Post
 from ...paths import SESSIONS_DIR
 
-# Instagram Private API 설정
-IG_API_BASE = "https://i.instagram.com/api/v1"
+# Threads 웹 GraphQL 설정
+THREADS_BASE = "https://www.threads.com"
+GRAPHQL_URL = f"{THREADS_BASE}/graphql/query"
 IG_APP_ID = "238260118697367"
-IG_USER_AGENT = "Barcelona 289.0.0.77.109 Android"
+WEB_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
+)
+
+# persisted query 좌표. Meta가 웹앱을 재배포하면 doc_id가 바뀌어 execution error가 난다.
+# 갱신하려면 브라우저로 threads.com을 열어 graphql/query 요청의 doc_id를 다시 읽는다.
+TIMELINE_QUERY = {
+    "doc_id": "29069292379337431",
+    "friendly_name": "BarcelonaFeedPaginationDirectQuery",
+    "root_field": "xdt_api__v1__feed__text_post_app_timeline__connection",
+}
+PROFILE_QUERY = {
+    "doc_id": "27764675746529586",
+    "friendly_name": "BarcelonaProfileThreadsTabRefetchableDirectQuery",
+    "root_field": "xdt_api__v1__text_feed__user_id__profile__connection",
+}
+
+# 웹앱이 함께 보내는 Relay provider 플래그. 빠지면 서버가 execution error로 응답한다.
+# 타임라인과 프로필의 합집합이며 두 쿼리 사이에 값이 충돌하는 항목은 없다.
+_PROVIDERS_ON = (
+    "BarcelonaIsLoggedIn",
+    "BarcelonaHasDearAlgoConsumption",
+    "BarcelonaHasCommunities",
+    "BarcelonaHasGameScoreShare",
+    "BarcelonaHasPublicViewCountCard",
+    "BarcelonaHasCommunityEntityCard",
+    "BarcelonaHasScorecardCommunity",
+    "BarcelonaHasSportTeamAllegianceCard",
+    "BarcelonaHasMusic",
+    "BarcelonaHasMessaging",
+    "BarcelonaShouldFulfillLightboxQuery",
+    "BarcelonaHasViewerReplied",
+    "BarcelonaOptionalCookiesEnabled",
+    "BarcelonaShouldShowFediverseM075Features",
+    "BarcelonaHasProfileSelfReplyContext",
+)
+_PROVIDERS_OFF = (
+    "BarcelonaHasEventBadge",
+    "BarcelonaGenAIRepliesEnabled",
+    "BarcelonaIsSearchDiscoveryEnabled",
+    "BarcelonaHasNewspaperLinkStyle",
+    "BarcelonaHasPodcastV2Consumption",
+    "BarcelonaHasPodcastTranscriptConsumption",
+    "BarcelonaHasPrivateRepliesDeprecation",
+    "BarcelonaHasGhostPostEmojiActivation",
+    "BarcelonaHasDearAlgoWebProduction",
+    "BarcelonaHasWebFavicons",
+    "BarcelonaIsCrawler",
+    "BarcelonaHasCommunityTopContributors",
+    "BarcelonaCanSeeSponsoredContent",
+    "BarcelonaIsInternalUser",
+)
+RELAY_PROVIDERS: Dict[str, bool] = {
+    f"__relay_internal__pv__{name}relayprovider": True for name in _PROVIDERS_ON
+}
+RELAY_PROVIDERS.update(
+    {f"__relay_internal__pv__{name}relayprovider": False for name in _PROVIDERS_OFF}
+)
 
 
 class ThreadsAPICrawler:
@@ -58,14 +118,15 @@ class ThreadsAPICrawler:
             raise typer.Exit(1)
 
         self.my_user_id = cookies.get("ds_user_id")
+        self.csrf_token = cookies.get("csrftoken", "")
+        self._tokens: Optional[Dict[str, str]] = None
 
         self.session.cookies.update(cookies)
         self.session.headers.update(
             {
-                "User-Agent": IG_USER_AGENT,
+                "User-Agent": WEB_USER_AGENT,
                 "X-IG-App-ID": IG_APP_ID,
-                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-                "Accept": "*/*",
+                "Accept-Language": "en-US,en;q=0.9",
             }
         )
 
@@ -98,7 +159,9 @@ class ThreadsAPICrawler:
             # 크롤러 인스턴스는 1회성이다. 세션 커넥션 풀을 정리한다.
             self.session.close()
 
-    async def _crawl_impl(self, count: int = 5, user_id: Optional[str] = None) -> List[Post]:
+    async def _crawl_impl(
+        self, count: int = 5, user_id: Optional[str] = None
+    ) -> List[Post]:
         """
         Threads 게시글 크롤링
 
@@ -112,7 +175,9 @@ class ThreadsAPICrawler:
             크롤링된 게시글 목록
         """
         mode = f"사용자 {user_id}" if user_id else "For You 타임라인"
-        typer.echo(f"[API 모드] {self.platform_name} 크롤링 시작 - {mode} (게시글 {count}개)")
+        typer.echo(
+            f"[API 모드] {self.platform_name} 크롤링 시작 - {mode} (게시글 {count}개)"
+        )
 
         posts: List[Post] = []
         max_id: Optional[str] = None
@@ -159,81 +224,143 @@ class ThreadsAPICrawler:
             typer.echo(f"API 요청 실패: {e}")
             return [], None
 
-    def _fetch_timeline_feed(
-        self, max_id: Optional[str] = None
+    def _fetch_tokens(self) -> Dict[str, str]:
+        """threads.com HTML에서 GraphQL 호출에 필요한 요청 토큰을 뽑는다."""
+        if self._tokens is not None:
+            return self._tokens
+
+        resp = self.session.get(THREADS_BASE + "/", timeout=20)
+        resp.raise_for_status()
+        html = resp.text
+
+        lsd = re.search(r'"LSD",\[\],\{"token":"([^"]+)"', html)
+        dtsg = re.search(r'"DTSGInitialData",\[\],\{"token":"([^"]+)"', html)
+        if not lsd or not dtsg:
+            typer.echo("세션이 만료되었습니다. 재로그인하세요:")
+            typer.echo("  uv run skim login threads")
+            self._tokens = {}
+            return self._tokens
+
+        self._tokens = {"lsd": lsd.group(1), "fb_dtsg": dtsg.group(1)}
+        if self.debug_mode:
+            typer.echo("  요청 토큰 확보 (lsd/fb_dtsg)")
+        return self._tokens
+
+    def _graphql(
+        self, query: Dict[str, str], variables: Dict[str, Any], label: str
     ) -> tuple[List[Dict[str, Any]], Optional[str]]:
-        """For You 타임라인 피드 (POST 요청)"""
-        url = f"{IG_API_BASE}/feed/text_post_app_timeline/"
+        """persisted query를 호출하고 (edges, next_cursor)를 돌려준다."""
+        tokens = self._fetch_tokens()
+        if not tokens:
+            return [], None
 
-        data = {"pagination_source": "text_post_feed_threads"}
-        if max_id:
-            data["max_id"] = max_id
+        payload = {
+            "lsd": tokens["lsd"],
+            "fb_dtsg": tokens["fb_dtsg"],
+            "__a": "1",
+            "__comet_req": "29",
+            "fb_api_caller_class": "RelayModern",
+            "fb_api_req_friendly_name": query["friendly_name"],
+            "server_timestamps": "true",
+            "variables": json.dumps({**variables, **RELAY_PROVIDERS}),
+            "doc_id": query["doc_id"],
+        }
+        headers = {
+            "x-fb-friendly-name": query["friendly_name"],
+            "x-fb-lsd": tokens["lsd"],
+            "x-root-field-name": query["root_field"],
+            "x-csrftoken": self.csrf_token,
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Origin": THREADS_BASE,
+            "Referer": THREADS_BASE + "/",
+        }
 
-        resp = self.session.post(url, data=data, timeout=15)
+        resp = self.session.post(GRAPHQL_URL, data=payload, headers=headers, timeout=25)
 
-        if resp.status_code == 401:
+        if resp.status_code in (401, 403):
             typer.echo("세션이 만료되었습니다. 재로그인하세요:")
             typer.echo("  uv run skim login threads")
             return [], None
 
         if resp.status_code != 200:
             # rate limit/서버 오류를 정상 빈 피드처럼 숨기지 않는다.
-            typer.echo(f"  [!] 타임라인 API 오류: HTTP {resp.status_code}")
+            typer.echo(f"  [!] {label} API 오류: HTTP {resp.status_code}")
             return [], None
 
-        result = resp.json()
+        body = resp.json()
+        if body.get("errors"):
+            # 웹앱 재배포로 doc_id가 낡으면 200 + errors로 온다. 빈 피드로 숨기지 않는다.
+            message = body["errors"][0].get("message", "unknown")
+            typer.echo(f"  [!] {label} GraphQL 오류: {message}")
+            typer.echo(f"      doc_id({query['doc_id']}) 갱신이 필요할 수 있습니다.")
+            return [], None
 
-        # 타임라인 응답: feed_items → text_post_app_thread → thread_items
-        feed_items = result.get("feed_items", [])
-        threads = []
-        for item in feed_items:
-            thread = item.get("text_post_app_thread")
-            if thread:
-                threads.append(thread)
+        data = body.get("data") or {}
+        if not data:
+            return [], None
 
-        next_max_id = result.get("next_max_id")
+        # 응답 alias(feedData/mediaData)는 쿼리마다 달라 유일한 최상위 키를 그대로 쓴다.
+        connection = next(iter(data.values())) or {}
+        edges = connection.get("edges") or []
+        page_info = connection.get("page_info") or {}
+        next_cursor = (
+            page_info.get("end_cursor") if page_info.get("has_next_page") else None
+        )
 
         if self.debug_mode:
             typer.echo(
-                f"  타임라인: {len(threads)}개 스레드 수신 "
-                f"(next_max_id: {'있음' if next_max_id else '없음'})"
+                f"  {label}: {len(edges)}개 edge 수신 "
+                f"(next_cursor: {'있음' if next_cursor else '없음'})"
             )
 
-        return threads, next_max_id
+        return edges, next_cursor
+
+    def _fetch_timeline_feed(
+        self, max_id: Optional[str] = None
+    ) -> tuple[List[Dict[str, Any]], Optional[str]]:
+        """For You 타임라인 피드"""
+        variables = {
+            "after": max_id,
+            "before": None,
+            "data": {
+                "feed_view_info": "[]",
+                "pagination_source": "text_post_feed_threads",
+                "reason": "pagination" if max_id else "cold_start_fetch",
+            },
+            "first": 10,
+            "last": None,
+            "sort_by": None,
+            "variant": "for_you",
+        }
+        edges, next_cursor = self._graphql(TIMELINE_QUERY, variables, "타임라인")
+
+        # 타임라인 edge는 추천 사용자 슬롯도 섞여 오므로 스레드가 실린 노드만 남긴다.
+        threads = []
+        for edge in edges:
+            thread = (edge.get("node") or {}).get("text_post_app_thread")
+            if thread:
+                threads.append(thread)
+
+        return threads, next_cursor
 
     def _fetch_user_feed(
         self, user_id: str, max_id: Optional[str] = None
     ) -> tuple[List[Dict[str, Any]], Optional[str]]:
-        """특정 사용자 프로필 피드 (GET 요청)"""
-        url = f"{IG_API_BASE}/text_feed/{user_id}/profile/"
+        """특정 사용자 프로필 피드"""
+        variables = {
+            "after": max_id,
+            "allow_page_info_for_lox_user": False,
+            "before": None,
+            "first": 10,
+            "last": None,
+            "userID": str(user_id),
+        }
+        edges, next_cursor = self._graphql(PROFILE_QUERY, variables, "사용자 피드")
 
-        params = {}
-        if max_id:
-            params["max_id"] = max_id
+        # 프로필 응답은 node 자체가 스레드다.
+        threads = [edge["node"] for edge in edges if edge.get("node")]
 
-        resp = self.session.get(url, params=params, timeout=15)
-
-        if resp.status_code == 401:
-            typer.echo("세션이 만료되었습니다. 재로그인하세요:")
-            typer.echo("  uv run skim login threads")
-            return [], None
-
-        if resp.status_code != 200:
-            # rate limit/서버 오류를 정상 빈 피드처럼 숨기지 않는다.
-            typer.echo(f"  [!] 사용자 피드 API 오류: HTTP {resp.status_code}")
-            return [], None
-
-        data = resp.json()
-        threads = data.get("threads", [])
-        next_max_id = data.get("next_max_id")
-
-        if self.debug_mode:
-            typer.echo(
-                f"  사용자 피드: {len(threads)}개 스레드 수신 "
-                f"(next_max_id: {'있음' if next_max_id else '없음'})"
-            )
-
-        return threads, next_max_id
+        return threads, next_cursor
 
     def _parse_thread(self, thread: Dict[str, Any]) -> Optional[Post]:
         """
@@ -267,7 +394,9 @@ class ThreadsAPICrawler:
             if text:
                 contents.append(text)
             for media in (post_data, *(post_data.get("carousel_media") or [])):
-                candidates = (media.get("image_versions2") or {}).get("candidates") or []
+                candidates = (media.get("image_versions2") or {}).get(
+                    "candidates"
+                ) or []
                 if candidates and candidates[0].get("url"):
                     image_urls.append(candidates[0]["url"])
 
@@ -280,7 +409,9 @@ class ThreadsAPICrawler:
         # 타임스탬프 (첫 번째 포스트 기준)
         taken_at = first_post.get("taken_at", 0)
         timestamp = (
-            datetime.fromtimestamp(taken_at, tz=timezone.utc).isoformat(timespec="seconds")
+            datetime.fromtimestamp(taken_at, tz=timezone.utc).isoformat(
+                timespec="seconds"
+            )
             if taken_at
             else ""
         )
@@ -293,7 +424,9 @@ class ThreadsAPICrawler:
         # 상호작용 (첫 번째 포스트 기준)
         text_post_info = first_post.get("text_post_app_info", {})
         like_count = first_post.get("like_count", 0)
-        reply_count = text_post_info.get("direct_reply_count", 0) if text_post_info else 0
+        reply_count = (
+            text_post_info.get("direct_reply_count", 0) if text_post_info else 0
+        )
         repost_count = text_post_info.get("repost_count", 0) if text_post_info else 0
 
         return Post(
