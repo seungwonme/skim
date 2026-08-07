@@ -187,12 +187,10 @@ def migrate_canonical_body(db_path: Optional[Path] = None) -> dict:
     api_list = ",".join(f"'{p}'" for p in sorted(_API_BODY_PLATFORMS))
     try:
         promoted = 0
-        rows = conn.execute(
-            f"""SELECT id, content FROM posts
+        rows = conn.execute(f"""SELECT id, content FROM posts
                 WHERE platform IN ({api_list})
                   AND (content_markdown IS NULL OR TRIM(content_markdown) = '')
-                  AND content IS NOT NULL AND TRIM(content) != ''"""
-        ).fetchall()
+                  AND content IS NOT NULL AND TRIM(content) != ''""").fetchall()
         for row_id, content in rows:
             body = content.strip()
             conn.execute(
@@ -202,11 +200,9 @@ def migrate_canonical_body(db_path: Optional[Path] = None) -> dict:
             )
             promoted += 1
 
-        cleared = conn.execute(
-            f"""UPDATE posts SET content = ''
+        cleared = conn.execute(f"""UPDATE posts SET content = ''
                 WHERE platform NOT IN ({api_list})
-                  AND content IS NOT NULL AND content != '' AND content = title"""
-        ).rowcount
+                  AND content IS NOT NULL AND content != '' AND content = title""").rowcount
         conn.commit()
         return {"api_promoted": promoted, "feed_content_cleared": cleared}
     finally:
@@ -325,9 +321,7 @@ def save_posts(
         # 혼합 배치에서 인자 platform으로 저장하면 row가 오라벨링된다.
         row_platform = data.get("platform") or platform
 
-        if row_platform in _API_BODY_PLATFORMS and not (
-            data.get("content_markdown") or ""
-        ).strip():
+        if row_platform in _API_BODY_PLATFORMS and not (data.get("content_markdown") or "").strip():
             body = (data.get("content") or "").strip()
             if body:
                 data["content_markdown"] = body
@@ -550,6 +544,32 @@ def finish_run(
     )
     conn.commit()
     conn.close()
+
+
+def platforms_with_recent_posts(days: int, db_path: Optional[Path] = None) -> set[str]:
+    """최근 `days`일 안에 게시글이 들어온 적 있는 플랫폼 집합.
+
+    평소 수집되던 소스가 0건으로 떨어진 것을 회귀로 판정할 때 쓴다.
+    """
+    conn = None
+    try:
+        # 연결 자체가 WAL PRAGMA를 잡으므로 여기서도 lock 오류가 난다.
+        # 판정은 수집 결과를 알리기 위한 보조 정보라, 이 함수가 터져서
+        # 이미 저장된 크롤 결과를 잃게 두지 않는다.
+        conn = get_connection(db_path)
+        rows = conn.execute(
+            """SELECT DISTINCT platform FROM posts
+               WHERE crawled_at >= datetime('now', ?)""",
+            (f"-{int(days)} days",),
+        ).fetchall()
+    except (sqlite3.Error, OSError) as exc:
+        # 조용히 비활성화하면 이 기능이 막으려던 침묵을 그대로 재현한다.
+        print(f"[skim] 0건 회귀 판정 생략 (DB 조회 실패: {exc})", file=sys.stderr)
+        return set()
+    finally:
+        if conn is not None:
+            conn.close()
+    return {row[0] for row in rows}
 
 
 def add_feedback(post_id: int, action: str) -> None:

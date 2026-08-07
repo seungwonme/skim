@@ -19,6 +19,7 @@ from skim_core.db import (
     get_connection,
     init_db,
     migrate_canonical_body,
+    platforms_with_recent_posts,
     save_posts,
     save_run,
     update_run_progress,
@@ -28,9 +29,9 @@ from skim_core.paths import DATA_DIR
 from skim_core.research.refresh import run_research
 from skim_core.research.search import search_posts
 from skim_core.research.serializer import build_response, utc_now_iso
-from skim_core.youtube_history import backfill_channel_history, transcribe_video
 from skim_core.research.types import SearchStats
 from skim_core.utils import save_posts_to_file
+from skim_core.youtube_history import backfill_channel_history, transcribe_video
 
 KST = timezone(timedelta(hours=9))
 
@@ -40,6 +41,16 @@ SNS_DEFAULT_COUNT = 50
 
 # Feed 크롤러: since 기반 (기간 내 모든 게시글 수집)
 FEED_PLATFORMS = set(REGISTRY.keys()) - SNS_PLATFORMS
+
+# 소스가 노출하는 발행일이 실제 게시 시점보다 뒤처지면 좁은 창에서는 전량 걸러진다.
+# huggingface daily papers는 arXiv 발행일을 그대로 싣기 때문에 2일 이상 밀려 있다.
+# --days를 명시해도 이 값이 바닥으로 깔린다. 일일 배치가 `crawl all --days 1`로
+# 돌기 때문에, 기본값에만 반영하면 정작 배치에서는 계속 0건이 된다.
+# arxiv는 요일 기반 규칙을 따로 쓰므로 여기 넣지 않는다.
+MIN_LOOKBACK_DAYS = {"huggingface": 3}
+
+# 이 기간 안에 유입 이력이 있던 플랫폼이 0건이면 회귀로 본다.
+REGRESSION_LOOKBACK_DAYS = 14
 
 
 def platform_help(include_all: bool = False) -> str:
@@ -155,6 +166,7 @@ def crawl(  # noqa: C901 — CLI 진입점으로 플랫폼별 분기가 불가�
     active_platform: Optional[str] = None
     failed_platforms: list[str] = []
     completed_platforms: list[str] = []
+    empty_platforms: list[str] = []
 
     try:
         for platform in targets:
@@ -181,6 +193,8 @@ def crawl(  # noqa: C901 — CLI 진입점으로 플랫폼별 분기가 불가�
                     d = 4 if weekday in (0, 5, 6) else 2
                 else:
                     d = 1
+                # 발행일이 밀린 소스는 사용자가 창을 좁혀도 최소 폭을 보장한다.
+                d = max(d, MIN_LOOKBACK_DAYS.get(platform, 0))
                 since = (now - timedelta(days=d)).replace(hour=0, minute=0, second=0, microsecond=0)
                 options["since"] = since
                 if count is not None:
@@ -210,6 +224,7 @@ def crawl(  # noqa: C901 — CLI 진입점으로 플랫폼별 분기가 불가�
 
             completed_platforms.append(platform)
             if not posts:
+                empty_platforms.append(platform)
                 update_run_progress(run_id, platform, f"{platform} 수집된 게시글 없음")
                 typer.echo("  -> 수집된 게시글 없음")
                 continue
@@ -243,10 +258,26 @@ def crawl(  # noqa: C901 — CLI 진입점으로 플랫폼별 분기가 불가�
         finish_run(run_id, "failed", total_saved, summary)
         raise
 
+    # 크롤러가 깨져도 빈 리스트는 예외가 아니라 정상 종료로 보인다. 평소 들어오던
+    # 소스가 0건이면 회귀로 보고 드러낸다. 원래 저빈도인 소스까지 잡지 않도록
+    # 최근 유입 이력이 있는 플랫폼만 대상으로 한다.
+    regressed = (
+        sorted(set(empty_platforms) & platforms_with_recent_posts(REGRESSION_LOOKBACK_DAYS))
+        if empty_platforms
+        else []
+    )
+    if regressed:
+        typer.echo(
+            f"\n[!] 최근 {REGRESSION_LOOKBACK_DAYS}일간 수집되던 플랫폼이 0건입니다: "
+            f"{', '.join(regressed)}"
+        )
+
     if failed_platforms:
         summary = f"실패 플랫폼: {', '.join(failed_platforms)}"
         if completed_platforms:
             summary += f"; 완료 플랫폼: {', '.join(completed_platforms)}"
+        if regressed:
+            summary += f"; 0건 회귀: {', '.join(regressed)}"
         finish_run(run_id, "failed", total_saved, summary)
         typer.echo(
             f"\n완료: 총 {total_saved}개 저장 (run #{run_id}, 실패: {', '.join(failed_platforms)})"
@@ -254,7 +285,17 @@ def crawl(  # noqa: C901 — CLI 진입점으로 플랫폼별 분기가 불가�
         # cron/모니터링이 실패를 감지할 수 있게 비정상 종료 코드를 반환한다.
         raise typer.Exit(1)
 
-    finish_run(run_id, "success", total_saved, "전체 플랫폼 처리 완료")
+    if regressed:
+        # 종료 코드는 0으로 둔다. 0건이 정상인 날에 파이프라인 전체를 세우지 않되,
+        # runs.status로 남겨 `skim doctor`와 모니터링이 집어낼 수 있게 한다.
+        finish_run(
+            run_id,
+            "degraded",
+            total_saved,
+            f"전체 플랫폼 처리 완료 (0건 회귀: {', '.join(regressed)})",
+        )
+    else:
+        finish_run(run_id, "success", total_saved, "전체 플랫폼 처리 완료")
     typer.echo(f"\n완료: 총 {total_saved}개 저장 (run #{run_id})")
 
 
@@ -415,7 +456,10 @@ def doctor(
 
     if platform and not report["platforms"]:
         report["warnings"].append(f"no posts found for {platform}")
-    if any(run["status"] in {"failed", "interrupted", "running"} for run in report["runs"][:3]):
+    if any(
+        run["status"] in {"failed", "interrupted", "running", "degraded"}
+        for run in report["runs"][:3]
+    ):
         report["warnings"].append("recent runs need attention")
     _emit_doctor(report, emit)
 
@@ -459,7 +503,10 @@ def coverage(
     """플랫폼별 수집량과 본문 coverage를 집계합니다."""
     _validate_platform(platform)
     if emit not in {"summary", "json", "csv"}:
-        typer.echo("[skim] invalid --emit value. choose from ['csv', 'json', 'summary']", err=True)
+        typer.echo(
+            "[skim] invalid --emit value. choose from ['csv', 'json', 'summary']",
+            err=True,
+        )
         raise typer.Exit(2)
 
     db_path = _db_or_default(db)
@@ -484,7 +531,7 @@ def coverage(
                        MIN(crawled_at) AS first_crawl,
                        MAX(crawled_at) AS last_crawl
                 FROM posts
-                WHERE {' AND '.join(where)}
+                WHERE {" AND ".join(where)}
                 GROUP BY platform
                 ORDER BY total DESC
                 """,
@@ -501,7 +548,9 @@ def coverage(
     if emit == "json":
         typer.echo(
             json.dumps(
-                {"days": days, "platform": platform, "coverage": rows}, ensure_ascii=False, indent=2
+                {"days": days, "platform": platform, "coverage": rows},
+                ensure_ascii=False,
+                indent=2,
             )
         )
     elif emit == "csv":
@@ -674,7 +723,7 @@ def _recent_inventory(db_path: Path, days: int, platforms: Optional[list[str]]) 
                        COALESCE(url, '') AS url,
                        crawled_at
                 FROM posts
-                WHERE {' AND '.join(where)}
+                WHERE {" AND ".join(where)}
                 ORDER BY crawled_at DESC, platform, id DESC
                 """,
                 params,
