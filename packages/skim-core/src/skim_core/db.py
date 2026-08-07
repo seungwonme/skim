@@ -551,19 +551,24 @@ def platforms_with_recent_posts(days: int, db_path: Optional[Path] = None) -> se
 
     평소 수집되던 소스가 0건으로 떨어진 것을 회귀로 판정할 때 쓴다.
     """
-    conn = get_connection(db_path)
+    conn = None
     try:
+        # 연결 자체가 WAL PRAGMA를 잡으므로 여기서도 lock 오류가 난다.
+        # 판정은 수집 결과를 알리기 위한 보조 정보라, 이 함수가 터져서
+        # 이미 저장된 크롤 결과를 잃게 두지 않는다.
+        conn = get_connection(db_path)
         rows = conn.execute(
             """SELECT DISTINCT platform FROM posts
                WHERE crawled_at >= datetime('now', ?)""",
             (f"-{int(days)} days",),
         ).fetchall()
-    except sqlite3.Error:
-        # 판정은 수집 결과를 알리기 위한 보조 정보다. 여기서 터져 크롤 전체를
-        # 실패로 만들지 않는다.
+    except (sqlite3.Error, OSError) as exc:
+        # 조용히 비활성화하면 이 기능이 막으려던 침묵을 그대로 재현한다.
+        print(f"[skim] 0건 회귀 판정 생략 (DB 조회 실패: {exc})", file=sys.stderr)
         return set()
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
     return {row[0] for row in rows}
 
 

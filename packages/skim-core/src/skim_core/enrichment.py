@@ -662,9 +662,11 @@ def enrich_with_content(items: List[dict]) -> List[dict]:
                 data["content_markdown"] = merged
                 data["word_count"] = len(merged.split())
             elif not _is_content_usable(data, item.get("title", ""), min_words=3):
-                # GN⁺ 요약이 아직 안 붙은 글의 원문이 페이월이면 본문이 통째로 빈다.
-                # producthunt 태그라인과 같은 처리로 피드 요약을 최저선으로 남긴다.
-                # method=failed라 다음 크롤에서 요약이 붙으면 덮어쓴다.
+                # GN⁺ 요약이 아직 안 붙었는데 원문 추출까지 못 쓰게 나오면 본문이
+                # 통째로 빈다. producthunt 태그라인과 같은 처리로 피드 요약을
+                # 최저선으로 남긴다. method=failed라 다음 크롤에서 요약이 붙으면
+                # 덮어쓴다. 아래 공통 게이트를 한 번 더 지나므로, 요약이 제목과
+                # 같거나 3단어 미만이면 그대로 빈 본문이 된다.
                 fallback = (item.get("summary") or "").strip()
                 if fallback:
                     data = {

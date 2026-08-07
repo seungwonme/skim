@@ -42,9 +42,12 @@ SNS_DEFAULT_COUNT = 50
 # Feed 크롤러: since 기반 (기간 내 모든 게시글 수집)
 FEED_PLATFORMS = set(REGISTRY.keys()) - SNS_PLATFORMS
 
-# 소스가 노출하는 발행일이 실제 게시 시점보다 뒤처지면 기본 1일 창으로는 전량 걸러진다.
+# 소스가 노출하는 발행일이 실제 게시 시점보다 뒤처지면 좁은 창에서는 전량 걸러진다.
 # huggingface daily papers는 arXiv 발행일을 그대로 싣기 때문에 2일 이상 밀려 있다.
-DEFAULT_LOOKBACK_DAYS = {"huggingface": 3}
+# --days를 명시해도 이 값이 바닥으로 깔린다. 일일 배치가 `crawl all --days 1`로
+# 돌기 때문에, 기본값에만 반영하면 정작 배치에서는 계속 0건이 된다.
+# arxiv는 요일 기반 규칙을 따로 쓰므로 여기 넣지 않는다.
+MIN_LOOKBACK_DAYS = {"huggingface": 3}
 
 # 이 기간 안에 유입 이력이 있던 플랫폼이 0건이면 회귀로 본다.
 REGRESSION_LOOKBACK_DAYS = 14
@@ -189,7 +192,9 @@ def crawl(  # noqa: C901 — CLI 진입점으로 플랫폼별 분기가 불가�
                     weekday = now.weekday()  # 0=Mon ... 6=Sun
                     d = 4 if weekday in (0, 5, 6) else 2
                 else:
-                    d = DEFAULT_LOOKBACK_DAYS.get(platform, 1)
+                    d = 1
+                # 발행일이 밀린 소스는 사용자가 창을 좁혀도 최소 폭을 보장한다.
+                d = max(d, MIN_LOOKBACK_DAYS.get(platform, 0))
                 since = (now - timedelta(days=d)).replace(hour=0, minute=0, second=0, microsecond=0)
                 options["since"] = since
                 if count is not None:
@@ -280,10 +285,17 @@ def crawl(  # noqa: C901 — CLI 진입점으로 플랫폼별 분기가 불가�
         # cron/모니터링이 실패를 감지할 수 있게 비정상 종료 코드를 반환한다.
         raise typer.Exit(1)
 
-    summary = "전체 플랫폼 처리 완료"
     if regressed:
-        summary += f" (0건 회귀: {', '.join(regressed)})"
-    finish_run(run_id, "success", total_saved, summary)
+        # 종료 코드는 0으로 둔다. 0건이 정상인 날에 파이프라인 전체를 세우지 않되,
+        # runs.status로 남겨 `skim doctor`와 모니터링이 집어낼 수 있게 한다.
+        finish_run(
+            run_id,
+            "degraded",
+            total_saved,
+            f"전체 플랫폼 처리 완료 (0건 회귀: {', '.join(regressed)})",
+        )
+    else:
+        finish_run(run_id, "success", total_saved, "전체 플랫폼 처리 완료")
     typer.echo(f"\n완료: 총 {total_saved}개 저장 (run #{run_id})")
 
 
@@ -444,7 +456,10 @@ def doctor(
 
     if platform and not report["platforms"]:
         report["warnings"].append(f"no posts found for {platform}")
-    if any(run["status"] in {"failed", "interrupted", "running"} for run in report["runs"][:3]):
+    if any(
+        run["status"] in {"failed", "interrupted", "running", "degraded"}
+        for run in report["runs"][:3]
+    ):
         report["warnings"].append("recent runs need attention")
     _emit_doctor(report, emit)
 
