@@ -56,7 +56,10 @@ class EnrichmentQualityTests(unittest.TestCase):
             ),
             patch(
                 "skim_core.enrichment.defuddle",
-                return_value={"content_markdown": body, "word_count": len(body.split())},
+                return_value={
+                    "content_markdown": body,
+                    "word_count": len(body.split()),
+                },
             ),
         ):
             enrich_with_content([item])
@@ -132,6 +135,57 @@ class EnrichmentQualityTests(unittest.TestCase):
         self.assertEqual(item["word_count"], 7)
         self.assertEqual(item["original_url"], "https://example.com/dynamic")
 
+    def test_geeknews_keeps_feed_summary_when_topic_and_article_both_empty(self):
+        """GN⁺ 요약이 아직 없고 원문이 페이월이면 본문이 통째로 비던 경로."""
+        item = {
+            "platform": "geeknews",
+            "title": "Alphabet을 떠나는 Jeff Dean",
+            "url": "https://news.hada.io/topic?id=32217",
+            "summary": "구글 최고 과학자 제프 딘이 회사를 떠난다",
+        }
+
+        with (
+            patch("skim_core.enrichment.fetch_geeknews_topic_body", return_value=None),
+            patch(
+                "skim_core.enrichment.resolve_geeknews_original_url",
+                return_value="https://www.nytimes.com/2026/08/05/technology/x.html",
+            ),
+            patch("skim_core.enrichment.defuddle", return_value=None),
+            patch(
+                "skim_core.enrichment.extract_article_content",
+                return_value=(None, "failed", "paywalled"),
+            ),
+        ):
+            enrich_with_content([item])
+
+        self.assertEqual(item["content_markdown"], "구글 최고 과학자 제프 딘이 회사를 떠난다")
+        self.assertEqual(item["word_count"], 7)
+        # 다음 크롤에서 진짜 본문이 오면 덮어쓸 수 있게 재시도 마커를 남긴다.
+        self.assertEqual(item["enrichment_method"], "failed")
+
+    def test_geeknews_stays_empty_without_any_feed_summary(self):
+        item = {
+            "platform": "geeknews",
+            "title": "No summary anywhere",
+            "url": "https://news.hada.io/topic?id=4",
+        }
+
+        with (
+            patch("skim_core.enrichment.fetch_geeknews_topic_body", return_value=None),
+            patch(
+                "skim_core.enrichment.resolve_geeknews_original_url",
+                return_value="https://example.com/paywalled",
+            ),
+            patch("skim_core.enrichment.defuddle", return_value=None),
+            patch(
+                "skim_core.enrichment.extract_article_content",
+                return_value=(None, "failed", "paywalled"),
+            ),
+        ):
+            enrich_with_content([item])
+
+        self.assertEqual(item["content_markdown"], "")
+
     def test_enrich_with_content_uses_feed_html_when_article_fetch_fails(self):
         body = "full feed body " * 70
         item = {
@@ -148,7 +202,10 @@ class EnrichmentQualityTests(unittest.TestCase):
             ),
             patch(
                 "skim_core.enrichment._extract_feed_content_html",
-                return_value={"content_markdown": body, "word_count": len(body.split())},
+                return_value={
+                    "content_markdown": body,
+                    "word_count": len(body.split()),
+                },
             ),
         ):
             enrich_with_content([item])
@@ -181,7 +238,10 @@ class EnrichmentQualityTests(unittest.TestCase):
         topic_body = "- 노동자 소유 기업 디렉터리 요약\n- 22,000개 이상 제품"
 
         with (
-            patch("skim_core.enrichment.fetch_geeknews_topic_body", return_value=topic_body),
+            patch(
+                "skim_core.enrichment.fetch_geeknews_topic_body",
+                return_value=topic_body,
+            ),
             patch(
                 "skim_core.enrichment.resolve_geeknews_original_url",
                 return_value="https://example.com/landing",
@@ -209,14 +269,20 @@ class EnrichmentQualityTests(unittest.TestCase):
         original = "Original article body with actual details"
 
         with (
-            patch("skim_core.enrichment.fetch_geeknews_topic_body", return_value=topic_body),
+            patch(
+                "skim_core.enrichment.fetch_geeknews_topic_body",
+                return_value=topic_body,
+            ),
             patch(
                 "skim_core.enrichment.resolve_geeknews_original_url",
                 return_value="https://example.com/article",
             ),
             patch(
                 "skim_core.enrichment.defuddle",
-                return_value={"content_markdown": original, "word_count": len(original.split())},
+                return_value={
+                    "content_markdown": original,
+                    "word_count": len(original.split()),
+                },
             ),
         ):
             enrich_with_content([item])
