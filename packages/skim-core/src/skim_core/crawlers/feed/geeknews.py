@@ -12,12 +12,11 @@ from bs4 import BeautifulSoup
 
 from ...enrichment import enrich_with_content
 from ...feed_config import GEEKNEWS_RSS
-from ...feed_utils import fetch_feed
+from ...feed_utils import FEED_HEADERS, fetch_feed
 from ...models import Post
 from ...timestamp import _REL_KO, relative_ko_to_iso
 
 GEEKNEWS_URL = "https://news.hada.io/"
-GEEKNEWS_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
 _TOPIC_ID = re.compile(r"topic\?id=(\d+)")
 
 
@@ -41,7 +40,7 @@ def fetch_geeknews_metrics(topic_id: str) -> Optional[dict]:
     try:
         resp = requests.get(
             f"{GEEKNEWS_URL}topic?id={topic_id}",
-            headers={"User-Agent": GEEKNEWS_UA},
+            headers=FEED_HEADERS,
             timeout=10,
         )
         resp.raise_for_status()
@@ -93,7 +92,7 @@ class GeekNewsCrawler:
 
         resp = requests.get(
             GEEKNEWS_URL,
-            headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"},
+            headers=FEED_HEADERS,
             timeout=10,
         )
         resp.raise_for_status()

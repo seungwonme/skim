@@ -17,9 +17,22 @@ from skim_core.crawlers.feed.geeknews import (
     fetch_geeknews_metrics,
     topic_id_from_url,
 )
-from skim_core.crawlers.feed.hackernews import HackerNewsCrawler, fetch_hn_metrics
+from skim_core.crawlers.feed.hackernews import (
+    HackerNewsCrawler,
+    fetch_hn_metrics,
+    metrics_from_feed,
+)
 
 SINCE = datetime(2026, 8, 1, tzinfo=timezone.utc)
+
+# hnrss.org가 실제로 보내는 description이다. 지표가 여기 이미 들어 있어서
+# item API를 따로 부를 이유가 없다. 지어낸 픽스처는 파싱 실패를 통과시킨다.
+HN_FEED_DESC = (
+    '<p>Article URL: <a href="https://nate.spot/x/">https://nate.spot/x/</a></p>\n'
+    '<p>Comments URL: <a href="https://news.ycombinator.com/item?id=49221939">'
+    "https://news.ycombinator.com/item?id=49221939</a></p>\n"
+    "<p>Points: 63</p>\n<p># Comments: 81</p>"
+)
 
 # news.hada.io 실제 마크업을 그대로 옮겼다. 지어낸 픽스처는 파싱 실패를 통과시킨다.
 # 포인트는 span#tp{id}, 댓글 수는 data- 접두사가 붙은 속성으로만 나온다.
@@ -61,6 +74,30 @@ class HackerNewsMetricsTests(unittest.TestCase):
             "skim_core.crawlers.feed.hackernews.enrich_with_content",
             side_effect=lambda targets: targets,
         )
+
+    def test_feed_description_already_carries_metrics(self):
+        """피드가 실어 보낸 값이다. 이걸 쓰면 요청이 한 번도 안 나간다."""
+        self.assertEqual(metrics_from_feed(HN_FEED_DESC), {"likes": 63, "comments": 81})
+
+    def test_feed_without_metrics_returns_none(self):
+        self.assertIsNone(metrics_from_feed("<p>Article URL: x</p>"))
+        self.assertIsNone(metrics_from_feed(""))
+
+    def test_rss_path_prefers_feed_over_item_api(self):
+        """지표가 피드에 있으면 item API를 부르지 않는다."""
+        crawler = HackerNewsCrawler()
+        item = dict(self._rss_item(), content_html=HN_FEED_DESC)
+        with (
+            patch("skim_core.crawlers.feed.hackernews.fetch_feed", return_value=[item]),
+            self._stub_enrich(),
+            self._stub_body(),
+            patch("skim_core.crawlers.feed.hackernews.fetch_hn_metrics") as api,
+        ):
+            posts = asyncio.run(crawler.crawl(since=SINCE))
+
+        api.assert_not_called()
+        self.assertEqual(posts[0].likes, 63)
+        self.assertEqual(posts[0].comments, 81)
 
     def test_fetch_hn_metrics_reads_score_and_descendants(self):
         resp = MagicMock()

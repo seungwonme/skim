@@ -71,10 +71,30 @@ def fetch_hn_discussion(story_id: str) -> Optional[dict]:
     }
 
 
+_FEED_POINTS = re.compile(r"Points:\s*(\d+)")
+_FEED_COMMENTS = re.compile(r"#\s*Comments:\s*(\d+)")
+
+
+def metrics_from_feed(content_html: str) -> Optional[dict]:
+    """RSS description에서 지표를 뽑는다. 추가 요청이 필요 없다.
+
+    hnrss.org는 각 항목 본문에 `Points: 63`과 `# Comments: 81`을 이미 싣는다.
+    이걸 버리고 item API를 따로 부르면 글 하나당 요청이 한 번씩 더 나간다.
+    """
+    points = _FEED_POINTS.search(content_html or "")
+    if not points:
+        return None
+    comments = _FEED_COMMENTS.search(content_html or "")
+    return {
+        "likes": int(points.group(1)),
+        "comments": int(comments.group(1)) if comments else None,
+    }
+
+
 def fetch_hn_metrics(story_id: str) -> Optional[dict]:
     """Firebase item API로 점수와 댓글 수를 가져온다.
 
-    RSS 경로(`--days`)는 지표를 싣지 않아 likes/comments가 비어 저장됐다.
+    피드에 지표가 없을 때의 폴백이고, 과거분 백필 스크립트가 쓰는 경로이기도 하다.
     Algolia item API는 최상위에 `points`만 주고 댓글 수를 주지 않으므로,
     댓글 수까지 필요하면 Firebase의 `descendants`를 봐야 한다.
     """
@@ -139,10 +159,13 @@ class HackerNewsCrawler:
                 if merged:
                     item["content_markdown"] = merged
                     item["word_count"] = len(merged.split())
-                # RSS 경로(`--days`)는 지표를 싣지 않아 likes/comments가 비어 저장됐다.
+                # 피드가 이미 실어 보낸 Points/# Comments를 먼저 쓴다. 추가 요청이 없다.
+                # 거기서 못 뽑을 때만 item API로 폴백한다.
                 # Top Stories 경로가 Firebase에서 이미 채운 값은 덮지 않는다.
                 if item.get("likes") is None:
-                    metrics = fetch_hn_metrics(story_id)
+                    metrics = metrics_from_feed(item.get("content_html", "")) or fetch_hn_metrics(
+                        story_id
+                    )
                     if metrics:
                         item["likes"] = metrics["likes"]
                         item["num_comments"] = metrics["comments"]
