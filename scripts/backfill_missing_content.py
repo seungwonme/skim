@@ -19,15 +19,16 @@ content도 비어 있어 `skim migrate`(content -> content_markdown 승격)로�
 """
 
 import argparse
-import re
 import sqlite3
 import sys
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List
 
-import requests
-
-from skim_core.crawlers.feed.hackernews import compose_hn_body, fetch_hn_discussion
+from skim_core.crawlers.feed.hackernews import (
+    compose_hn_body,
+    fetch_hn_discussion,
+    search_story_id,
+)
 from skim_core.db import get_connection
 from skim_core.enrichment import enrich_papers_with_content, enrich_with_content
 
@@ -37,7 +38,6 @@ PAPER_PLATFORMS = {"arxiv", "huggingface"}
 # hackernews 옛 행은 external_id가 해시라 story id를 모른다. 원문이 페이월이어도
 # HN 토론은 남아 있고, 데이터 계약도 상위 댓글을 본문에 포함하라고 한다.
 HN_PLATFORM = "hackernews"
-ALGOLIA_SEARCH = "https://hn.algolia.com/api/v1/search"
 
 # youtube 목록 행은 본문 없이 저장되는 것이 데이터 계약이다. 자막은 사용자가
 # youtube-transcribe로 요청할 때 채운다. 여기서 일괄 전사하지 않는다.
@@ -89,58 +89,6 @@ def to_item(row: Dict) -> Dict:
     }
 
 
-_TITLE_SUFFIX = re.compile(r"\s*[\[(][^\])]*[\])]\s*$")
-
-
-def _core_title(title: str) -> str:
-    """제목 끝의 괄호 꼬리표를 떼고 비교용으로 정규화한다.
-
-    같은 글이라도 피드와 HN의 꼬리표가 다르다
-    ("... consent order (2 July 2026)" vs "... consent order [pdf]").
-    """
-    text = (title or "").strip()
-    while True:
-        stripped = _TITLE_SUFFIX.sub("", text).strip()
-        if stripped == text:
-            return text.lower()
-        text = stripped
-
-
-def _algolia_hits(query: str) -> List[Dict]:
-    # urllib 기본 User-Agent로는 Algolia가 빈손을 준다. requests는 통과한다.
-    try:
-        resp = requests.get(
-            ALGOLIA_SEARCH,
-            params={"query": query[:120], "tags": "story", "hitsPerPage": 5},
-            timeout=20,
-        )
-        resp.raise_for_status()
-        return resp.json().get("hits", [])
-    except Exception:  # pylint: disable=broad-except
-        return []
-
-
-def hn_story_id(title: str, url: str) -> Optional[str]:
-    """제목이나 URL로 HN story를 찾아 id를 돌려준다.
-
-    옛 hackernews 행의 external_id는 hnrss 해시라 story id가 들어 있지 않다.
-    엉뚱한 스토리의 댓글을 붙이면 본문이 오염되므로, 원문 URL이 같거나 꼬리표를
-    뗀 제목이 정확히 맞을 때만 채택한다.
-    """
-    normalized_url = (url or "").rstrip("/")
-    core = _core_title(title)
-
-    # Algolia는 모든 토큰이 맞아야 준다. 원제목을 그대로 넣으면 피드가 붙인
-    # 꼬리표("(2 July 2026)") 때문에 0건이 나오므로 꼬리표를 뗀 쪽을 먼저 던진다.
-    for query in (core, title):
-        for hit in _algolia_hits(query):
-            if normalized_url and (hit.get("url") or "").rstrip("/") == normalized_url:
-                return hit.get("objectID")
-            if core and _core_title(hit.get("title") or "") == core:
-                return hit.get("objectID")
-    return None
-
-
 def enrich_hn_rows(rows: List[Dict], delay: float) -> List[Dict]:
     """hackernews 행은 원문 추출과 별개로 HN 토론을 본문에 합친다.
 
@@ -153,7 +101,7 @@ def enrich_hn_rows(rows: List[Dict], delay: float) -> List[Dict]:
         enrich_with_content([item])
         article = (item.get("content_markdown") or "").strip()
 
-        story_id = hn_story_id(row.get("title") or "", row.get("url") or "")
+        story_id = search_story_id(row.get("title") or "", row.get("url") or "")
         discussion = fetch_hn_discussion(story_id) if story_id else None
 
         body = compose_hn_body(article, discussion).strip()

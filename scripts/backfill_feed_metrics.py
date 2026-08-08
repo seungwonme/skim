@@ -7,8 +7,8 @@ RSS 경로(`--days`)가 지표를 싣지 않아 2026-08-08 이전 수집분은 l
 
 크롤러와 같은 함수를 그대로 부른다. 파싱 규칙이 갈라지지 않게 하기 위해서다.
 
-id를 못 뽑는 행은 건너뛴다. hackernews의 external_id는 story id가 아니라 RSS guid
-해시라서, 원문 URL만 있고 HN 토론 URL이 없는 행은 story id를 복원할 수 없다.
+hackernews의 external_id는 story id가 아니라 RSS guid 해시라, 원문 URL만 있는 행은
+URL 파싱으로 id를 못 뽑는다. 그런 행은 Algolia 검색으로 되찾고, 그래도 못 찾으면 건너뛴다.
 
 재실행해도 안전하다. 이미 채워진 행은 대상에서 빠진다.
 
@@ -25,7 +25,7 @@ import time
 from typing import Dict, List, Optional
 
 from skim_core.crawlers.feed.geeknews import fetch_geeknews_metrics, topic_id_from_url
-from skim_core.crawlers.feed.hackernews import fetch_hn_metrics
+from skim_core.crawlers.feed.hackernews import fetch_hn_metrics, search_story_id
 from skim_core.db import get_connection
 
 # GeekNews는 개인이 운영하는 사이트다. 3천 건을 몰아치지 않는다.
@@ -52,7 +52,7 @@ def fetch_targets(conn, platform: Optional[str], limit: int) -> List[Dict]:
     """
     platforms = [platform] if platform else list(SUPPORTED)
     sql = (
-        "SELECT id, platform, url FROM posts "
+        "SELECT id, platform, url, title FROM posts "
         f"WHERE platform IN ({','.join('?' for _ in platforms)}) "
         "AND COALESCE(likes, 0) = 0 AND COALESCE(url, '') <> '' "
         "ORDER BY timestamp DESC"
@@ -64,12 +64,20 @@ def fetch_targets(conn, platform: Optional[str], limit: int) -> List[Dict]:
     return [dict(row) for row in conn.execute(sql, params).fetchall()]
 
 
-def metrics_for(row: Dict) -> Optional[dict]:
-    if row["platform"] == "hackernews":
-        story_id = story_id_from_url(row["url"])
-        return fetch_hn_metrics(story_id) if story_id else None
-    topic_id = topic_id_from_url(row["url"])
-    return fetch_geeknews_metrics(topic_id) if topic_id else None
+def resolve_metrics_id(row: Dict) -> Optional[str]:
+    """지표 API에 넣을 id. hackernews는 URL에서 못 뽑으면 Algolia로 되찾는다.
+
+    URL 파싱만 하던 때는 옛 hackernews 행 1,394건이 통째로 건너뛰어졌다.
+    """
+    if row["platform"] != "hackernews":
+        return topic_id_from_url(row["url"])
+    return story_id_from_url(row["url"]) or search_story_id(row.get("title") or "", row["url"])
+
+
+def fetch_metrics(platform: str, metrics_id: str) -> Optional[dict]:
+    if platform == "hackernews":
+        return fetch_hn_metrics(metrics_id)
+    return fetch_geeknews_metrics(metrics_id)
 
 
 def main() -> int:
@@ -85,18 +93,20 @@ def main() -> int:
         print("채울 행이 없습니다.")
         return 0
 
-    skipped = [r for r in targets if not metrics_id_available(r)]
-    print(f"대상 {len(targets)}건 (id 복원 불가로 건너뜀 {len(skipped)}건)")
+    print(f"대상 {len(targets)}건")
     if args.dry_run:
         for row in targets[:5]:
             print(f"  {row['platform']} {row['url'][:70]}")
         return 0
 
-    filled = failed = streak = 0
+    filled = failed = streak = skipped = 0
     for i, row in enumerate(targets, 1):
-        if not metrics_id_available(row):
+        metrics_id = resolve_metrics_id(row)
+        if not metrics_id:
+            # id를 못 찾은 건 차단 신호가 아니다. 연속 실패로 세면 안 된다.
+            skipped += 1
             continue
-        metrics = metrics_for(row)
+        metrics = fetch_metrics(row["platform"], metrics_id)
         if metrics and metrics.get("likes") is not None:
             conn.execute(
                 "UPDATE posts SET likes = ?, comments = ? WHERE id = ?",
@@ -120,14 +130,8 @@ def main() -> int:
         time.sleep(DELAY[row["platform"]])
 
     conn.commit()
-    print(f"완료: 채움 {filled} / 실패 {failed} / 건너뜀 {len(skipped)}")
+    print(f"완료: 채움 {filled} / 실패 {failed} / 건너뜀 {skipped}")
     return 0
-
-
-def metrics_id_available(row: Dict) -> bool:
-    if row["platform"] == "hackernews":
-        return story_id_from_url(row["url"]) is not None
-    return topic_id_from_url(row["url"]) is not None
 
 
 if __name__ == "__main__":

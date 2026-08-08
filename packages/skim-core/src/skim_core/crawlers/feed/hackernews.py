@@ -22,8 +22,57 @@ from ...timestamp import epoch_to_iso
 HN_API_BASE = "https://hacker-news.firebaseio.com/v0"
 # 댓글 트리를 요청 1번으로 통째로 주는 Algolia item API
 HN_ALGOLIA_ITEM = "https://hn.algolia.com/api/v1/items/{}"
+HN_ALGOLIA_SEARCH = "https://hn.algolia.com/api/v1/search"
 MAX_COMMENTS = 15
 MAX_COMMENT_CHARS = 1200
+
+# 제목 끝의 꼬리표. 같은 글이라도 피드와 HN이 다르게 붙인다
+# ("... consent order (2 July 2026)" vs "... consent order [pdf]").
+_TITLE_SUFFIX = re.compile(r"\s*[\[(][^\])]*[\])]\s*$")
+
+
+def _core_title(title: str) -> str:
+    """제목 끝의 괄호 꼬리표를 떼고 비교용으로 정규화한다."""
+    text = (title or "").strip()
+    while True:
+        stripped = _TITLE_SUFFIX.sub("", text).strip()
+        if stripped == text:
+            return text.lower()
+        text = stripped
+
+
+def _algolia_hits(query: str) -> List[dict]:
+    try:
+        resp = requests.get(
+            HN_ALGOLIA_SEARCH,
+            params={"query": query[:120], "tags": "story", "hitsPerPage": 5},
+            timeout=20,
+        )
+        resp.raise_for_status()
+        return resp.json().get("hits", [])
+    except Exception:  # pylint: disable=broad-except
+        return []
+
+
+def search_story_id(title: str, url: str) -> Optional[str]:
+    """제목이나 원문 URL로 HN story id를 찾는다.
+
+    hnrss 경로로 저장한 옛 행은 external_id가 guid 해시라 story id가 없다.
+    엉뚱한 스토리를 물면 댓글도 지표도 오염되므로, 원문 URL이 같거나 꼬리표를 뗀
+    제목이 정확히 맞을 때만 채택한다.
+    """
+    normalized_url = (url or "").rstrip("/")
+    core = _core_title(title)
+
+    # Algolia는 모든 토큰이 맞아야 준다. 원제목을 그대로 넣으면 피드가 붙인
+    # 꼬리표 때문에 0건이 나오므로 꼬리표를 뗀 쪽을 먼저 던진다.
+    for query in (core, title):
+        for hit in _algolia_hits(query):
+            if normalized_url and (hit.get("url") or "").rstrip("/") == normalized_url:
+                return hit.get("objectID")
+            if core and _core_title(hit.get("title") or "") == core:
+                return hit.get("objectID")
+    return None
 
 
 def _html_to_text(html: str) -> str:
