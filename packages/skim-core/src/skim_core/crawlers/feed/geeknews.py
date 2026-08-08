@@ -3,7 +3,8 @@
 @description GeekNews 크롤러 (HTML scraping + RSS)
 """
 
-from typing import Any, List
+import re
+from typing import Any, List, Optional
 
 import requests
 import typer
@@ -16,6 +17,51 @@ from ...models import Post
 from ...timestamp import _REL_KO, relative_ko_to_iso
 
 GEEKNEWS_URL = "https://news.hada.io/"
+GEEKNEWS_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
+_TOPIC_ID = re.compile(r"topic\?id=(\d+)")
+
+
+def topic_id_from_url(url: str) -> Optional[str]:
+    """GeekNews 토픽 URL에서 숫자 id를 뽑는다."""
+    match = _TOPIC_ID.search(url or "")
+    return match.group(1) if match else None
+
+
+def _digits_to_int(raw: str) -> Optional[int]:
+    digits = "".join(c for c in raw or "" if c.isdigit())
+    return int(digits) if digits else None
+
+
+def fetch_geeknews_metrics(topic_id: str) -> Optional[dict]:
+    """토픽 페이지에서 포인트와 댓글 수를 가져온다.
+
+    RSS는 지표를 싣지 않아 `--days` 경로로 저장한 행은 likes/comments가 비어 있었다.
+    홈페이지 스크래핑 경로만 지표를 채우던 비대칭을 없앤다.
+    """
+    try:
+        resp = requests.get(
+            f"{GEEKNEWS_URL}topic?id={topic_id}",
+            headers={"User-Agent": GEEKNEWS_UA},
+            timeout=10,
+        )
+        resp.raise_for_status()
+    except Exception as e:  # pylint: disable=broad-except
+        typer.echo(f"   [!] GeekNews 지표 수집 실패(id={topic_id}): {e}")
+        return None
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    # 포인트는 `<span id='tp{id}'>3</span>P` 형태로만 노출된다.
+    point_el = soup.select_one(f"#tp{topic_id}")
+    likes = _digits_to_int(point_el.get_text(strip=True)) if point_el else None
+
+    # 댓글 수는 링크 텍스트("댓글 3개")보다 data 속성이 안정적이다.
+    comment_el = soup.select_one("[data-topic-comment-count]")
+    comments = _digits_to_int(comment_el.get("data-topic-comment-count")) if comment_el else None
+
+    if likes is None and comments is None:
+        return None
+    return {"likes": likes, "comments": comments}
 
 
 class GeekNewsCrawler:
@@ -31,6 +77,12 @@ class GeekNewsCrawler:
             items.sort(key=lambda x: x.get("published", ""), reverse=True)
             if not no_content:
                 enrich_with_content(items)
+                for item in items:
+                    topic_id = topic_id_from_url(item.get("url", ""))
+                    metrics = fetch_geeknews_metrics(topic_id) if topic_id else None
+                    if metrics:
+                        item["likes"] = metrics["likes"]
+                        item["comments"] = metrics["comments"]
             return [self._item_to_post(item) for item in items]
         else:
             return self._scrape_homepage(count)
@@ -124,7 +176,13 @@ class GeekNewsCrawler:
             key: value
             for key, value in item.items()
             if key
-            in ("original_url", "enrichment_method", "enrichment_error", "image", "description")
+            in (
+                "original_url",
+                "enrichment_method",
+                "enrichment_error",
+                "image",
+                "description",
+            )
             and value
         }
         return Post(
@@ -134,6 +192,8 @@ class GeekNewsCrawler:
             content="",
             timestamp=item.get("published", ""),
             url=item.get("url", ""),
+            likes=item.get("likes"),
+            comments=item.get("comments"),
             summary=item.get("summary", ""),
             content_markdown=item.get("content_markdown"),
             word_count=item.get("word_count"),

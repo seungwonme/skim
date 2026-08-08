@@ -71,6 +71,23 @@ def fetch_hn_discussion(story_id: str) -> Optional[dict]:
     }
 
 
+def fetch_hn_metrics(story_id: str) -> Optional[dict]:
+    """Firebase item API로 점수와 댓글 수를 가져온다.
+
+    RSS 경로(`--days`)는 지표를 싣지 않아 likes/comments가 비어 저장됐다.
+    Algolia item API는 최상위에 `points`만 주고 댓글 수를 주지 않으므로,
+    댓글 수까지 필요하면 Firebase의 `descendants`를 봐야 한다.
+    """
+    try:
+        resp = requests.get(f"{HN_API_BASE}/item/{story_id}.json", timeout=10)
+        resp.raise_for_status()
+        data = resp.json() or {}
+    except Exception as e:  # pylint: disable=broad-except
+        typer.echo(f"   [!] HN 지표 수집 실패(id={story_id}): {e}")
+        return None
+    return {"likes": data.get("score"), "comments": data.get("descendants")}
+
+
 def compose_hn_body(article_md: str, discussion: Optional[dict]) -> str:
     """스토리 텍스트 + 링크 원문 + 댓글을 하나의 정본 본문으로 합친다."""
     parts = []
@@ -122,6 +139,13 @@ class HackerNewsCrawler:
                 if merged:
                     item["content_markdown"] = merged
                     item["word_count"] = len(merged.split())
+                # RSS 경로(`--days`)는 지표를 싣지 않아 likes/comments가 비어 저장됐다.
+                # Top Stories 경로가 Firebase에서 이미 채운 값은 덮지 않는다.
+                if item.get("likes") is None:
+                    metrics = fetch_hn_metrics(story_id)
+                    if metrics:
+                        item["likes"] = metrics["likes"]
+                        item["num_comments"] = metrics["comments"]
 
         return [self._item_to_post(item) for item in items]
 
@@ -149,8 +173,9 @@ class HackerNewsCrawler:
                         "platform": "hackernews",
                         "author": item.get("by", "unknown"),
                         "title": item.get("title", ""),
-                        "url": item.get("url")
-                        or f"https://news.ycombinator.com/item?id={story_id}",
+                        "url": (
+                            item.get("url") or f"https://news.ycombinator.com/item?id={story_id}"
+                        ),
                         "published": epoch_to_iso(time_value) if time_value else "",
                         "likes": item.get("score", 0),
                         "num_comments": item.get("descendants", 0),
@@ -183,7 +208,13 @@ class HackerNewsCrawler:
             key: value
             for key, value in item.items()
             if key
-            in ("enrichment_method", "enrichment_error", "image", "description", "original_url")
+            in (
+                "enrichment_method",
+                "enrichment_error",
+                "image",
+                "description",
+                "original_url",
+            )
             and value
         }
         return Post(
