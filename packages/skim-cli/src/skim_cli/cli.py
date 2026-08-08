@@ -5,6 +5,7 @@ import csv
 import json
 import re
 import sys
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
@@ -30,6 +31,7 @@ from skim_core.research.refresh import run_research
 from skim_core.research.search import search_posts
 from skim_core.research.serializer import build_response, utc_now_iso
 from skim_core.research.types import SearchStats
+from skim_core.source_probe import format_probe_result, probe_source
 from skim_core.utils import save_posts_to_file
 from skim_core.youtube_history import backfill_channel_history, transcribe_video
 
@@ -99,6 +101,13 @@ app = typer.Typer(
 )
 
 __version__ = "0.2.0"
+
+source_app = typer.Typer(
+    help="소스 진단과 등록",
+    no_args_is_help=True,
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
+app.add_typer(source_app, name="source")
 
 
 async def run_single_crawler(platform: str, options: dict) -> List[Post]:
@@ -940,6 +949,28 @@ def _emit_response(response: dict, emit: str) -> None:
             f"topic={response.get('topic')!r} total={response['stats']['total']} "
             f"by_platform={response['stats']['by_platform']}"
         )
+
+
+@source_app.command()
+def probe(
+    urls: List[str] = typer.Argument(..., help="진단할 사이트 또는 피드 URL"),
+    no_sample: bool = typer.Option(
+        False,
+        "--no-sample",
+        help="본문 샘플 추출을 건너뛴다 (빠르지만 등급 판정이 흐려진다)",
+    ),
+    emit: str = typer.Option("text", "--emit", help="text 또는 json"),
+) -> None:
+    """URL이 피드를 주는지, 본문 추출이 어느 등급인지 진단한다 (등록은 하지 않음)."""
+    results = [probe_source(url, sample=not no_sample) for url in urls]
+
+    if emit == "json":
+        typer.echo(json.dumps([asdict(r) for r in results], ensure_ascii=False, indent=2))
+        return
+
+    for result in results:
+        typer.echo(format_probe_result(result))
+        typer.echo("")
 
 
 if __name__ == "__main__":

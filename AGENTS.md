@@ -43,6 +43,10 @@ uv run skim crawl reddit --subreddit python --sort hot --count 10
 uv run skim youtube-history --channel LangChain --years 1
 uv run skim youtube-transcribe <video-url-or-id>
 
+# 소스 진단 (등록 전 읽기 전용 판정)
+uv run skim source probe https://example.com/blog
+uv run skim source probe <url> --no-sample --emit json
+
 # 기타
 uv run skim platforms           # 지원 플랫폼 목록
 uv run skim login threads       # CDP 로그인

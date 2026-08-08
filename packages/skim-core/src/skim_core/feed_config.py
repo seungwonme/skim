@@ -64,7 +64,8 @@ PERSONAL_BLOGS = {
     "Phil Schmid": "https://www.philschmid.de/rss",
     "Tidy First (Kent Beck)": "https://tidyfirst.substack.com/feed",
     "PyTorchKR News": "https://discuss.pytorch.kr/c/news/14.rss",
-    "Kakao Tech": "https://tech.kakao.com/feed/",
+    # /feed/ 도 살아있지만 최근 글 2건을 빠뜨린다. /blog/feed 가 블로그 정본.
+    "Kakao Tech": "https://tech.kakao.com/blog/feed",
     # inblog 호스팅. /feed, /rss.xml은 404고 /blog/rss만 유효하다.
     "Kakao Ventures": "https://www.kakao.vc/blog/rss",
 }
