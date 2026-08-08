@@ -82,6 +82,7 @@ def _item_to_post(item: dict) -> Post:
         source=item.get("platform", ""),
         content_markdown=item.get("content_markdown", ""),
         word_count=item.get("word_count"),
+        views=item.get("views"),
         external_id=youtube_video_id(item.get("url", "")),
     )
 
@@ -146,6 +147,8 @@ def _fetch_via_ytdlp(  # pylint: disable=unused-argument
                 "author": channel_name,
                 "published": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat() if ts else "",
                 "summary": d.get("description", "")[:300] if d.get("description") else "",
+                # flat-playlist도 view_count는 준다. 추가 요청 없이 조회수가 확보된다.
+                "views": d.get("view_count"),
             }
         )
 
