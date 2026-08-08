@@ -58,12 +58,15 @@ EVERY_TO_FEEDS = {
     "Guides": "https://every.to/guides/feed",
 }
 
-# 개인 블로그 구독 (이름 → RSS URL)
+# 블로그 구독 (이름 → RSS URL). 개인/기업 기술 블로그 공용.
 PERSONAL_BLOGS = {
     "Addy Osmani": "https://addyosmani.com/rss.xml",
     "Phil Schmid": "https://www.philschmid.de/rss",
     "Tidy First (Kent Beck)": "https://tidyfirst.substack.com/feed",
     "PyTorchKR News": "https://discuss.pytorch.kr/c/news/14.rss",
+    "Kakao Tech": "https://tech.kakao.com/feed/",
+    # inblog 호스팅. /feed, /rss.xml은 404고 /blog/rss만 유효하다.
+    "Kakao Ventures": "https://www.kakao.vc/blog/rss",
 }
 
 # AI 빅테크 블로그/뉴스 (RSS + HTML 스크래핑 혼합)
