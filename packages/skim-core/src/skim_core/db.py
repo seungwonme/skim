@@ -157,7 +157,10 @@ def get_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
     """SQLite 연결을 반환합니다. WAL 모드 + foreign keys 활성화."""
     path = db_path or DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path))
+    # WAL은 동시 읽기만 허용하고 쓰기는 하나뿐이다. 데일리 크롤과 백필 스크립트,
+    # 데스크톱이 겹치면 기본 5초 안에 락이 안 풀려 `database is locked`로 죽는다
+    # (실제로 백필이 두 번째 배치 저장에서 이렇게 날아갔다).
+    conn = sqlite3.connect(str(path), timeout=60.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
@@ -209,7 +212,9 @@ def migrate_canonical_body(db_path: Optional[Path] = None) -> dict:
         conn.close()
 
 
-def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+def _ensure_column(
+    conn: sqlite3.Connection, table: str, column: str, definition: str
+) -> None:
     """SQLite ADD COLUMN IF NOT EXISTS 대체 (3.43 까지도 미지원).
 
     `row_factory` 와 무관하게 동작 (PRAGMA table_info 의 인덱스 1 이 name).
@@ -222,8 +227,12 @@ def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition
 def _migrate_research_runs(conn: sqlite3.Connection) -> None:
     """research_runs 멱등 migration. fresh DB / v0 / v1 모두 안전."""
     conn.executescript(RESEARCH_RUNS_CREATE_SQL)
-    _ensure_column(conn, "research_runs", "days_per_platform", "TEXT NOT NULL DEFAULT '{}'")
-    _ensure_column(conn, "research_runs", "window_expanded", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(
+        conn, "research_runs", "days_per_platform", "TEXT NOT NULL DEFAULT '{}'"
+    )
+    _ensure_column(
+        conn, "research_runs", "window_expanded", "INTEGER NOT NULL DEFAULT 0"
+    )
     _ensure_column(conn, "research_runs", "newly_fetched", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "research_runs", "runner_pid", "INTEGER")
     _ensure_column(conn, "research_runs", "runner_host", "TEXT")
@@ -234,7 +243,9 @@ def _migrate_research_runs(conn: sqlite3.Connection) -> None:
 
 def _ensure_runs_columns(conn: sqlite3.Connection) -> None:
     """기존 DB의 runs 테이블에 누락된 컬럼을 추가합니다."""
-    existing = {row["name"] for row in conn.execute("PRAGMA table_info(runs)").fetchall()}
+    existing = {
+        row["name"] for row in conn.execute("PRAGMA table_info(runs)").fetchall()
+    }
     required = {
         "current_platform": "TEXT",
         "runner_pid": "INTEGER",
@@ -321,7 +332,10 @@ def save_posts(
         # 혼합 배치에서 인자 platform으로 저장하면 row가 오라벨링된다.
         row_platform = data.get("platform") or platform
 
-        if row_platform in _API_BODY_PLATFORMS and not (data.get("content_markdown") or "").strip():
+        if (
+            row_platform in _API_BODY_PLATFORMS
+            and not (data.get("content_markdown") or "").strip()
+        ):
             body = (data.get("content") or "").strip()
             if body:
                 data["content_markdown"] = body
@@ -364,7 +378,9 @@ def save_posts(
             if url:
                 hash_src = f"{row_platform}:{data.get('author', '')}:{url}"
             else:
-                hash_src = f"{row_platform}:{data.get('author', '')}:{data.get('content', '')}"
+                hash_src = (
+                    f"{row_platform}:{data.get('author', '')}:{data.get('content', '')}"
+                )
             ext_id = hashlib.sha256(hash_src.encode()).hexdigest()[:16]
 
         # 해시 id인 경우만 같은 URL의 기존 row에 병합한다. 크롤러가 준 진짜 id를
