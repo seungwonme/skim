@@ -1,8 +1,11 @@
 """Feed 크롤러 지표 회귀 테스트.
 
 `--days`(RSS 경로)로 수집한 행은 likes/comments가 비어 저장됐다.
-홈페이지·Top Stories 경로만 지표를 채우던 비대칭이 원인이라, 같은 플랫폼인데
+홈페이지, Top Stories 경로만 지표를 채우던 비대칭이 원인이라, 같은 플랫폼인데
 수집 방식에 따라 지표 유무가 갈렸다. 이 파일은 그 비대칭이 되돌아오는 것을 막는다.
+
+HN은 피드가 Points/# Comments를 이미 싣는다. GeekNews RSS(Atom)에는 없어서
+토픽 페이지를 긁어야 한다. 두 플랫폼의 경로가 다른 이유가 이것이다.
 
 YouTube 조회수는 `test_youtube_view_count.py`가 맡는다.
 """
@@ -46,10 +49,10 @@ GEEKNEWS_HTML = """
 
 
 class HackerNewsMetricsTests(unittest.TestCase):
-    """RSS 경로는 지표를 싣지 않는다. Firebase item API로 채운다.
+    """피드의 Points/# Comments를 먼저 쓰고, 없을 때만 item API로 폴백한다.
 
     Algolia item API는 최상위에 `points`만 주고 댓글 수를 주지 않아
-    지표 정본으로 쓸 수 없다.
+    지표 정본으로 쓸 수 없다. 폴백은 Firebase 쪽이다.
     """
 
     def _rss_item(self):
