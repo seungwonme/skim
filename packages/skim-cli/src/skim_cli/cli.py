@@ -52,6 +52,10 @@ MIN_LOOKBACK_DAYS = {"huggingface": 3}
 # 이 기간 안에 유입 이력이 있던 플랫폼이 0건이면 회귀로 본다.
 REGRESSION_LOOKBACK_DAYS = 14
 
+# doctor가 본문 결손을 보는 창. 이보다 길게 잡으면 이미 고친 옛 버그의 잔재가
+# 섞여 지금 고장났는지 알 수 없다.
+RECENT_THIN_LOOKBACK_DAYS = 7
+
 
 def platform_help(include_all: bool = False) -> str:
     """User-facing platform list derived from the crawler registry."""
@@ -167,6 +171,7 @@ def crawl(  # noqa: C901 — CLI 진입점으로 플랫폼별 분기가 불가�
     failed_platforms: list[str] = []
     completed_platforms: list[str] = []
     empty_platforms: list[str] = []
+    thin_platforms: dict[str, tuple[int, int]] = {}
 
     try:
         for platform in targets:
@@ -231,6 +236,13 @@ def crawl(  # noqa: C901 — CLI 진입점으로 플랫폼별 분기가 불가�
 
             typer.echo(f"  -> {len(posts)}개 수집")
 
+            # 개별 항목의 enrichment 실패는 로그 한 줄로 흘러가고 크롤은 성공으로
+            # 끝난다. playwright 미설치처럼 전 항목에 영향을 주는 고장도 그래서
+            # 며칠씩 묻힌다. 플랫폼별로 세어 마지막에 한 번에 보여준다.
+            thin = sum(1 for p in posts if not (p.content_markdown or "").strip())
+            if thin:
+                thin_platforms[platform] = (thin, len(posts))
+
             # DB 저장
             saved = save_posts(posts, platform)
             total_saved += saved
@@ -271,6 +283,13 @@ def crawl(  # noqa: C901 — CLI 진입점으로 플랫폼별 분기가 불가�
             f"\n[!] 최근 {REGRESSION_LOOKBACK_DAYS}일간 수집되던 플랫폼이 0건입니다: "
             f"{', '.join(regressed)}"
         )
+
+    if thin_platforms:
+        detail = ", ".join(
+            f"{name} {miss}/{total}" for name, (miss, total) in sorted(thin_platforms.items())
+        )
+        typer.echo(f"\n[!] 본문 추출 실패: {detail}")
+        typer.echo("    반복되면 `uv run skim doctor`로 추출 환경을 점검하세요.")
 
     if failed_platforms:
         summary = f"실패 플랫폼: {', '.join(failed_platforms)}"
@@ -454,9 +473,33 @@ def doctor(
                 ORDER BY id DESC
                 LIMIT 10
                 """).fetchall()]
+        # 본문 정본(content_markdown)이 빈 최근 유입분. summary 폴백까지 세는
+        # 위 missing_text와 달리 데이터 계약을 그대로 본다. youtube 목록 행은
+        # 본문 없이 저장되는 것이 계약이라 뺀다.
+        report["recent_thin"] = [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT platform, COUNT(*) AS total,
+                       SUM(CASE WHEN COALESCE(content_markdown, '') = '' THEN 1 ELSE 0 END) AS thin
+                FROM posts
+                WHERE crawled_at >= datetime('now', '-{RECENT_THIN_LOOKBACK_DAYS} days')
+                  AND NOT (platform = 'youtube' AND summary IS NULL)
+                  {"AND platform = ?" if platform else ""}
+                GROUP BY platform
+                HAVING thin > 0
+                ORDER BY thin DESC
+                """,
+                params,
+            ).fetchall()
+        ]
         conn.close()
     except Exception as exc:  # pragma: no cover - defensive report path
         report["warnings"].append(f"database check failed: {exc}")
+
+    report["extractor"] = _playwright_status()
+    if not report["extractor"]["ok"]:
+        report["warnings"].append(f"playwright unavailable: {report['extractor']['detail']}")
 
     if platform and not report["platforms"]:
         report["warnings"].append(f"no posts found for {platform}")
@@ -466,6 +509,35 @@ def doctor(
     ):
         report["warnings"].append("recent runs need attention")
     _emit_doctor(report, emit)
+
+
+def _playwright_status() -> dict:
+    """headless 브라우저를 실제로 띄워본다.
+
+    패키지가 올라가도 브라우저 바이너리는 따로 받아야 하고, playwright가 올라가면
+    필요한 빌드 번호가 바뀐다. 이게 없으면 403/JS 렌더링 페이지의 폴백이 통째로
+    죽는데 크롤은 성공으로 끝나 며칠씩 묻힌다.
+    """
+    try:
+        # 임포트 비용이 커서 doctor를 실행할 때만 올린다.
+        from playwright.sync_api import (  # pylint: disable=import-outside-toplevel
+            sync_playwright,
+        )
+    except ImportError:
+        return {"ok": False, "detail": "playwright 패키지 없음 (uv sync)"}
+
+    try:
+        with sync_playwright() as play:
+            browser = play.chromium.launch(headless=True)
+            browser.close()
+    except Exception as exc:  # pragma: no cover - 환경 의존
+        first_line = str(exc).strip().splitlines()[0] if str(exc).strip() else type(exc).__name__
+        return {
+            "ok": False,
+            "detail": f"{first_line[:150]} (uv run playwright install)",
+        }
+
+    return {"ok": True, "detail": "chromium headless 실행 가능"}
 
 
 def _emit_doctor(report: dict, emit: str) -> None:
@@ -482,6 +554,13 @@ def _emit_doctor(report: dict, emit: str) -> None:
                 f"with_text={row['with_text']} missing_text={row['missing_text']} "
                 f"latest={row['latest_crawl']}"
             )
+    if report.get("recent_thin"):
+        typer.echo(f"recent missing body (last {RECENT_THIN_LOOKBACK_DAYS}d):")
+        for row in report["recent_thin"]:
+            typer.echo(f"  {row['platform']}: {row['thin']}/{row['total']}")
+    if report.get("extractor"):
+        state = "ok" if report["extractor"]["ok"] else "unavailable"
+        typer.echo(f"extractor: playwright {state} - {report['extractor']['detail']}")
     if report["sessions"]:
         present = [s["platform"] for s in report["sessions"] if s["exists"]]
         typer.echo(f"sessions: {', '.join(present) if present else 'none'}")

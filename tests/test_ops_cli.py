@@ -75,6 +75,32 @@ class OpsCliTests(unittest.TestCase):
         self.assertTrue(reddit["exists"])
         self.assertTrue(reddit["path"].endswith("data/sessions/reddit_session.json"))
 
+    def test_doctor_reports_recent_rows_missing_canonical_body(self):
+        # summary가 있어도 content_markdown이 비면 데이터 계약 위반이다.
+        # 기존 missing_text는 summary 폴백까지 세느라 이걸 못 잡았다.
+        _insert(self.db, external_id="hn-2", summary="요약만 있음", content_markdown="")
+        _insert(self.db, external_id="hn-3", content_markdown="# 본문 있음")
+
+        result = self.runner.invoke(app, ["doctor", "--db", str(self.db), "--emit", "json"])
+
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        thin = next(r for r in payload["recent_thin"] if r["platform"] == "hackernews")
+        self.assertEqual(thin["thin"], 2)
+        self.assertEqual(thin["total"], 3)
+
+    def test_doctor_reports_extractor_availability(self):
+        result = self.runner.invoke(app, ["doctor", "--db", str(self.db), "--emit", "json"])
+
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertIn("ok", payload["extractor"])
+        self.assertTrue(payload["extractor"]["detail"])
+        if not payload["extractor"]["ok"]:
+            self.assertTrue(
+                any(w.startswith("playwright unavailable") for w in payload["warnings"])
+            )
+
     def test_doctor_missing_db_does_not_create_file(self):
         missing = self.root / "data" / "missing.db"
 
@@ -98,7 +124,16 @@ class OpsCliTests(unittest.TestCase):
 
         result = self.runner.invoke(
             app,
-            ["bundle", "nvidia", "--db", str(self.db), "--days", "30", "--output-dir", str(out)],
+            [
+                "bundle",
+                "nvidia",
+                "--db",
+                str(self.db),
+                "--days",
+                "30",
+                "--output-dir",
+                str(out),
+            ],
         )
 
         self.assertEqual(result.exit_code, 0, result.stderr)
@@ -113,7 +148,15 @@ class OpsCliTests(unittest.TestCase):
     def test_refresh_plan_reports_missing_session_before_crawl(self):
         result = self.runner.invoke(
             app,
-            ["refresh-plan", "--db", str(self.db), "--platform", "reddit", "--emit", "json"],
+            [
+                "refresh-plan",
+                "--db",
+                str(self.db),
+                "--platform",
+                "reddit",
+                "--emit",
+                "json",
+            ],
         )
 
         self.assertEqual(result.exit_code, 0, result.stderr)
