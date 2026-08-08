@@ -75,25 +75,43 @@ public struct DashboardSummary: Equatable, Sendable {
     }
 }
 
+public struct PlatformCount: Equatable, Sendable {
+    public let name: String
+    public let count: Int
+
+    public init(name: String, count: Int) {
+        self.name = name
+        self.count = count
+    }
+}
+
 public struct DashboardSnapshot: Equatable, Sendable {
     public let summary: DashboardSummary
     public let posts: [DashboardPost]
     public let sources: [TrackedSource]
     public let credentials: [PlatformCredential]
     public let databasePath: String
+    /// DB 전체 기준 플랫폼별 건수 (로드된 페이지 기준이 아님)
+    public let platformCounts: [PlatformCount]
+    /// 현재 플랫폼/검색 필터에 걸리는 DB 전체 건수
+    public let filteredCount: Int
 
     public init(
         summary: DashboardSummary,
         posts: [DashboardPost],
         sources: [TrackedSource],
         credentials: [PlatformCredential],
-        databasePath: String
+        databasePath: String,
+        platformCounts: [PlatformCount] = [],
+        filteredCount: Int = 0
     ) {
         self.summary = summary
         self.posts = posts
         self.sources = sources
         self.credentials = credentials
         self.databasePath = databasePath
+        self.platformCounts = platformCounts
+        self.filteredCount = filteredCount
     }
 
     public static let empty = DashboardSnapshot(

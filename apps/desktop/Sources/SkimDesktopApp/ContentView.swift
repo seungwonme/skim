@@ -36,14 +36,14 @@ struct ContentView: View {
     @FocusState private var focusedCredentialField: CredentialField?
 
     private var filteredPosts: [DashboardPost] {
-        (sourceFilter != nil ? channelPosts : snapshot.posts).filter { post in
-            let platformMatches = platformFilter == nil || post.platform == platformFilter
-            let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            guard platformMatches, !query.isEmpty else {
-                return platformMatches
-            }
+        // 일반 피드는 DB가 이미 플랫폼/검색어로 걸러 내려준다. 채널 모드만
+        // 로드된 채널 목록 안에서 클라이언트 필터링한다.
+        guard sourceFilter != nil else { return snapshot.posts }
 
-            return [
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else { return channelPosts }
+        return channelPosts.filter { post in
+            [
                 post.displayTitle,
                 post.source ?? "",
                 post.author,
@@ -79,15 +79,9 @@ struct ContentView: View {
     }
 
     private var selectedPost: DashboardPost? {
-        sortedPosts.first { $0.id == selectedPostID }
-            ?? sortedPosts.first
-            ?? snapshot.posts.first
-    }
-
-    private var platformCounts: [(name: String, count: Int)] {
-        Dictionary(grouping: snapshot.posts, by: \.platform)
-            .map { (name: $0.key, count: $0.value.count) }
-            .sorted { $0.count > $1.count }
+        // 목록이 비었으면 상세도 비어야 한다. 예전 fallback은 필터에 안 걸린
+        // 다른 피드의 글을 "결과 없음" 옆에 계속 띄웠다.
+        sortedPosts.first { $0.id == selectedPostID } ?? sortedPosts.first
     }
 
     private func sortDate(_ post: DashboardPost) -> String {
@@ -167,9 +161,9 @@ struct ContentView: View {
         List(selection: sidebarSelection) {
             Section("피드") {
                 Label("전체", systemImage: "tray.full")
-                    .badge(snapshot.posts.count)
+                    .badge(snapshot.summary.postsCount)
                     .tag(SidebarItem.all)
-                ForEach(platformCounts, id: \.name) { entry in
+                ForEach(snapshot.platformCounts, id: \.name) { entry in
                     Label {
                         Text(entry.name)
                     } icon: {
@@ -196,6 +190,17 @@ struct ContentView: View {
 
     private var feedTitle: String {
         sourceFilter.map { String($0.dropFirst("youtube/".count)) } ?? platformFilter ?? "전체"
+    }
+
+    /// 부제목용 건수. 일반 피드는 DB 전체 기준, 채널 모드는 로드된 목록 기준.
+    private var feedCount: Int {
+        sourceFilter == nil ? snapshot.filteredCount : filteredPosts.count
+    }
+
+    /// 이 값이 바뀌면 첫 페이지를 DB에서 다시 읽는다 (검색어는 디바운스라 별도).
+    /// 채널 모드에서 플랫폼 피드로 되돌아올 때 옛 목록이 남는 것도 여기서 막힌다.
+    private var feedQueryKey: String {
+        "\(platformFilter ?? "")|\(sourceFilter ?? "")|\(sortOrder.rawValue)"
     }
 
     private var feedList: some View {
@@ -238,11 +243,19 @@ struct ContentView: View {
                 .listStyle(.inset)
             }
         }
-        .searchable(text: $searchText, placement: .toolbar, prompt: "제목, 소스, 요약 검색")
+        .searchable(text: $searchText, placement: .toolbar, prompt: "제목, 소스, 본문 검색")
         .navigationTitle(feedTitle)
-        .navigationSubtitle(channelBusyMessage ?? "\(filteredPosts.count.formatted())개")
-        .onChange(of: sortOrder) { _, _ in
+        .navigationSubtitle(channelBusyMessage ?? "\(feedCount.formatted())개")
+        .onChange(of: feedQueryKey) { _, _ in
             if sourceFilter == nil { loadDashboard() }
+        }
+        .task(id: searchText) {
+            // 타이핑 중 매 글자마다 전문 검색을 돌리지 않도록 짧게 미룬다.
+            // 다음 글자가 들어오면 task가 취소돼 sleep 단계에서 끊긴다.
+            guard sourceFilter == nil else { return }
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            loadDashboard()
         }
         .toolbar {
             ToolbarItemGroup {
@@ -999,6 +1012,8 @@ struct ContentView: View {
         let databasePath = WorkspaceLocator.defaultDatabasePath()
         let size = pageSize
         let sort = dbSort
+        let platform = platformFilter
+        let search = searchText
         Task { @MainActor in
             do {
                 // 본문 포함 첫 페이지 로드를 메인 스레드에서 돌리면 실행/새로고침마다 UI가 멈춘다.
@@ -1006,7 +1021,12 @@ struct ContentView: View {
                 let loaded = try await Task.detached(priority: .userInitiated) {
                     let database = try SkimDatabase(path: databasePath)
                     try database.ensureSchema()
-                    return try database.loadDashboard(limit: size, sort: sort)
+                    return try database.loadDashboard(
+                        limit: size,
+                        sort: sort,
+                        platform: platform,
+                        search: search
+                    )
                 }.value
                 snapshot = loaded
                 hasMorePosts = loaded.posts.count >= size
@@ -1030,14 +1050,24 @@ struct ContentView: View {
         let size = pageSize
         let offset = snapshot.posts.count
         let sort = dbSort
+        let platform = platformFilter
+        let search = searchText
         Task { @MainActor in
             defer { isLoadingMore = false }
             do {
                 let more = try await Task.detached(priority: .userInitiated) {
                     let database = try SkimDatabase(path: databasePath)
                     try database.ensureSchema()
-                    return try database.fetchRecentPosts(limit: size, offset: offset, sort: sort)
+                    return try database.fetchRecentPosts(
+                        limit: size,
+                        offset: offset,
+                        sort: sort,
+                        platform: platform,
+                        search: search
+                    )
                 }.value
+                // 페이지 요청과 응답 사이에 필터가 바뀌었으면 옛 결과를 이어붙이지 않는다.
+                guard platform == platformFilter, search == searchText else { return }
                 guard !more.isEmpty else {
                     hasMorePosts = false
                     return
@@ -1047,7 +1077,9 @@ struct ContentView: View {
                     posts: snapshot.posts + more,
                     sources: snapshot.sources,
                     credentials: snapshot.credentials,
-                    databasePath: snapshot.databasePath
+                    databasePath: snapshot.databasePath,
+                    platformCounts: snapshot.platformCounts,
+                    filteredCount: snapshot.filteredCount
                 )
                 hasMorePosts = more.count >= size
             } catch {
@@ -1111,7 +1143,9 @@ struct ContentView: View {
             posts: snapshot.posts,
             sources: snapshot.sources,
             credentials: credentials,
-            databasePath: snapshot.databasePath
+            databasePath: snapshot.databasePath,
+            platformCounts: snapshot.platformCounts,
+            filteredCount: snapshot.filteredCount
         )
     }
 

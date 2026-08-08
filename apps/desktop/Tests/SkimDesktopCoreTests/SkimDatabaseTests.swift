@@ -179,6 +179,54 @@ func parsedYouTubeChannelInputPersistsAsTrackedSource() throws {
     }
 }
 
+/// 사이드바 배지와 목록이 어긋나던 회귀: 배지는 DB 전체를 세고,
+/// 플랫폼을 고르면 로드된 페이지가 아니라 DB에서 그 플랫폼만 다시 읽어야 한다.
+@Test
+func platformFilterAndCountsComeFromWholeDatabase() throws {
+    try withFixtureDatabase { database in
+        try database.execute(
+            """
+            INSERT INTO posts (platform, source, external_id, author, title, content, timestamp, crawled_at) VALUES
+            ('blogs', 'blogs/A', 'b1', 'A', 'Recent blog one', 'body', '2026-08-07T10:00:00+09:00', '2026-08-07 01:00:00'),
+            ('blogs', 'blogs/A', 'b2', 'A', 'Recent blog two', 'body', '2026-08-07T09:00:00+09:00', '2026-08-07 01:00:00'),
+            ('blogs', 'blogs/A', 'b3', 'A', 'Recent blog three', 'body', '2026-08-07T08:00:00+09:00', '2026-08-07 01:00:00'),
+            ('youtube', 'youtube/@handle', 'y1', 'Chan', 'Old video', 'needle in body', '2026-01-01T10:00:00+09:00', '2026-01-01 01:00:00');
+            """
+        )
+
+        let counts = try database.countsByPlatform()
+        #expect(counts.map(\.name) == ["blogs", "youtube"])
+        #expect(counts.map(\.count) == [3, 1])
+
+        // 최신 3건은 전부 blogs다. 그래도 youtube를 고르면 youtube 행이 나와야 한다.
+        #expect(try database.fetchRecentPosts(limit: 3).allSatisfy { $0.platform == "blogs" })
+        let youtube = try database.fetchRecentPosts(limit: 10, platform: "youtube")
+        #expect(youtube.map(\.externalID) == ["y1"])
+        #expect(try database.countPosts(platform: "youtube") == 1)
+    }
+}
+
+@Test
+func searchRunsOverWholeDatabaseAndTreatsWildcardsAsLiterals() throws {
+    try withFixtureDatabase { database in
+        try database.execute(
+            """
+            INSERT INTO posts (platform, source, external_id, author, title, content, timestamp, crawled_at) VALUES
+            ('blogs', 'blogs/A', 's1', 'A', 'Agent harness', 'body', '2026-08-07T10:00:00+09:00', '2026-08-07 01:00:00'),
+            ('blogs', 'blogs/A', 's2', 'A', 'Unrelated', 'agent buried in the body', '2026-08-06T10:00:00+09:00', '2026-08-06 01:00:00'),
+            ('blogs', 'blogs/A', 's3', 'A', 'Nothing here', 'plain', '2026-08-05T10:00:00+09:00', '2026-08-05 01:00:00');
+            """
+        )
+
+        #expect(try database.countPosts(search: "agent") == 2)
+        #expect(try database.countPosts(platform: "blogs", search: "harness") == 1)
+        #expect(try database.countPosts(platform: "youtube", search: "agent") == 0)
+        // "%"는 와일드카드가 아니라 리터럴이어야 한다 (전체 매칭으로 새지 않게)
+        #expect(try database.countPosts(search: "%") == 0)
+        #expect(try database.countPosts(search: "   ") == 3)
+    }
+}
+
 private func withFixtureDatabase(_ body: (SkimDatabase) throws -> Void) throws {
     let directory = FileManager.default.temporaryDirectory.appending(
         path: "skim-desktop-\(UUID().uuidString)",
