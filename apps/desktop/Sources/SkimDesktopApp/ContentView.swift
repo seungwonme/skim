@@ -208,7 +208,7 @@ struct ContentView: View {
             if let loadError {
                 ContentUnavailableView("데이터를 불러오지 못했습니다", systemImage: "exclamationmark.triangle", description: Text(loadError))
             } else if sortedPosts.isEmpty {
-                ContentUnavailableView("결과 없음", systemImage: "tray", description: Text("검색어나 필터를 조정하세요."))
+                emptyFeedState
             } else {
                 List(selection: $selectedPostID) {
                     ForEach(sortedPosts) { post in
@@ -224,7 +224,7 @@ struct ContentView: View {
                             }
                     }
                     if sourceFilter != nil {
-                        loadMoreButton
+                        channelFooter
                             .listRowSeparator(.hidden)
                     } else if isLoadingMore {
                         HStack {
@@ -374,6 +374,39 @@ struct ContentView: View {
             return false
         }
         return !exhaustedChannels.contains(sourceFilter)
+    }
+
+    /// 채널 모드 목록 끝에 붙는 확장 컨트롤. 목록이 비었을 때도 같은 것을 쓴다 —
+    /// 업로드가 뜸한 채널은 1년치가 0건이라, 여기서 버튼이 사라지면 넓힐 방법이 없어진다.
+    @ViewBuilder
+    private var channelFooter: some View {
+        if canLoadMoreChannel {
+            loadMoreButton
+        } else {
+            Label("마지막 영상까지 확인했습니다", systemImage: "checkmark.circle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+        }
+    }
+
+    @ViewBuilder
+    private var emptyFeedState: some View {
+        if sourceFilter != nil {
+            VStack(spacing: 12) {
+                ContentUnavailableView(
+                    "최근 \(currentChannelYears)년치 영상 없음",
+                    systemImage: "play.slash",
+                    description: Text("업로드가 뜸한 채널이면 더 과거까지 넓혀보세요.")
+                )
+                channelFooter
+                    .frame(maxWidth: 320)
+            }
+            .padding(.bottom, 40)
+        } else {
+            ContentUnavailableView("결과 없음", systemImage: "tray", description: Text("검색어나 필터를 조정하세요."))
+        }
     }
 
     private func transcribeButtonTitle(_ post: DashboardPost) -> String {
