@@ -362,7 +362,11 @@ def youtube_history(
     years: int = typer.Option(1, "--years", "-y", help="지금부터 N년 전까지"),
 ):
     """구독 채널의 과거 영상(롱폼) 목록을 DB에 백필합니다. 자막은 youtube-transcribe로."""
-    total = backfill_channel_history(channel, years)
+    try:
+        total = backfill_channel_history(channel, years)
+    except RuntimeError as exc:
+        typer.echo(f"[skim] youtube-history 실패: {exc}", err=True)
+        raise typer.Exit(1) from exc
     typer.echo(f"완료: {total}개 신규/보강")
 
 

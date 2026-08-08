@@ -86,13 +86,20 @@ public final class SkimDatabase {
         )
     }
 
-    public func loadDashboard(limit: Int = 80, sort: PostSort = .newest) throws -> DashboardSnapshot {
+    public func loadDashboard(
+        limit: Int = 80,
+        sort: PostSort = .newest,
+        platform: String? = nil,
+        search: String? = nil
+    ) throws -> DashboardSnapshot {
         DashboardSnapshot(
             summary: try fetchSummary(),
-            posts: try fetchRecentPosts(limit: limit, sort: sort),
+            posts: try fetchRecentPosts(limit: limit, sort: sort, platform: platform, search: search),
             sources: try fetchTrackedSources(),
             credentials: try fetchCredentials(),
-            databasePath: path.path
+            databasePath: path.path,
+            platformCounts: try countsByPlatform(),
+            filteredCount: try countPosts(platform: platform, search: search)
         )
     }
 
@@ -168,9 +175,75 @@ public final class SkimDatabase {
     public func fetchRecentPosts(
         limit: Int = 50,
         offset: Int = 0,
-        sort: PostSort = .newest
+        sort: PostSort = .newest,
+        platform: String? = nil,
+        search: String? = nil
     ) throws -> [DashboardPost] {
-        try fetchPosts(where: "1=1", bindings: [], limit: limit, offset: offset, sort: sort)
+        let filter = Self.filterClause(platform: platform, search: search)
+        return try fetchPosts(
+            where: filter.clause,
+            bindings: filter.bindings,
+            limit: limit,
+            offset: offset,
+            sort: sort
+        )
+    }
+
+    /// 사이드바 배지용 플랫폼별 전체 건수. 로드된 페이지가 아니라 DB 전체를 센다.
+    public func countsByPlatform() throws -> [PlatformCount] {
+        try query(
+            """
+            SELECT platform, COUNT(*) FROM posts
+            GROUP BY platform
+            ORDER BY COUNT(*) DESC, platform ASC
+            """
+        ) { statement in
+            PlatformCount(
+                name: text(statement, 0) ?? "",
+                count: Int(sqlite3_column_int64(statement, 1))
+            )
+        }
+    }
+
+    /// 현재 필터에 걸리는 전체 건수 (로드된 페이지 수가 아님)
+    public func countPosts(platform: String? = nil, search: String? = nil) throws -> Int {
+        let filter = Self.filterClause(platform: platform, search: search)
+        return try queryOne(
+            "SELECT COUNT(*) FROM posts WHERE \(filter.clause)",
+            bindings: filter.bindings
+        ) { statement in
+            Int(sqlite3_column_int64(statement, 0))
+        }
+    }
+
+    /// 플랫폼/검색어를 그대로 SQL WHERE로 내린다. 로드된 페이지만 클라이언트에서
+    /// 거르면 "youtube 2,242건" 배지 옆에 7건만 보이는 식으로 어긋난다.
+    private static func filterClause(
+        platform: String?,
+        search: String?
+    ) -> (clause: String, bindings: [SQLiteBinding]) {
+        var clauses: [String] = []
+        var bindings: [SQLiteBinding] = []
+
+        if let platform, !platform.isEmpty {
+            clauses.append("platform = ?")
+            bindings.append(.text(platform))
+        }
+
+        let query = search?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !query.isEmpty {
+            let columns = ["title", "source", "author", "summary", "content_markdown", "content"]
+            let pattern = "%" + query
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "%", with: "\\%")
+                .replacingOccurrences(of: "_", with: "\\_") + "%"
+            clauses.append(
+                "(" + columns.map { "\($0) LIKE ? ESCAPE '\\'" }.joined(separator: " OR ") + ")"
+            )
+            bindings.append(contentsOf: columns.map { _ in SQLiteBinding.text(pattern) })
+        }
+
+        return (clauses.isEmpty ? "1=1" : clauses.joined(separator: " AND "), bindings)
     }
 
     /// 특정 소스(예: "youtube/LangChain")의 게시글 — 채널 히스토리 브라우징용
