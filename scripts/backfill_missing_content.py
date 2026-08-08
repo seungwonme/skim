@@ -41,9 +41,17 @@ ALGOLIA_SEARCH = "https://hn.algolia.com/api/v1/search"
 
 # youtube 목록 행은 본문 없이 저장되는 것이 데이터 계약이다. 자막은 사용자가
 # youtube-transcribe로 요청할 때 채운다. 여기서 일괄 전사하지 않는다.
-EXCLUDED_PLATFORMS = {"youtube"}
+#
+# producthunt는 봇 트래픽을 429로 막는다. 지연을 줘도 누적 요청이 쌓이면 단건도
+# 막히고, playwright 폴백은 54단어짜리 차단 화면만 받는다. 원래 본문이 짧은
+# 태그라인이라 제목/요약으로 충분하다고 보고 대상에서 뺀다(2026-08-08 결정).
+EXCLUDED_PLATFORMS = {"youtube", "producthunt"}
 
 BATCH_SIZE = 25
+
+# 락 재시도. 데일리 크롤이나 다른 백필과 겹치면 배치 하나가 통째로 버려진다.
+SAVE_RETRIES = 5
+SAVE_RETRY_WAIT = 30
 
 
 def fetch_targets(conn, platform: str = None, limit: int = 0) -> List[Dict]:
@@ -199,14 +207,34 @@ def run_batch(rows: List[Dict], delay: float = 0.0) -> List[Dict]:
 
 
 def save(conn, enriched: List[Dict]) -> int:
+    """락에 걸리면 기다렸다 다시 쓴다.
+
+    추출은 배치당 수 분이 든다. 저장 한 번 실패로 그걸 통째로 버리면 손해가 크다
+    (실제로 병행 스크립트가 쥔 쓰기 락 때문에 두 번 날아갔다).
+    """
     if not enriched:
         return 0
-    conn.executemany(
-        "UPDATE posts SET content_markdown = ?, word_count = ? WHERE id = ?",
-        [(e["content_markdown"], e["word_count"], e["id"]) for e in enriched],
-    )
-    conn.commit()
-    return len(enriched)
+
+    params = [(e["content_markdown"], e["word_count"], e["id"]) for e in enriched]
+    for attempt in range(SAVE_RETRIES):
+        try:
+            conn.executemany(
+                "UPDATE posts SET content_markdown = ?, word_count = ? WHERE id = ?",
+                params,
+            )
+            conn.commit()
+            return len(enriched)
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc) or attempt == SAVE_RETRIES - 1:
+                raise
+            conn.rollback()
+            print(
+                f"[backfill] DB 락, {SAVE_RETRY_WAIT}초 후 재시도 "
+                f"({attempt + 1}/{SAVE_RETRIES - 1})",
+                file=sys.stderr,
+            )
+            time.sleep(SAVE_RETRY_WAIT)
+    return 0
 
 
 def main() -> int:
