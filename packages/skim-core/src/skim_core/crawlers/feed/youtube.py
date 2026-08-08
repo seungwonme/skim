@@ -90,15 +90,22 @@ def _fetch_via_ytdlp(  # pylint: disable=unused-argument
 ) -> List[dict]:
     """yt-dlp --flat-playlist로 채널 최신 영상 목록을 가져옵니다 (RSS fallback).
 
-    --flat-playlist는 빠르지만 upload_date가 없어 날짜 필터링이 불가.
     최근 3개만 가져와서 DB 중복 제거에 의존합니다.
     대부분의 채널은 하루 0~1개 업로드하므로 3개면 충분.
+
+    approximate_date를 켜면 flat-playlist에서도 발행 시각이 붙는다. 이게 없으면
+    published가 빈 문자열로 저장돼 읽기 쪽이 crawled_at으로 폴백한다. 핸들 구독은
+    RSS가 없어 항상 이 경로라 timestamp 공백이 매일 쌓인다.
+    since는 여기서 거르지 않는다. 수집이 며칠 밀렸을 때 그 구간을 통째로
+    놓치기 때문이고, 중복은 _drop_known_urls가 잡는다.
     """
     try:
         result = subprocess.run(
             [
                 "yt-dlp",
                 "--flat-playlist",
+                "--extractor-args",
+                "youtubetab:approximate_date",
                 "--playlist-items=1-3",
                 "--dump-json",
                 youtube_videos_url(channel_id),
@@ -129,13 +136,14 @@ def _fetch_via_ytdlp(  # pylint: disable=unused-argument
         if "/shorts/" in url or "/shorts/" in vid_id:
             continue
 
+        ts = d.get("timestamp")
         items.append(
             {
                 "platform": f"youtube/{channel_name}",
                 "title": d.get("title", ""),
                 "url": url,
                 "author": channel_name,
-                "published": "",
+                "published": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat() if ts else "",
                 "summary": d.get("description", "")[:300] if d.get("description") else "",
             }
         )

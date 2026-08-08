@@ -76,6 +76,8 @@ def fetch_feed(url: str, source_name: str, since: datetime, quiet: bool = False)
                 "title": entry.get("title", ""),
                 "url": entry.get("link", ""),
                 "content_html": content_html,
+                # author를 안 싣는 피드(OpenAI News, 1인 블로그 등)가 있다. 빈 값으로
+                # 두면 읽기 쪽 "작성자"가 공백이 되므로 소스 표시명으로 채운다.
                 "author": (
                     entry.get("author", "")
                     or (
@@ -83,6 +85,7 @@ def fetch_feed(url: str, source_name: str, since: datetime, quiet: bool = False)
                         if entry.get("authors")
                         else ""
                     )
+                    or source_name.split("/")[-1]
                 ),
                 "external_id": entry.get("id", ""),
                 "published": entry_dt.isoformat() if entry_dt else "",
