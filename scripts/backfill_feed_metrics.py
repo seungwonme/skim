@@ -29,7 +29,12 @@ from skim_core.crawlers.feed.hackernews import fetch_hn_metrics
 from skim_core.db import get_connection
 
 # GeekNews는 개인이 운영하는 사이트다. 3천 건을 몰아치지 않는다.
-DELAY = {"hackernews": 0.1, "geeknews": 0.5}
+# 0.5초로 돌렸다가 2026-08-08에 403으로 차단당했다. 그 뒤로 여유를 크게 뒀다.
+DELAY = {"hackernews": 0.1, "geeknews": 3.0}
+
+# 차단당한 뒤에도 계속 두들기면 차단이 길어진다. 연속 실패가 이만큼 쌓이면 멈춘다.
+# 위 사고에서 차단 후 2,057건을 더 요청했다. 그 재발을 막는 것이 이 상수의 목적이다.
+MAX_CONSECUTIVE_FAILURES = 5
 
 SUPPORTED = ("hackernews", "geeknews")
 
@@ -87,7 +92,7 @@ def main() -> int:
             print(f"  {row['platform']} {row['url'][:70]}")
         return 0
 
-    filled = failed = 0
+    filled = failed = streak = 0
     for i, row in enumerate(targets, 1):
         if not metrics_id_available(row):
             continue
@@ -98,8 +103,17 @@ def main() -> int:
                 (metrics["likes"], metrics.get("comments"), row["id"]),
             )
             filled += 1
+            streak = 0
         else:
             failed += 1
+            streak += 1
+            if streak >= MAX_CONSECUTIVE_FAILURES:
+                conn.commit()
+                print(
+                    f"연속 {streak}건 실패로 중단합니다 ({row['platform']}). "
+                    "차단당했을 수 있으니 시간을 두고 재실행하세요."
+                )
+                break
         if filled and filled % 25 == 0:
             conn.commit()
             print(f"   [{i}/{len(targets)}] 채움 {filled} / 실패 {failed}")
