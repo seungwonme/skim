@@ -16,6 +16,7 @@ import typer
 
 from .db import get_connection, save_posts
 from .enrichment import extract_youtube_transcript
+from .feed_config import youtube_videos_url
 from .models import Post
 
 # 채널당 연간 300개면 데일리 업로더도 덮는다. 그 이상은 enumerate가 무한정 길어진다.
@@ -35,7 +36,7 @@ def list_channel_videos(channel_id: str, channel_name: str, years: int = 1) -> L
             f"1-{MAX_ITEMS_PER_YEAR * years}",
             "--print",
             "%(.{id,timestamp,duration,title})j",
-            f"https://www.youtube.com/channel/{channel_id}/videos",
+            youtube_videos_url(channel_id),
         ],
         capture_output=True,
         text=True,
@@ -43,8 +44,7 @@ def list_channel_videos(channel_id: str, channel_name: str, years: int = 1) -> L
         check=False,
     )
     if result.returncode != 0:
-        typer.echo(f"   [!] {channel_name}: enumerate 실패 - {result.stderr.strip()[:200]}")
-        return []
+        raise RuntimeError(f"{channel_name}: enumerate 실패 - {result.stderr.strip()[:200]}")
 
     posts: List[Post] = []
     for line in result.stdout.strip().splitlines():
@@ -90,17 +90,27 @@ def backfill_channel_history(channel: Optional[str], years: int = 1) -> int:
         if channel is None or channel in (r["display_name"], r["canonical_id"])
     ]
     if not targets:
-        typer.echo(f"채널을 찾지 못함: {channel}")
-        return 0
+        raise RuntimeError(f"채널을 찾지 못함: {channel}")
 
     total = 0
+    failures: List[str] = []
     for name, canonical_id in targets:
         typer.echo(f"[{name}] 최근 {years}년 영상 목록 수집...")
-        posts = list_channel_videos(canonical_id, name, years)
+        try:
+            posts = list_channel_videos(canonical_id, name, years)
+        except RuntimeError as exc:
+            typer.echo(f"   [!] {exc}")
+            failures.append(str(exc))
+            continue
         if posts:
             saved = save_posts(posts, "youtube")
             total += saved
             typer.echo(f"   -> {len(posts)}개 중 {saved}개 신규/보강")
+
+    # 한 건도 못 건졌는데 실패가 있으면 조용한 0이 아니라 에러로 올린다.
+    # (데스크톱은 종료 코드만 보므로 exit 0이면 "수집 완료"로 오인한다)
+    if failures and total == 0:
+        raise RuntimeError("; ".join(failures))
     return total
 
 

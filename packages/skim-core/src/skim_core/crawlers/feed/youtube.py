@@ -13,7 +13,7 @@ from typing import Any, List, Optional
 
 from ...db import get_connection
 from ...enrichment import enrich_with_content
-from ...feed_config import YOUTUBE_CHANNELS
+from ...feed_config import YOUTUBE_CHANNELS, youtube_videos_url
 from ...feed_utils import fetch_feed
 from ...models import Post
 
@@ -79,7 +79,7 @@ def _fetch_via_ytdlp(  # pylint: disable=unused-argument
                 "--flat-playlist",
                 "--playlist-items=1-3",
                 "--dump-json",
-                f"https://www.youtube.com/channel/{channel_id}/videos",
+                youtube_videos_url(channel_id),
             ],
             capture_output=True,
             text=True,

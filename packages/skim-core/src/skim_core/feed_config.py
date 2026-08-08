@@ -12,6 +12,17 @@ GEEKNEWS_RSS = "https://news.hada.io/rss/news"
 # Product Hunt - RSS 피드
 PRODUCTHUNT_RSS = "https://www.producthunt.com/feed"
 
+
+def youtube_videos_url(canonical_id: str) -> str:
+    """채널의 /videos 탭 URL. 핸들(@name)과 채널 ID(UC...)는 경로 형태가 다르다.
+
+    핸들에 /channel/을 붙이면 YouTube가 404를 준다 (데스크톱에서 추가한 핸들
+    구독이 전부 빈 목록으로 보이던 원인).
+    """
+    path = canonical_id if canonical_id.startswith("@") else f"channel/{canonical_id}"
+    return f"https://www.youtube.com/{path}/videos"
+
+
 # YouTube 채널 목록 (handle → channel_id 매핑)
 # RSS URL: https://www.youtube.com/feeds/videos.xml?channel_id={CHANNEL_ID}
 YOUTUBE_CHANNELS = {
@@ -58,7 +69,11 @@ PERSONAL_BLOGS = {
 # AI 빅테크 블로그/뉴스 (RSS + HTML 스크래핑 혼합)
 AI_LABS_SOURCES = [
     {"name": "OpenAI News", "type": "rss", "url": "https://openai.com/news/rss.xml"},
-    {"name": "Anthropic News", "type": "anthropic", "url": "https://www.anthropic.com/news"},
+    {
+        "name": "Anthropic News",
+        "type": "anthropic",
+        "url": "https://www.anthropic.com/news",
+    },
     {
         "name": "Anthropic Research",
         "type": "anthropic",
@@ -69,7 +84,11 @@ AI_LABS_SOURCES = [
         "type": "anthropic",
         "url": "https://www.anthropic.com/engineering",
     },
-    {"name": "LangChain Blog", "type": "langchain", "url": "https://www.langchain.com/blog"},
+    {
+        "name": "LangChain Blog",
+        "type": "langchain",
+        "url": "https://www.langchain.com/blog",
+    },
 ]
 
 # arXiv cs.AI - Atom API (최신 50개)
