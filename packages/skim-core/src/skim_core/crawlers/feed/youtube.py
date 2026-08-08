@@ -9,7 +9,7 @@ import sqlite3
 import subprocess
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 
 from ...db import get_connection
 from ...enrichment import enrich_with_content
@@ -35,6 +35,28 @@ def _drop_known_urls(items: List[dict]) -> List[dict]:
         return items
     known = {r["url"] for r in rows}
     return [it for it in items if it.get("url", "") not in known]
+
+
+def tracked_youtube_channels() -> List[Tuple[str, str]]:
+    """수집 대상 채널 목록 (display_name, canonical_id).
+
+    구독의 정본은 tracked_sources다. 데스크톱에서 채널을 추가해도 크롤러가
+    feed_config만 보면 그 채널은 데일리 수집에서 영영 빠진다. DB를 못 읽거나
+    비어 있을 때만 feed_config 기본 목록으로 폴백한다.
+    """
+    try:
+        conn = get_connection()
+        rows = conn.execute(
+            "SELECT display_name, canonical_id FROM tracked_sources "
+            "WHERE platform='youtube' AND source_type='channel' AND is_enabled=1 "
+            "ORDER BY display_name COLLATE NOCASE"
+        ).fetchall()
+        conn.close()
+    except sqlite3.Error:
+        return list(YOUTUBE_CHANNELS.items())
+
+    channels = [(r["display_name"], r["canonical_id"]) for r in rows]
+    return channels or list(YOUTUBE_CHANNELS.items())
 
 
 _VIDEO_ID_RE = re.compile(r"(?:v=|/shorts/|youtu\.be/|/embed/)([\w-]{11})")
@@ -145,18 +167,29 @@ class YouTubeCrawler:
 
         all_items: List[dict] = []
         rss_failed = 0
+        handle_only = 0
+        channels = tracked_youtube_channels()
 
-        for name, channel_id in YOUTUBE_CHANNELS.items():
-            # 1차: RSS (quiet=True로 에러 메시지 억제)
-            url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
-            results = fetch_feed(url, f"youtube/{name}", since, quiet=True)
-            longform = [r for r in results if "/shorts/" not in r.get("url", "")]
+        for name, channel_id in channels:
+            results: List[dict] = []
+            longform: List[dict] = []
 
-            # 2차: RSS 실패 시 yt-dlp fallback
+            # 1차: RSS (quiet=True로 에러 메시지 억제).
+            # 핸들 구독은 channel_id가 없어 RSS 주소를 만들 수 없다.
+            is_handle = channel_id.startswith("@")
+            if not is_handle:
+                url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+                results = fetch_feed(url, f"youtube/{name}", since, quiet=True)
+                longform = [r for r in results if "/shorts/" not in r.get("url", "")]
+
+            # 2차: RSS 실패(또는 핸들) 시 yt-dlp fallback
             if not results:
-                rss_failed += 1
-                if rss_failed == 1 and debug:
-                    print("  RSS 실패 — yt-dlp fallback 사용")
+                if is_handle:
+                    handle_only += 1
+                else:
+                    rss_failed += 1
+                    if rss_failed == 1 and debug:
+                        print("  RSS 실패 - yt-dlp fallback 사용")
                 longform = _drop_known_urls(_fetch_via_ytdlp(name, channel_id, since))
 
             if longform:
@@ -164,8 +197,11 @@ class YouTubeCrawler:
             all_items.extend(longform)
             time.sleep(0.3)
 
-        if rss_failed > 0:
-            print(f"  (RSS {rss_failed}/{len(YOUTUBE_CHANNELS)}개 실패, yt-dlp fallback 사용)")
+        if rss_failed or handle_only:
+            print(
+                f"  (yt-dlp 경로 {rss_failed + handle_only}/{len(channels)}개"
+                f" - RSS 실패 {rss_failed}, 핸들 구독 {handle_only})"
+            )
 
         print(f"  -> 총 {len(all_items)}개 영상 (롱폼만)")
 
