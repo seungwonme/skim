@@ -16,6 +16,7 @@ from ...enrichment import enrich_with_content
 from ...feed_config import YOUTUBE_CHANNELS, youtube_videos_url
 from ...feed_utils import fetch_feed
 from ...models import Post
+from ...youtube_history import normalize_tracked_channels
 
 
 def _drop_known_urls(items: List[dict]) -> List[dict]:
@@ -176,6 +177,9 @@ class YouTubeCrawler:
         all_items: List[dict] = []
         rss_failed = 0
         handle_only = 0
+        # 핸들과 채널 ID로 이중 등록된 구독은 같은 채널을 두 번 크롤한다.
+        # 매 수집 앞에서 하나로 모은다 (핸들 행이 없으면 아무 일도 하지 않는다).
+        normalize_tracked_channels()
         channels = tracked_youtube_channels()
 
         for name, channel_id in channels:

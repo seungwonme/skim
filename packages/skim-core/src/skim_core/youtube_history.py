@@ -23,6 +23,92 @@ from .models import Post
 MAX_ITEMS_PER_YEAR = 300
 
 
+def resolve_channel_id(canonical_id: str) -> Optional[str]:
+    """핸들(@name)을 채널 ID(UC...)로 바꾼다. 이미 채널 ID면 그대로 돌려준다.
+
+    flat-playlist 항목의 playlist_channel_id에 채널 ID가 실려 온다
+    (항목 레벨 channel_id는 None이라 못 쓴다).
+    """
+    if not canonical_id.startswith("@"):
+        return canonical_id
+
+    result = subprocess.run(
+        [
+            "yt-dlp",
+            "--flat-playlist",
+            "--playlist-items",
+            "1",
+            "--print",
+            "%(playlist_channel_id)s",
+            youtube_videos_url(canonical_id),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+
+    for line in result.stdout.strip().splitlines():
+        value = line.strip()
+        if value.startswith("UC"):
+            return value
+    return None
+
+
+def normalize_tracked_channels() -> dict:
+    """핸들 구독을 채널 ID로 승격하고, 그 과정에서 드러난 중복 구독을 합친다.
+
+    핸들과 채널 ID는 같은 채널이라도 문자열이 달라 UNIQUE(platform, canonical_id)가
+    막지 못한다. 실제로 Andrej Karpathy와 Lex Fridman이 양쪽으로 등록돼 매일 두 번씩
+    크롤되고 있었다. canonical_id를 채널 ID 하나로 모으면 그 제약이 다시 일한다.
+
+    멱등하다. 핸들 행이 남아 있지 않으면 yt-dlp를 한 번도 부르지 않는다.
+    """
+    conn = get_connection()
+    handles = conn.execute(
+        "SELECT id, display_name, canonical_id FROM tracked_sources "
+        "WHERE platform='youtube' AND source_type='channel' AND canonical_id LIKE '@%'"
+    ).fetchall()
+
+    promoted, merged, unresolved = 0, 0, 0
+    for row in handles:
+        channel_id = resolve_channel_id(row["canonical_id"])
+        if not channel_id:
+            unresolved += 1
+            continue
+
+        existing = conn.execute(
+            "SELECT id, display_name FROM tracked_sources "
+            "WHERE platform='youtube' AND canonical_id=? AND id<>?",
+            (channel_id, row["id"]),
+        ).fetchone()
+
+        if existing:
+            # 같은 채널이 이미 채널 ID로 등록돼 있다. 핸들 구독을 지우고, 그 이름으로
+            # 저장돼 있던 글은 남는 구독 쪽 이름으로 옮겨 한 채널로 보이게 한다.
+            conn.execute(
+                "UPDATE posts SET source=? WHERE platform='youtube' AND source=?",
+                (
+                    f"youtube/{existing['display_name']}",
+                    f"youtube/{row['display_name']}",
+                ),
+            )
+            conn.execute("DELETE FROM tracked_sources WHERE id=?", (row["id"],))
+            merged += 1
+        else:
+            conn.execute(
+                "UPDATE tracked_sources SET canonical_id=?, updated_at=datetime('now') WHERE id=?",
+                (channel_id, row["id"]),
+            )
+            promoted += 1
+
+    conn.commit()
+    conn.close()
+    return {"promoted": promoted, "merged": merged, "unresolved": unresolved}
+
+
 def list_channel_videos(channel_id: str, channel_name: str, years: int = 1) -> List[Post]:
     """yt-dlp flat-playlist로 채널 /videos 탭에서 최근 N년 영상 목록을 가져온다."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=365 * years)
@@ -77,6 +163,9 @@ def list_channel_videos(channel_id: str, channel_name: str, years: int = 1) -> L
 
 def backfill_channel_history(channel: Optional[str], years: int = 1) -> int:
     """tracked_sources의 유튜브 채널(전체 또는 지정 채널) 과거 영상을 DB에 upsert한다."""
+    # 데스크톱에서 방금 추가한 핸들 구독이 기존 채널 ID 구독과 겹칠 수 있다.
+    # 목록을 읽기 전에 하나로 모아 같은 채널을 두 번 백필하지 않는다.
+    normalize_tracked_channels()
     conn = get_connection()
     rows = conn.execute(
         "SELECT display_name, canonical_id FROM tracked_sources "
