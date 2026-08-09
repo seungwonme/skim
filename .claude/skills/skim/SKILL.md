@@ -1,7 +1,7 @@
 ---
 name: skim
-description: "Use when user asks to operate a local Skim workspace: inspect crawl DB health, run targeted crawls, search collected posts, prepare source inventory bundles, triage crawler/session issues, or create source-backed research summaries. Do NOT use for generic web search, hosted crawling, secret extraction, blog publishing, or external notifications."
-argument-hint: "[status|research|coverage|refresh|triage|bundle] [topic/date/platform]"
+description: "Use when user asks to operate a local Skim workspace: register a new crawl source from a URL (RSS discovery and extraction-tier judgement), inspect crawl DB health, run targeted crawls, search collected posts, prepare source inventory bundles, triage crawler/session issues, or create source-backed research summaries. Do NOT use for generic web search, hosted crawling, secret extraction, blog publishing, or external notifications."
+argument-hint: "[status|source|research|coverage|refresh|triage|bundle] [url/topic/date/platform]"
 license: MIT
 compatibility: "Requires Python 3.12+, uv, and a Skim checkout. Uses local SQLite and user-owned session files."
 metadata:
@@ -41,6 +41,8 @@ Use `uv run skim ...` inside a checkout. For released, out-of-tree execution, us
 
 ## Modes
 
+- New source from a URL: read `references/adding-sources.md`, then start with `uv run skim source probe <url>`.
+- Registered source audit: run `uv run skim source refresh --all` to re-observe tiers and catch feeds that died.
 - Status or health: run `uv run skim doctor`.
 - Platform triage: run `uv run skim doctor --platform <name>`.
 - Refresh planning: run `uv run skim refresh-plan --days <n>`.

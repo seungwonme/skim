@@ -49,6 +49,8 @@ uv run skim source probe <url> --no-sample --emit json
 uv run skim source add https://example.com/blog     # 진단 후 tracked_sources 등록
 uv run skim source list --platform blogs
 uv run skim source sync                             # feed_config -> tracked_sources (멱등)
+uv run skim source refresh --all                    # tier 재관측, 죽은 피드 탐지
+uv run skim source list --emit markdown > docs/SOURCES.md   # 인벤토리 갱신
 
 # 기타
 uv run skim platforms           # 지원 플랫폼 목록
@@ -127,6 +129,8 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
 - `fetch_tier`는 사람이 선언하는 값이 아니라 probe가 관측한 값이다: `rss`(피드에 본문 포함) > `rss+enrich`(HTTP 추출) > `rss+render`(playwright 필요) > `scrape`(피드 없음).
 - `feed_config.py`를 직접 고쳤으면 `skim source sync`로 레지스트리에 반영한다.
 - 계정 팔로우가 소스 목록을 소유하는 플랫폼(reddit, threads, x, linkedin)은 레지스트리에 넣지 않는다.
+- 소스를 추가·갱신했으면 `docs/SOURCES.md`를 재생성해 함께 커밋한다. 목록이 DB에 있어 저장소 diff에 안 남으므로, 이 문서가 "언제 무엇을 추가했는지"의 유일한 기록이다.
+- 추출 회귀는 `skim doctor`가 소스별로 잡는다. 판정은 절대 임계가 아니라 그 소스의 지난 120일 대비다 (`source_health.py`).
 
 ### 새 크롤러 추가 방법
 
