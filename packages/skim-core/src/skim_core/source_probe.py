@@ -48,6 +48,8 @@ class ProbeResult:
 
     url: str
     feed_url: Optional[str] = None
+    feed_title: str = ""
+    site_url: str = ""
     discovery: str = ""
     items: int = 0
     undated: int = 0
@@ -67,7 +69,9 @@ class ProbeResult:
 def _get(url: str) -> Optional[requests.Response]:
     """진단용 GET. 실패는 예외 대신 None으로 돌려 후보 순회를 계속한다."""
     try:
-        resp = requests.get(url, headers=FEED_HEADERS, timeout=PROBE_TIMEOUT, allow_redirects=True)
+        resp = requests.get(
+            url, headers=FEED_HEADERS, timeout=PROBE_TIMEOUT, allow_redirects=True
+        )
     except requests.RequestException:
         return None
     return resp if resp.status_code == 200 else None
@@ -182,6 +186,14 @@ def _entry_body_words(entry) -> int:
     return len(BeautifulSoup(raw, "html.parser").get_text(" ", strip=True).split())
 
 
+def _normalize_site_url(url: str) -> str:
+    """소스 식별자로 쓸 수 있게 쿼리와 끝 슬래시를 떨어낸다."""
+    parsed = urlparse(url.strip())
+    if not parsed.netloc:
+        return url.strip().rstrip("/")
+    return f"{parsed.scheme}://{parsed.netloc}{parsed.path.rstrip('/')}"
+
+
 def _tier_from_method(method: str) -> str:
     """관측된 추출 경로를 등급으로 옮긴다. playwright는 비용이 한 자릿수 배 차이난다."""
     if "playwright" in method:
@@ -197,13 +209,21 @@ def probe_source(url: str, sample: bool = True) -> ProbeResult:
     if feed is None:
         result.sitemap_url = find_sitemap(url)
         result.tier = "scrape"
-        result.warnings.append("RSS/Atom 피드 없음. 인덱스 파싱 크롤러를 직접 만들어야 한다")
+        result.warnings.append(
+            "RSS/Atom 피드 없음. 인덱스 파싱 크롤러를 직접 만들어야 한다"
+        )
         if not result.sitemap_url:
             result.warnings.append("sitemap도 없음. 발행일 확보 수단이 마땅치 않다")
         return result
 
     result.feed_url = feed_url
     result.discovery = discovery
+
+    channel = getattr(feed, "feed", {})
+    result.feed_title = (channel.get("title") or "").strip()
+    # 채널 <link>는 소스의 정체(사이트 홈)라 피드 주소가 바뀌어도 유지된다.
+    # every.to처럼 한 도메인에 칼럼이 여럿이면 칼럼별로 다른 값이 온다.
+    result.site_url = _normalize_site_url(channel.get("link") or url)
 
     entries = list(feed.entries)
     result.items = len(entries)
@@ -220,14 +240,19 @@ def probe_source(url: str, sample: bool = True) -> ProbeResult:
         result.newest = max(dated).date().isoformat()
 
     result.has_author = any(
-        (entry.get("author") or entry.get("dc_creator") or "").strip() for entry in entries
+        (entry.get("author") or entry.get("dc_creator") or "").strip()
+        for entry in entries
     )
-    result.feed_body_words = max((_entry_body_words(entry) for entry in entries), default=0)
+    result.feed_body_words = max(
+        (_entry_body_words(entry) for entry in entries), default=0
+    )
 
     newest_entry = max(
         (e for e in entries if parse_entry_date(e)), key=parse_entry_date, default=None
     )
-    newest_entry = newest_entry if newest_entry is not None else (entries[0] if entries else None)
+    newest_entry = (
+        newest_entry if newest_entry is not None else (entries[0] if entries else None)
+    )
 
     if result.feed_body_words >= MIN_BODY_WORDS:
         result.tier = "rss"
@@ -259,9 +284,13 @@ def _add_warnings(result: ProbeResult) -> None:
     if result.sample_method == "failed":
         result.warnings.append("본문 추출 실패")
     elif result.sample_url and result.sample_words < MIN_BODY_WORDS:
-        result.warnings.append(f"본문 빈약({result.sample_words}단어). 내비게이션만 긁혔을 수 있다")
+        result.warnings.append(
+            f"본문 빈약({result.sample_words}단어). 내비게이션만 긁혔을 수 있다"
+        )
     if result.tier == "rss+render":
-        result.warnings.append("playwright 렌더 필요. 느리고 타이밍에 따라 본문이 빌 수 있다")
+        result.warnings.append(
+            "playwright 렌더 필요. 느리고 타이밍에 따라 본문이 빌 수 있다"
+        )
 
 
 def format_probe_result(result: ProbeResult) -> str:
@@ -282,7 +311,9 @@ def format_probe_result(result: ProbeResult) -> str:
         )
         lines.append(f"  body    {body}")
         if result.sample_url:
-            lines.append(f"  sample  {result.sample_words}단어  method={result.sample_method}")
+            lines.append(
+                f"  sample  {result.sample_words}단어  method={result.sample_method}"
+            )
     else:
         lines.append("  feed    없음")
         if result.sitemap_url:

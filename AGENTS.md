@@ -43,9 +43,12 @@ uv run skim crawl reddit --subreddit python --sort hot --count 10
 uv run skim youtube-history --channel LangChain --years 1
 uv run skim youtube-transcribe <video-url-or-id>
 
-# 소스 진단 (등록 전 읽기 전용 판정)
-uv run skim source probe https://example.com/blog
+# 소스 진단과 등록
+uv run skim source probe https://example.com/blog   # 읽기 전용 판정 (등록 안 함)
 uv run skim source probe <url> --no-sample --emit json
+uv run skim source add https://example.com/blog     # 진단 후 tracked_sources 등록
+uv run skim source list --platform blogs
+uv run skim source sync                             # feed_config -> tracked_sources (멱등)
 
 # 기타
 uv run skim platforms           # 지원 플랫폼 목록
@@ -115,6 +118,15 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
 - `packages/skim-core/src/skim_core/feed_utils.py`: RSS/Atom 파싱, KST 변환
 - `packages/skim-core/src/skim_core/feed_config.py`: RSS URL, YouTube 채널 ID, API endpoint 설정
 - `apps/desktop/`: SwiftUI desktop reader for local `data/skim.db`
+
+### 소스 목록의 정본
+
+`youtube`와 `blogs`는 **DB의 `tracked_sources` 테이블이 정본**이고, `feed_config.py`는 레지스트리가 비었거나 DB를 못 읽을 때만 쓰이는 폴백 겸 seed다. 나머지 플랫폼은 아직 `feed_config.py`가 정본이다.
+
+- 새 소스는 `skim source add <url>`로 등록한다. probe가 피드를 찾고 관측한 `fetch_tier`를 함께 기록한다.
+- `fetch_tier`는 사람이 선언하는 값이 아니라 probe가 관측한 값이다: `rss`(피드에 본문 포함) > `rss+enrich`(HTTP 추출) > `rss+render`(playwright 필요) > `scrape`(피드 없음).
+- `feed_config.py`를 직접 고쳤으면 `skim source sync`로 레지스트리에 반영한다.
+- 계정 팔로우가 소스 목록을 소유하는 플랫폼(reddit, threads, x, linkedin)은 레지스트리에 넣지 않는다.
 
 ### 새 크롤러 추가 방법
 

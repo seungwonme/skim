@@ -15,7 +15,7 @@ import socket
 import sqlite3
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from .paths import DATA_DIR
 
@@ -86,6 +86,8 @@ CREATE TABLE IF NOT EXISTS tracked_sources (
     is_enabled    INTEGER NOT NULL DEFAULT 1,
     focus_level   INTEGER NOT NULL DEFAULT 0,
     notes         TEXT,
+    feed_url      TEXT,
+    fetch_tier    TEXT,
     created_at    TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(platform, canonical_id)
@@ -170,6 +172,7 @@ def init_db(db_path: Optional[Path] = None) -> None:
     conn.executescript(SCHEMA)
     _ensure_runs_columns(conn)
     _migrate_research_runs(conn)
+    _migrate_tracked_sources(conn)
     conn.close()
 
 
@@ -209,7 +212,9 @@ def migrate_canonical_body(db_path: Optional[Path] = None) -> dict:
         conn.close()
 
 
-def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+def _ensure_column(
+    conn: sqlite3.Connection, table: str, column: str, definition: str
+) -> None:
     """SQLite ADD COLUMN IF NOT EXISTS 대체 (3.43 까지도 미지원).
 
     `row_factory` 와 무관하게 동작 (PRAGMA table_info 의 인덱스 1 이 name).
@@ -222,8 +227,12 @@ def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition
 def _migrate_research_runs(conn: sqlite3.Connection) -> None:
     """research_runs 멱등 migration. fresh DB / v0 / v1 모두 안전."""
     conn.executescript(RESEARCH_RUNS_CREATE_SQL)
-    _ensure_column(conn, "research_runs", "days_per_platform", "TEXT NOT NULL DEFAULT '{}'")
-    _ensure_column(conn, "research_runs", "window_expanded", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(
+        conn, "research_runs", "days_per_platform", "TEXT NOT NULL DEFAULT '{}'"
+    )
+    _ensure_column(
+        conn, "research_runs", "window_expanded", "INTEGER NOT NULL DEFAULT 0"
+    )
     _ensure_column(conn, "research_runs", "newly_fetched", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "research_runs", "runner_pid", "INTEGER")
     _ensure_column(conn, "research_runs", "runner_host", "TEXT")
@@ -232,9 +241,23 @@ def _migrate_research_runs(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_tracked_sources(conn: sqlite3.Connection) -> None:
+    """tracked_sources 멱등 migration.
+
+    feed_url/fetch_tier는 youtube만 쓰던 시절에는 없던 컬럼이다. RSS 소스를
+    등록하려면 피드 주소가 필요하고, fetch_tier는 `skim source probe`가 관측한
+    추출 등급을 남긴다 (사람이 선언하는 값이 아니다).
+    """
+    _ensure_column(conn, "tracked_sources", "feed_url", "TEXT")
+    _ensure_column(conn, "tracked_sources", "fetch_tier", "TEXT")
+    conn.commit()
+
+
 def _ensure_runs_columns(conn: sqlite3.Connection) -> None:
     """기존 DB의 runs 테이블에 누락된 컬럼을 추가합니다."""
-    existing = {row["name"] for row in conn.execute("PRAGMA table_info(runs)").fetchall()}
+    existing = {
+        row["name"] for row in conn.execute("PRAGMA table_info(runs)").fetchall()
+    }
     required = {
         "current_platform": "TEXT",
         "runner_pid": "INTEGER",
@@ -321,7 +344,10 @@ def save_posts(
         # 혼합 배치에서 인자 platform으로 저장하면 row가 오라벨링된다.
         row_platform = data.get("platform") or platform
 
-        if row_platform in _API_BODY_PLATFORMS and not (data.get("content_markdown") or "").strip():
+        if (
+            row_platform in _API_BODY_PLATFORMS
+            and not (data.get("content_markdown") or "").strip()
+        ):
             body = (data.get("content") or "").strip()
             if body:
                 data["content_markdown"] = body
@@ -364,7 +390,9 @@ def save_posts(
             if url:
                 hash_src = f"{row_platform}:{data.get('author', '')}:{url}"
             else:
-                hash_src = f"{row_platform}:{data.get('author', '')}:{data.get('content', '')}"
+                hash_src = (
+                    f"{row_platform}:{data.get('author', '')}:{data.get('content', '')}"
+                )
             ext_id = hashlib.sha256(hash_src.encode()).hexdigest()[:16]
 
         # 해시 id인 경우만 같은 URL의 기존 row에 병합한다. 크롤러가 준 진짜 id를
@@ -481,6 +509,82 @@ def save_posts(
             file=sys.stderr,
         )
     return saved
+
+
+def list_tracked_sources(
+    platform: str,
+    *,
+    enabled_only: bool = True,
+    db_path: Optional[Path] = None,
+) -> List[dict]:
+    """플랫폼의 등록 소스를 반환한다. DB를 못 읽으면 빈 목록 (호출자가 폴백한다)."""
+    where = "WHERE platform = ?"
+    if enabled_only:
+        where += " AND is_enabled = 1"
+    try:
+        conn = get_connection(db_path)
+        rows = conn.execute(
+            "SELECT display_name, canonical_id, handle_or_url, feed_url, fetch_tier, source_type "
+            f"FROM tracked_sources {where} ORDER BY display_name COLLATE NOCASE",
+            (platform,),
+        ).fetchall()
+        conn.close()
+    except sqlite3.Error:
+        return []
+    return [dict(row) for row in rows]
+
+
+def upsert_tracked_source(
+    *,
+    platform: str,
+    canonical_id: str,
+    display_name: str,
+    source_type: str = "feed",
+    handle_or_url: Optional[str] = None,
+    feed_url: Optional[str] = None,
+    fetch_tier: Optional[str] = None,
+    notes: Optional[str] = None,
+    db_path: Optional[Path] = None,
+) -> bool:
+    """소스를 등록하거나 갱신한다. 신규면 True, 기존 갱신이면 False.
+
+    fetch_tier는 probe가 관측한 값이라 재등록할 때마다 덮어쓴다. 사람이 손으로
+    적어둔 notes는 새 값이 없으면 보존한다.
+    """
+    conn = get_connection(db_path)
+    try:
+        existing = conn.execute(
+            "SELECT id FROM tracked_sources WHERE platform = ? AND canonical_id = ?",
+            (platform, canonical_id),
+        ).fetchone()
+        conn.execute(
+            """INSERT INTO tracked_sources
+                   (platform, source_type, display_name, canonical_id,
+                    handle_or_url, feed_url, fetch_tier, notes)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(platform, canonical_id) DO UPDATE SET
+                   source_type   = excluded.source_type,
+                   display_name  = excluded.display_name,
+                   handle_or_url = COALESCE(excluded.handle_or_url, tracked_sources.handle_or_url),
+                   feed_url      = COALESCE(excluded.feed_url, tracked_sources.feed_url),
+                   fetch_tier    = COALESCE(excluded.fetch_tier, tracked_sources.fetch_tier),
+                   notes         = COALESCE(excluded.notes, tracked_sources.notes),
+                   updated_at    = datetime('now')""",
+            (
+                platform,
+                source_type,
+                display_name,
+                canonical_id,
+                handle_or_url,
+                feed_url,
+                fetch_tier,
+                notes,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return existing is None
 
 
 def save_run(status: str = "running", db_path: Optional[Path] = None) -> int:

@@ -9,6 +9,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
+from urllib.parse import urlparse
 
 import typer
 
@@ -19,12 +20,15 @@ from skim_core.db import (
     finish_run,
     get_connection,
     init_db,
+    list_tracked_sources,
     migrate_canonical_body,
     platforms_with_recent_posts,
     save_posts,
     save_run,
     update_run_progress,
+    upsert_tracked_source,
 )
+from skim_core.feed_config import PERSONAL_BLOGS
 from skim_core.models import Post
 from skim_core.paths import DATA_DIR
 from skim_core.research.refresh import run_research
@@ -63,9 +67,7 @@ def platform_help(include_all: bool = False) -> str:
     return ", ".join(names)
 
 
-TEXT_PRESENT_SQL = (
-    "COALESCE(NULLIF(content_markdown, ''), NULLIF(content, ''), NULLIF(summary, ''), '')"
-)
+TEXT_PRESENT_SQL = "COALESCE(NULLIF(content_markdown, ''), NULLIF(content, ''), NULLIF(summary, ''), '')"
 
 
 def _db_or_default(db: Optional[Path]) -> Path:
@@ -77,7 +79,9 @@ def _session_dir_for(db_path: Path) -> Path:
 
 
 def _cutoff(days: int) -> str:
-    return (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+    return (datetime.now(timezone.utc) - timedelta(days=days)).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
 
 
 def _slug(value: str) -> str:
@@ -133,10 +137,14 @@ def crawl(  # noqa: C901 — CLI 진입점으로 플랫폼별 분기가 불가�
     count: Optional[int] = typer.Option(
         None, "--count", "-c", help="수집할 게시글 수 (SNS 기본 50)"
     ),
-    days: Optional[int] = typer.Option(None, "--days", help="최근 N일 이내 게시글 (feed 기본 1)"),
+    days: Optional[int] = typer.Option(
+        None, "--days", help="최근 N일 이내 게시글 (feed 기본 1)"
+    ),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="출력 파일명"),
     debug: bool = typer.Option(False, "--debug", "-d", help="디버그 모드"),
-    no_content: bool = typer.Option(False, "--no-content", help="콘텐츠 enrichment 스킵"),
+    no_content: bool = typer.Option(
+        False, "--no-content", help="콘텐츠 enrichment 스킵"
+    ),
     user_id: Optional[str] = typer.Option(
         None, "--user-id", "-u", help="특정 사용자 ID/screen name"
     ),
@@ -204,7 +212,9 @@ def crawl(  # noqa: C901 — CLI 진입점으로 플랫폼별 분기가 불가�
                     d = 1
                 # 발행일이 밀린 소스는 사용자가 창을 좁혀도 최소 폭을 보장한다.
                 d = max(d, MIN_LOOKBACK_DAYS.get(platform, 0))
-                since = (now - timedelta(days=d)).replace(hour=0, minute=0, second=0, microsecond=0)
+                since = (now - timedelta(days=d)).replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                )
                 options["since"] = since
                 if count is not None:
                     options["count"] = count
@@ -255,7 +265,9 @@ def crawl(  # noqa: C901 — CLI 진입점으로 플랫폼별 분기가 불가�
             save_posts_to_file(posts, filepath)
             typer.echo(f"  -> 파일: {filepath}")
 
-            update_run_progress(run_id, platform, f"{platform} 처리 완료: {saved}개 DB 반영")
+            update_run_progress(
+                run_id, platform, f"{platform} 처리 완료: {saved}개 DB 반영"
+            )
 
             if platform != targets[-1]:
                 typer.echo()
@@ -271,7 +283,9 @@ def crawl(  # noqa: C901 — CLI 진입점으로 플랫폼별 분기가 불가�
     # 소스가 0건이면 회귀로 보고 드러낸다. 원래 저빈도인 소스까지 잡지 않도록
     # 최근 유입 이력이 있는 플랫폼만 대상으로 한다.
     regressed = (
-        sorted(set(empty_platforms) & platforms_with_recent_posts(REGRESSION_LOOKBACK_DAYS))
+        sorted(
+            set(empty_platforms) & platforms_with_recent_posts(REGRESSION_LOOKBACK_DAYS)
+        )
         if empty_platforms
         else []
     )
@@ -316,14 +330,18 @@ def login(
     identifier: Optional[str] = typer.Option(
         None, "--identifier", "-u", help="로그인 ID/email/username"
     ),
-    password: Optional[str] = typer.Option(None, "--password", "-p", help="로그인 password"),
+    password: Optional[str] = typer.Option(
+        None, "--password", "-p", help="로그인 password"
+    ),
     password_stdin: bool = typer.Option(
         False, "--password-stdin", help="stdin 첫 줄에서 password 읽기"
     ),
     save_credential: bool = typer.Option(
         False, "--save-credential", help="입력한 credential을 macOS Keychain에 저장"
     ),
-    no_keychain: bool = typer.Option(False, "--no-keychain", help="macOS Keychain 조회 안 함"),
+    no_keychain: bool = typer.Option(
+        False, "--no-keychain", help="macOS Keychain 조회 안 함"
+    ),
 ):
     """SNS 플랫폼 로그인 (저장된 credential 자동 입력 후 쿠키 추출, 실패 시 수동 로그인 fallback)
 
@@ -398,14 +416,18 @@ def migrate(db: Optional[Path] = typer.Option(None, "--db", help="SQLite DB 경�
 
 @app.command()
 def doctor(
-    platform: Optional[str] = typer.Option(None, "--platform", "-p", help="특정 플랫폼만 점검"),
+    platform: Optional[str] = typer.Option(
+        None, "--platform", "-p", help="특정 플랫폼만 점검"
+    ),
     db: Optional[Path] = typer.Option(None, "--db", help="SQLite DB 경로"),
     emit: str = typer.Option("summary", "--emit", help="summary|json"),
 ):
     """DB, 수집 run, session 상태를 점검합니다."""
     _validate_platform(platform)
     if emit not in {"summary", "json"}:
-        typer.echo("[skim] invalid --emit value. choose from ['json', 'summary']", err=True)
+        typer.echo(
+            "[skim] invalid --emit value. choose from ['json', 'summary']", err=True
+        )
         raise typer.Exit(2)
 
     db_path = _db_or_default(db)
@@ -433,7 +455,9 @@ def doctor(
         )
 
     if not db_path.exists():
-        report["warnings"].append("missing database; run `uv run skim crawl all --days 1`")
+        report["warnings"].append(
+            "missing database; run `uv run skim crawl all --days 1`"
+        )
         _emit_doctor(report, emit)
         return
 
@@ -457,12 +481,15 @@ def doctor(
                 params,
             ).fetchall()
         ]
-        report["runs"] = [dict(row) for row in conn.execute("""
+        report["runs"] = [
+            dict(row)
+            for row in conn.execute("""
                 SELECT id, status, current_platform, started_at, finished_at, summary
                 FROM runs
                 ORDER BY id DESC
                 LIMIT 10
-                """).fetchall()]
+                """).fetchall()
+        ]
         conn.close()
     except Exception as exc:  # pragma: no cover - defensive report path
         report["warnings"].append(f"database check failed: {exc}")
@@ -508,7 +535,9 @@ def _emit_doctor(report: dict, emit: str) -> None:
 @app.command()
 def coverage(
     days: int = typer.Option(7, "--days", help="최근 N일"),
-    platform: Optional[str] = typer.Option(None, "--platform", "-p", help="특정 플랫폼만 집계"),
+    platform: Optional[str] = typer.Option(
+        None, "--platform", "-p", help="특정 플랫폼만 집계"
+    ),
     db: Optional[Path] = typer.Option(None, "--db", help="SQLite DB 경로"),
     output: Optional[Path] = typer.Option(None, "--output", "-o", help="CSV 출력 경로"),
     emit: str = typer.Option("summary", "--emit", help="summary|json|csv"),
@@ -579,14 +608,18 @@ def coverage(
 @app.command("refresh-plan")
 def refresh_plan(
     days: int = typer.Option(1, "--days", help="fresh로 볼 최근 N일"),
-    platform: Optional[str] = typer.Option(None, "--platform", "-p", help="특정 플랫폼만 계획"),
+    platform: Optional[str] = typer.Option(
+        None, "--platform", "-p", help="특정 플랫폼만 계획"
+    ),
     db: Optional[Path] = typer.Option(None, "--db", help="SQLite DB 경로"),
     emit: str = typer.Option("summary", "--emit", help="summary|json"),
 ):
     """필요한 crawl/login 명령을 실행 없이 제안합니다."""
     _validate_platform(platform)
     if emit not in {"summary", "json"}:
-        typer.echo("[skim] invalid --emit value. choose from ['json', 'summary']", err=True)
+        typer.echo(
+            "[skim] invalid --emit value. choose from ['json', 'summary']", err=True
+        )
         raise typer.Exit(2)
 
     db_path = _db_or_default(db)
@@ -595,11 +628,14 @@ def refresh_plan(
     if db_path.exists():
         conn = get_connection(db_path)
         try:
-            latest_by_platform = {row["platform"]: row["latest_crawl"] for row in conn.execute("""
+            latest_by_platform = {
+                row["platform"]: row["latest_crawl"]
+                for row in conn.execute("""
                     SELECT platform, MAX(crawled_at) AS latest_crawl
                     FROM posts
                     GROUP BY platform
-                    """).fetchall()}
+                    """).fetchall()
+            }
         finally:
             conn.close()
 
@@ -607,7 +643,9 @@ def refresh_plan(
     session_dir = _session_dir_for(db_path)
     stale = [p for p in targets if (latest_by_platform.get(p) or "") < cutoff]
     missing_sessions = [
-        p for p in stale if p in SNS_PLATFORMS and not (session_dir / f"{p}_session.json").exists()
+        p
+        for p in stale
+        if p in SNS_PLATFORMS and not (session_dir / f"{p}_session.json").exists()
     ]
     crawlable = [p for p in stale if p not in missing_sessions]
     plan = {
@@ -618,7 +656,9 @@ def refresh_plan(
         "commands": [],
     }
     if crawlable:
-        plan["commands"].append(f"uv run skim crawl {' '.join(crawlable)} --days {days}")
+        plan["commands"].append(
+            f"uv run skim crawl {' '.join(crawlable)} --days {days}"
+        )
     for name in missing_sessions:
         plan["commands"].append(f"uv run skim login {name}")
 
@@ -641,10 +681,14 @@ def bundle(
         None, help="선택 topic. 없으면 최근 source inventory만 생성"
     ),
     days: int = typer.Option(7, "--days", help="최근 N일"),
-    sources: str = typer.Option("all", "--sources", help="쉼표 구분 플랫폼, 또는 'all'"),
+    sources: str = typer.Option(
+        "all", "--sources", help="쉼표 구분 플랫폼, 또는 'all'"
+    ),
     limit: int = typer.Option(50, "--limit", help="플랫폼별 최대 반환 수"),
     db: Optional[Path] = typer.Option(None, "--db", help="SQLite DB 경로"),
-    output_dir: Optional[Path] = typer.Option(None, "--output-dir", "-o", help="bundle 디렉터리"),
+    output_dir: Optional[Path] = typer.Option(
+        None, "--output-dir", "-o", help="bundle 디렉터리"
+    ),
 ):
     """research/source-inventory handoff bundle을 생성합니다."""
     db_path = _db_or_default(db)
@@ -662,7 +706,9 @@ def bundle(
     platforms = source_list if explicit_sources else None
 
     slug = _slug(topic or "inventory")
-    bundle_dir = output_dir or Path("/tmp/skim") / f"{datetime.now().strftime('%Y%m%d')}-{slug}"
+    bundle_dir = (
+        output_dir or Path("/tmp/skim") / f"{datetime.now().strftime('%Y%m%d')}-{slug}"
+    )
     bundle_dir.mkdir(parents=True, exist_ok=True)
 
     inventory = _recent_inventory(db_path, days, platforms)
@@ -697,7 +743,9 @@ def bundle(
             "stats": {"total": len(inventory)},
             "warnings": [],
         }
-    results_path.write_text(json.dumps(response, ensure_ascii=False, indent=2), encoding="utf-8")
+    results_path.write_text(
+        json.dumps(response, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     summary_path.write_text(_bundle_summary(response, inventory_path), encoding="utf-8")
     proof_path.write_text(
         "\n".join(
@@ -718,7 +766,9 @@ def bundle(
     typer.echo(f"bundle: {bundle_dir}")
 
 
-def _recent_inventory(db_path: Path, days: int, platforms: Optional[list[str]]) -> list[dict]:
+def _recent_inventory(
+    db_path: Path, days: int, platforms: Optional[list[str]]
+) -> list[dict]:
     where = ["crawled_at >= ?"]
     params: list = [_cutoff(days)]
     if platforms:
@@ -749,13 +799,17 @@ def _recent_inventory(db_path: Path, days: int, platforms: Optional[list[str]]) 
 def _write_csv(path: Path, rows: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=list(rows[0].keys()) if rows else ["platform"])
+        writer = csv.DictWriter(
+            fh, fieldnames=list(rows[0].keys()) if rows else ["platform"]
+        )
         writer.writeheader()
         writer.writerows(rows)
 
 
 def _print_csv(rows: list[dict]) -> None:
-    writer = csv.DictWriter(sys.stdout, fieldnames=list(rows[0].keys()) if rows else ["platform"])
+    writer = csv.DictWriter(
+        sys.stdout, fieldnames=list(rows[0].keys()) if rows else ["platform"]
+    )
     writer.writeheader()
     writer.writerows(rows)
 
@@ -797,7 +851,9 @@ VALID_EMIT_MODES = {"json", "jsonl", "summary"}
 def research(
     topic: str = typer.Argument(..., help="검색 topic (공백 구분 토큰화)"),
     days: int = typer.Option(7, "--days", help="최근 N일 (UTC)"),
-    sources: str = typer.Option("all", "--sources", help="쉼표 구분 플랫폼, 또는 'all'"),
+    sources: str = typer.Option(
+        "all", "--sources", help="쉼표 구분 플랫폼, 또는 'all'"
+    ),
     limit: int = typer.Option(50, "--limit", help="플랫폼별 최대 반환 수"),
     emit: str = typer.Option("json", "--emit", help="출력 포맷: json|jsonl|summary"),
     refresh: str = typer.Option(
@@ -824,7 +880,8 @@ def research(
 
     if emit not in VALID_EMIT_MODES:
         typer.echo(
-            f"[skim] invalid --emit value: {emit!r}. " f"choose from {sorted(VALID_EMIT_MODES)}",
+            f"[skim] invalid --emit value: {emit!r}. "
+            f"choose from {sorted(VALID_EMIT_MODES)}",
             err=True,
         )
         raise typer.Exit(code=2)
@@ -965,12 +1022,118 @@ def probe(
     results = [probe_source(url, sample=not no_sample) for url in urls]
 
     if emit == "json":
-        typer.echo(json.dumps([asdict(r) for r in results], ensure_ascii=False, indent=2))
+        typer.echo(
+            json.dumps([asdict(r) for r in results], ensure_ascii=False, indent=2)
+        )
         return
 
     for result in results:
         typer.echo(format_probe_result(result))
         typer.echo("")
+
+
+@source_app.command("add")
+def source_add(
+    url: str = typer.Argument(..., help="등록할 사이트 또는 피드 URL"),
+    platform: str = typer.Option("blogs", "--platform", help="소속 플랫폼 라벨"),
+    name: Optional[str] = typer.Option(
+        None, "--name", help="표시 이름 (기본: 피드 제목)"
+    ),
+    force: bool = typer.Option(False, "--force", help="scrape 등급이어도 등록한다"),
+) -> None:
+    """URL을 진단한 뒤 tracked_sources에 등록한다."""
+    result = probe_source(url)
+    typer.echo(format_probe_result(result))
+    typer.echo("")
+
+    if result.tier == "scrape" and not force:
+        typer.echo("등록하지 않았다: 피드가 없어 전용 크롤러가 필요하다.", err=True)
+        typer.echo("그래도 기록만 남기려면 --force 를 붙인다.", err=True)
+        raise typer.Exit(1)
+
+    display_name = name or result.feed_title or urlparse(url).netloc
+    canonical_id = result.site_url or url.rstrip("/")
+
+    init_db()
+    created = upsert_tracked_source(
+        platform=platform,
+        canonical_id=canonical_id,
+        display_name=display_name,
+        source_type="feed",
+        handle_or_url=canonical_id,
+        feed_url=result.feed_url,
+        fetch_tier=result.tier,
+    )
+    verb = "등록" if created else "갱신"
+    typer.echo(f"{verb}: [{platform}] {display_name}  tier={result.tier}")
+    typer.echo(f"  feed  {result.feed_url}")
+    typer.echo(f"  id    {canonical_id}")
+
+
+@source_app.command("list")
+def source_list(
+    platform: Optional[str] = typer.Option(
+        None, "--platform", help="플랫폼으로 좁힌다"
+    ),
+    emit: str = typer.Option("text", "--emit", help="text 또는 json"),
+) -> None:
+    """tracked_sources에 등록된 소스를 보여준다."""
+    init_db()
+    platforms = [platform] if platform else sorted(REGISTRY.keys())
+    rows: List[dict] = []
+    for name in platforms:
+        for row in list_tracked_sources(name, enabled_only=False):
+            rows.append({"platform": name, **row})
+
+    if emit == "json":
+        typer.echo(json.dumps(rows, ensure_ascii=False, indent=2))
+        return
+
+    if not rows:
+        typer.echo(
+            "등록된 소스 없음. `skim source sync` 로 feed_config를 가져올 수 있다."
+        )
+        return
+    for row in rows:
+        tier = row.get("fetch_tier") or "-"
+        typer.echo(f"{row['platform']:12} {tier:12} {row['display_name']}")
+        typer.echo(f"{'':25} {row.get('feed_url') or row.get('handle_or_url') or ''}")
+
+
+@source_app.command("sync")
+def source_sync(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="등록하지 않고 대상만 보여준다"
+    ),
+) -> None:
+    """feed_config의 블로그 목록을 tracked_sources로 가져온다 (멱등)."""
+    init_db()
+    known = {
+        row.get("feed_url") for row in list_tracked_sources("blogs", enabled_only=False)
+    }
+    pending = [(n, u) for n, u in PERSONAL_BLOGS.items() if u not in known]
+
+    if not pending:
+        typer.echo(f"이미 최신이다 (blogs {len(known)}개 등록됨).")
+        return
+
+    typer.echo(f"가져올 소스 {len(pending)}개:")
+    for name, feed_url in pending:
+        typer.echo(f"  {name}  {feed_url}")
+    if dry_run:
+        return
+
+    for name, feed_url in pending:
+        upsert_tracked_source(
+            platform="blogs",
+            canonical_id=feed_url,
+            display_name=name,
+            source_type="feed",
+            handle_or_url=feed_url,
+            feed_url=feed_url,
+            notes="Imported from feed_config.py",
+        )
+    typer.echo(f"완료: {len(pending)}개 등록. tier는 `skim source probe`로 채운다.")
 
 
 if __name__ == "__main__":

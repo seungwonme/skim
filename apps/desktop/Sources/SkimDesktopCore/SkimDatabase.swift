@@ -644,6 +644,8 @@ public final class SkimDatabase {
         is_enabled    INTEGER NOT NULL DEFAULT 1,
         focus_level   INTEGER NOT NULL DEFAULT 0,
         notes         TEXT,
+        feed_url      TEXT,
+        fetch_tier    TEXT,
         created_at    TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
         UNIQUE(platform, canonical_id)
