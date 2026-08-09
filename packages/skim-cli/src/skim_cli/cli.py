@@ -28,7 +28,6 @@ from skim_core.db import (
     update_run_progress,
     upsert_tracked_source,
 )
-from skim_core.feed_config import PERSONAL_BLOGS
 from skim_core.models import Post
 from skim_core.paths import DATA_DIR
 from skim_core.research.refresh import run_research
@@ -36,6 +35,7 @@ from skim_core.research.search import search_posts
 from skim_core.research.serializer import build_response, utc_now_iso
 from skim_core.research.types import SearchStats
 from skim_core.source_probe import format_probe_result, probe_source
+from skim_core.source_registry import registry_platforms, seed_rows_for
 from skim_core.utils import save_posts_to_file
 from skim_core.youtube_history import backfill_channel_history, transcribe_video
 
@@ -1106,34 +1106,87 @@ def source_sync(
         False, "--dry-run", help="등록하지 않고 대상만 보여준다"
     ),
 ) -> None:
-    """feed_config의 블로그 목록을 tracked_sources로 가져온다 (멱등)."""
+    """feed_config의 소스 목록을 tracked_sources로 가져온다 (멱등)."""
     init_db()
-    known = {
-        row.get("feed_url") for row in list_tracked_sources("blogs", enabled_only=False)
-    }
-    pending = [(n, u) for n, u in PERSONAL_BLOGS.items() if u not in known]
+    total = 0
+    for platform, seed in registry_platforms().items():
+        pending = seed_rows_for(platform, seed)
+        if not pending:
+            continue
+        typer.echo(f"[{platform}] 가져올 소스 {len(pending)}개:")
+        for row in pending:
+            typer.echo(f"  {row['name']}  {row['feed_url']}")
+        if dry_run:
+            continue
+        for row in pending:
+            upsert_tracked_source(
+                platform=platform,
+                canonical_id=row["feed_url"],
+                display_name=row["name"],
+                source_type="feed",
+                handle_or_url=row["feed_url"],
+                feed_url=row["feed_url"],
+                notes="Imported from feed_config.py",
+            )
+        total += len(pending)
 
-    if not pending:
-        typer.echo(f"이미 최신이다 (blogs {len(known)}개 등록됨).")
+    if total == 0 and not dry_run:
+        typer.echo("이미 최신이다.")
+        return
+    if not dry_run:
+        typer.echo(f"완료: {total}개 등록. tier는 `skim source refresh`로 채운다.")
+
+
+@source_app.command("refresh")
+def source_refresh(
+    platform: Optional[str] = typer.Option(
+        None, "--platform", help="플랫폼으로 좁힌다"
+    ),
+    only_missing: bool = typer.Option(
+        True, "--only-missing/--all", help="tier가 빈 소스만 다시 진단한다"
+    ),
+) -> None:
+    """등록된 소스를 다시 진단해 fetch_tier를 갱신한다.
+
+    tier는 선언이 아니라 관측이라 시간이 지나면 낡는다. 사이트가 JS 렌더링으로
+    바뀌면 rss+enrich 였던 소스가 rss+render 가 된다.
+    """
+    init_db()
+    platforms = [platform] if platform else sorted(registry_platforms())
+    targets: List[dict] = []
+    for name in platforms:
+        for row in list_tracked_sources(name, enabled_only=False):
+            if not row.get("feed_url"):
+                continue
+            if only_missing and row.get("fetch_tier"):
+                continue
+            targets.append({"platform": name, **row})
+
+    if not targets:
+        typer.echo("갱신할 소스 없음. 전부 다시 보려면 --all 을 붙인다.")
         return
 
-    typer.echo(f"가져올 소스 {len(pending)}개:")
-    for name, feed_url in pending:
-        typer.echo(f"  {name}  {feed_url}")
-    if dry_run:
-        return
-
-    for name, feed_url in pending:
+    typer.echo(f"{len(targets)}개 소스를 다시 진단한다...")
+    changed = 0
+    for row in targets:
+        before = row.get("fetch_tier") or "-"
+        result = probe_source(row["feed_url"])
         upsert_tracked_source(
-            platform="blogs",
-            canonical_id=feed_url,
-            display_name=name,
-            source_type="feed",
-            handle_or_url=feed_url,
-            feed_url=feed_url,
-            notes="Imported from feed_config.py",
+            platform=row["platform"],
+            canonical_id=row["canonical_id"],
+            display_name=row["display_name"],
+            source_type=row.get("source_type") or "feed",
+            feed_url=result.feed_url or row["feed_url"],
+            fetch_tier=result.tier,
         )
-    typer.echo(f"완료: {len(pending)}개 등록. tier는 `skim source probe`로 채운다.")
+        mark = "" if before == result.tier else f"  (변경: {before} -> {result.tier})"
+        typer.echo(f"  {row['display_name']:34} {result.tier}{mark}")
+        for warning in result.warnings:
+            typer.echo(f"     경고: {warning}")
+        if before != result.tier:
+            changed += 1
+
+    typer.echo(f"완료: {len(targets)}개 진단, {changed}개 등급 변경.")
 
 
 if __name__ == "__main__":

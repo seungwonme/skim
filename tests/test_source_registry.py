@@ -5,7 +5,9 @@ import sqlite3
 import pytest
 
 from skim_core import db as db_mod
+from skim_core import source_registry as registry_mod
 from skim_core.crawlers.feed import blogs as blogs_mod
+from skim_core.crawlers.feed import everyto as everyto_mod
 from skim_core.db import init_db, list_tracked_sources, upsert_tracked_source
 
 
@@ -123,41 +125,85 @@ def test_disabled_source_is_excluded(db_path):
     assert len(list_tracked_sources("blogs", enabled_only=False, db_path=db_path)) == 1
 
 
-def test_blogs_falls_back_to_config_when_registry_empty(monkeypatch):
-    monkeypatch.setattr(blogs_mod, "list_tracked_sources", lambda platform: [])
-    monkeypatch.setattr(
-        blogs_mod, "PERSONAL_BLOGS", {"Cfg": "https://cfg.example.com/rss"}
+def _fake_rows(rows):
+    def _inner(platform, db_path=None, enabled_only=True):
+        del platform, db_path, enabled_only
+        return rows
+
+    return _inner
+
+
+def test_falls_back_to_config_when_registry_empty(monkeypatch):
+    monkeypatch.setattr(registry_mod, "list_tracked_sources", _fake_rows([]))
+    feeds = registry_mod.resolve_feed_sources(
+        "blogs", {"Cfg": "https://cfg.example.com/rss"}
     )
-    assert blogs_mod.tracked_blog_feeds() == [("Cfg", "https://cfg.example.com/rss")]
+    assert [(f["name"], f["feed_url"]) for f in feeds] == [
+        ("Cfg", "https://cfg.example.com/rss")
+    ]
 
 
-def test_blogs_prefers_registry_over_config(monkeypatch):
+def test_registry_wins_over_config(monkeypatch):
     monkeypatch.setattr(
-        blogs_mod,
+        registry_mod,
         "list_tracked_sources",
-        lambda platform: [
-            {"display_name": "Reg", "feed_url": "https://reg.example.com/rss"}
-        ],
+        _fake_rows(
+            [{"display_name": "Reg", "feed_url": "https://reg.example.com/rss"}]
+        ),
     )
-    monkeypatch.setattr(
-        blogs_mod, "PERSONAL_BLOGS", {"Cfg": "https://cfg.example.com/rss"}
+    feeds = registry_mod.resolve_feed_sources(
+        "blogs", {"Cfg": "https://cfg.example.com/rss"}
     )
-    assert blogs_mod.tracked_blog_feeds() == [("Reg", "https://reg.example.com/rss")]
+    assert [(f["name"], f["feed_url"]) for f in feeds] == [
+        ("Reg", "https://reg.example.com/rss")
+    ]
 
 
-def test_blogs_reports_rows_without_feed_url(monkeypatch, capsys):
+def test_rows_without_feed_url_are_reported(monkeypatch, capsys):
     """데스크톱에서 추가한 feed_url 없는 행이 조용히 사라지지 않는다."""
     monkeypatch.setattr(
-        blogs_mod,
+        registry_mod,
         "list_tracked_sources",
-        lambda platform: [
-            {"display_name": "Good", "feed_url": "https://good.example.com/rss"},
-            {"display_name": "NoFeed", "feed_url": None},
-        ],
+        _fake_rows(
+            [
+                {"display_name": "Good", "feed_url": "https://good.example.com/rss"},
+                {"display_name": "NoFeed", "feed_url": None},
+            ]
+        ),
     )
-    feeds = blogs_mod.tracked_blog_feeds()
-    assert feeds == [("Good", "https://good.example.com/rss")]
+    feeds = registry_mod.resolve_feed_sources("blogs", {})
+    assert [f["name"] for f in feeds] == ["Good"]
     assert "NoFeed" in capsys.readouterr().out
+
+
+def test_non_feed_source_types_are_excluded(monkeypatch):
+    """전용 파서가 필요한 소스는 피드 순회 대상에서 뺀다."""
+    monkeypatch.setattr(
+        registry_mod,
+        "list_tracked_sources",
+        _fake_rows(
+            [
+                {
+                    "display_name": "Feed",
+                    "feed_url": "https://a.example.com/rss",
+                    "source_type": "feed",
+                },
+                {
+                    "display_name": "Scraped",
+                    "feed_url": "https://b.example.com",
+                    "source_type": "anthropic",
+                },
+            ]
+        ),
+    )
+    feeds = registry_mod.resolve_feed_sources("ailabs", {})
+    assert [f["name"] for f in feeds] == ["Feed"]
+
+
+def test_crawlers_go_through_the_shared_resolver():
+    """blogs/everyto가 각자 구현을 갖지 않고 공용 경로를 쓴다."""
+    assert blogs_mod.resolve_feed_sources is registry_mod.resolve_feed_sources
+    assert everyto_mod.resolve_feed_sources is registry_mod.resolve_feed_sources
 
 
 def test_list_returns_empty_on_db_error(monkeypatch):
