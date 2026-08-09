@@ -14,10 +14,13 @@ import requests
 # 저장 측은 UTC ISO 8601 로 강제 (fetch_feed `published` 필드).
 KST = timezone(timedelta(hours=9))
 FEED_TIMEOUT_SECONDS = 15
+# news.hada.io는 브라우저 토큰뿐 아니라 Chrome 메이저 버전도 본다. 2026-08-09부터
+# Chrome/124가 403으로 막혀 그날 지표 수집이 절반 실패했다(128 이상은 통과).
+# 차단선이 다시 올라가면 이 버전을 올린다.
 FEED_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36"
     )
 }
 
@@ -36,7 +39,9 @@ def is_within_range(entry_dt: Optional[datetime], since: datetime) -> bool:
     return entry_dt >= since
 
 
-def fetch_feed(url: str, source_name: str, since: datetime, quiet: bool = False) -> List[dict]:
+def fetch_feed(
+    url: str, source_name: str, since: datetime, quiet: bool = False
+) -> List[dict]:
     """RSS/Atom 피드를 가져와서 since 이후 항목만 반환"""
     try:
         response = requests.get(url, headers=FEED_HEADERS, timeout=FEED_TIMEOUT_SECONDS)
@@ -90,9 +95,9 @@ def fetch_feed(url: str, source_name: str, since: datetime, quiet: bool = False)
                 "external_id": entry.get("id", ""),
                 "published": entry_dt.isoformat() if entry_dt else "",
                 "summary": (
-                    re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", entry.get("summary") or "")).strip()[
-                        :300
-                    ]
+                    re.sub(
+                        r"\s+", " ", re.sub(r"<[^>]+>", "", entry.get("summary") or "")
+                    ).strip()[:300]
                 ),
             }
         )
