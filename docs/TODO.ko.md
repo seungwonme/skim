@@ -43,8 +43,14 @@ Skim에 넣을 source 후보와 promotion checklist입니다. 구현 계획은 `
 
 - Google AI blogs and research updates
 
+## 제외된 소스
+
+- `every.to/Guides` - `/guides/feed`가 HTTP 500이고 대체 피드도 sitemap도 없다 (2026-08-09 확인). `/guides` 페이지 자체는 살아 있어서, 전용 인덱스 파서를 만들 값어치가 생기면 `scrape` 소스로 복귀할 수 있다. 마지막 수집 2026-06-02.
+
 ## Promotion Checklist
 
+- 먼저 `uv run skim source probe <url>`를 돌린다. 피드 URL, 백필 깊이, 관측된 추출 등급(`rss` / `rss+enrich` / `rss+render` / `scrape`)을 보고하므로 아래 판단을 추측이 아닌 실측으로 한다.
+- probe가 보고한 가장 높은 등급을 우선한다. 손으로 인덱스 파서를 만들 값어치가 있을 때만 `scrape`로 내려간다.
 - 가능하면 `packages/skim-core/src/skim_core/feed_config.py`에 static feed/source config만 추가한다.
 - config로 부족할 때만 `packages/skim-core/src/skim_core/crawlers/`에 crawler를 추가하거나 수정한다.
 - 새 platform은 `packages/skim-core/src/skim_core/crawlers/__init__.py`에 등록한다.

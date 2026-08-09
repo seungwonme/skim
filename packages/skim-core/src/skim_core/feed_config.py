@@ -55,15 +55,20 @@ EVERY_TO_FEEDS = {
     "Context Window": "https://every.to/context-window/feed",
     "Napkin Math": "https://every.to/napkin-math/feed",
     "AI & I Podcast": "https://every.to/podcast/feed",
-    "Guides": "https://every.to/guides/feed",
+    # Guides 제외: /guides 페이지는 살아있지만 /guides/feed가 HTTP 500이고
+    # 대체 피드도 sitemap도 없다 (2026-08-09 확인). 마지막 수집 2026-06-02.
 }
 
-# 개인 블로그 구독 (이름 → RSS URL)
+# 블로그 구독 (이름 → RSS URL). 개인/기업 기술 블로그 공용.
 PERSONAL_BLOGS = {
     "Addy Osmani": "https://addyosmani.com/rss.xml",
     "Phil Schmid": "https://www.philschmid.de/rss",
     "Tidy First (Kent Beck)": "https://tidyfirst.substack.com/feed",
     "PyTorchKR News": "https://discuss.pytorch.kr/c/news/14.rss",
+    # /feed/ 도 살아있지만 최근 글 2건을 빠뜨린다. /blog/feed 가 블로그 정본.
+    "Kakao Tech": "https://tech.kakao.com/blog/feed",
+    # inblog 호스팅. /feed, /rss.xml은 404고 /blog/rss만 유효하다.
+    "Kakao Ventures": "https://www.kakao.vc/blog/rss",
 }
 
 # AI 빅테크 블로그/뉴스 (RSS + HTML 스크래핑 혼합)
@@ -84,10 +89,11 @@ AI_LABS_SOURCES = [
         "type": "anthropic",
         "url": "https://www.anthropic.com/engineering",
     },
+    # Webflow가 rss.xml을 내준다. 인덱스 HTML 파싱보다 정확하고 playwright가 필요 없다.
     {
         "name": "LangChain Blog",
-        "type": "langchain",
-        "url": "https://www.langchain.com/blog",
+        "type": "rss",
+        "url": "https://www.langchain.com/blog/rss.xml",
     },
 ]
 

@@ -10,6 +10,7 @@ from ...enrichment import enrich_with_content
 from ...feed_config import EVERY_TO_FEEDS
 from ...feed_utils import fetch_feed
 from ...models import Post
+from ...source_registry import resolve_feed_sources
 
 
 def _item_to_post(item: dict) -> Post:
@@ -17,7 +18,8 @@ def _item_to_post(item: dict) -> Post:
     extras = {
         key: value
         for key, value in item.items()
-        if key in ("enrichment_method", "enrichment_error", "image", "description") and value
+        if key in ("enrichment_method", "enrichment_error", "image", "description")
+        and value
     }
     return Post(
         platform="everyto",
@@ -55,13 +57,16 @@ class EveryToCrawler:
         no_content: bool = options.get("no_content", False)
         debug: bool = options.get("debug", False)
 
+        feeds = resolve_feed_sources("everyto", EVERY_TO_FEEDS)
+
         if debug:
-            print(f"[Every] Every.to {len(EVERY_TO_FEEDS)}개 칼럼 피드 수집 중...")
+            print(f"[Every] Every.to {len(feeds)}개 칼럼 피드 수집 중...")
 
         all_items: List[dict] = []
 
-        for name, feed_url in EVERY_TO_FEEDS.items():
-            results = fetch_feed(feed_url, f"every.to/{name}", since)
+        for source in feeds:
+            name = source["name"]
+            results = fetch_feed(source["feed_url"], f"every.to/{name}", since)
             if results and debug:
                 print(f"  -> {name}: {len(results)}개")
             all_items.extend(results)

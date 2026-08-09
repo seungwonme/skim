@@ -10,6 +10,7 @@ from ...enrichment import enrich_with_content
 from ...feed_config import PERSONAL_BLOGS
 from ...feed_utils import fetch_feed
 from ...models import Post
+from ...source_registry import resolve_feed_sources
 
 
 def _item_to_post(item: dict) -> Post:
@@ -17,7 +18,14 @@ def _item_to_post(item: dict) -> Post:
     extras = {
         key: value
         for key, value in item.items()
-        if key in ("enrichment_method", "enrichment_error", "description", "image", "original_url")
+        if key
+        in (
+            "enrichment_method",
+            "enrichment_error",
+            "description",
+            "image",
+            "original_url",
+        )
         and value is not None
     }
     return Post(
@@ -56,13 +64,16 @@ class BlogsCrawler:
         no_content: bool = options.get("no_content", False)
         debug: bool = options.get("debug", False)
 
+        feeds = resolve_feed_sources("blogs", PERSONAL_BLOGS)
+
         if debug:
-            print(f"[Blogs] 개인 블로그 {len(PERSONAL_BLOGS)}개 피드 수집 중...")
+            print(f"[Blogs] 블로그 {len(feeds)}개 피드 수집 중...")
 
         all_items: List[dict] = []
 
-        for name, feed_url in PERSONAL_BLOGS.items():
-            results = fetch_feed(feed_url, f"blogs/{name}", since)
+        for source in feeds:
+            name = source["name"]
+            results = fetch_feed(source["feed_url"], f"blogs/{name}", since)
             if results and debug:
                 print(f"  -> {name}: {len(results)}개")
             all_items.extend(results)

@@ -43,8 +43,14 @@ Candidate sources and promotion checklist for Skim. Keep implementation plans un
 
 - Google AI blogs and research updates
 
+## Retired Sources
+
+- `every.to/Guides` — `/guides/feed` returns HTTP 500 with no alternate feed or sitemap (checked 2026-08-09). The `/guides` page itself is alive, so it can return as a `scrape` source if it becomes worth a custom index parser. Last collected 2026-06-02.
+
 ## Promotion Checklist
 
+- Run `uv run skim source probe <url>` first. It reports the feed URL, backfill depth, and the observed extraction tier (`rss` / `rss+enrich` / `rss+render` / `scrape`), so the decision below is made on measurements rather than guesses.
+- Prefer the highest tier the probe reports. Drop to `scrape` only when the source is worth a hand-written index parser.
 - Add static feed/source config in `packages/skim-core/src/skim_core/feed_config.py` when possible.
 - Add or update a crawler in `packages/skim-core/src/skim_core/crawlers/` only when config is not enough.
 - Register new platforms in `packages/skim-core/src/skim_core/crawlers/__init__.py`.
