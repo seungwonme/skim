@@ -386,17 +386,23 @@ class ThreadsReplyTests(unittest.TestCase):
         self.assertIn("threads.com", get.call_args[0][0])
         self.assertNotIn("threads.net", get.call_args[0][0])
 
-    def test_attach_skips_low_reply_posts_and_caps_fetches(self):
+    def test_attach_skips_zero_reply_posts_and_caps_fetches(self):
+        """답글 0건만 건너뛴다. comments는 삭제분까지 세는 값이라 더 높이 걸면 멀쩡한 글이 빠진다."""
         crawler = self._crawler()
-        quiet = [MagicMock(comments=1, url="u", content="b", content_markdown=None)]
-        busy = [
-            MagicMock(comments=9, url=f"u{i}", content="b", content_markdown=None)
+        silent = [
+            MagicMock(comments=0, url="silent", content="b", content_markdown=None)
+        ]
+        rest = [
+            MagicMock(comments=1, url=f"u{i}", content="b", content_markdown=None)
             for i in range(30)
         ]
         with patch.object(crawler, "fetch_reply_section", return_value=None) as fetch:
-            crawler.attach_replies(quiet + busy)
+            crawler.attach_replies(silent + rest)
 
-        self.assertEqual(fetch.call_count, 20)
+        fetched = [call.args[0] for call in fetch.call_args_list]
+        self.assertEqual(len(fetched), 20)
+        self.assertNotIn("silent", fetched)
+        self.assertEqual(fetched[0], "u0")
 
 
 class ProductHuntCommentTests(unittest.TestCase):

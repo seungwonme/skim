@@ -112,7 +112,7 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
 | linkedin | `## LinkedIn Comments` | 게시글당 1건 (Voyager `feed/comments`) |
 | youtube | `## YouTube Comments` | 영상당 yt-dlp 1회 |
 | producthunt | `## Product Hunt Comments` | 제품당 1건 (PH 제품 페이지) |
-| threads | `## Threads Replies` | 답글 3개 이상인 게시물만, 회차당 20건까지 |
+| threads | `## Threads Replies` | 답글 1개 이상인 게시물만, 회차당 20건까지 |
 
 - threads 답글은 타임라인 GraphQL이 주지 않는다. 대신 게시물 문서의 SSR 페이로드가
   답글까지 담고 있고 로그인도 필요 없어서, persisted query 좌표(`doc_id`)를 새로 들지 않는다.
@@ -123,6 +123,8 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
 - `comments`(= `direct_reply_count`)가 0보다 커도 답글 섹션이 안 붙을 수 있다. 삭제되거나
   비공개 계정이 단 답글까지 세는 값이라, 실제 노출되는 답글이 없는 게시물이 있다
   (브라우저로 열어도 안 보인다). 이 불일치만으로 추출 실패로 판단하지 않는다.
+- 그래서 `comments`를 조회 임계로 높게 잡으면 안 된다. 반대 방향 오차도 있어서, `comments=1`인
+  글에서 답글 2건이 나오기도 한다. 비용은 회차 상한이 막으므로 임계는 "0건만 거른다"로 둔다.
 - 상한은 플랫폼별 `MAX_COMMENTS`(기본 15)와 댓글당 1200자다. 본문 신호를 댓글이 덮지 않게 한다.
 - 댓글 수집 실패는 게시글 저장을 막지 않는다. 본문만 저장하고 경고만 남긴다.
 
