@@ -49,17 +49,18 @@ def render_comment_section(
     comments: Iterable[Comment],
     *,
     note: Optional[str] = None,
-    max_comments: int = DEFAULT_MAX_COMMENTS,
+    max_comments: Optional[int] = DEFAULT_MAX_COMMENTS,
     max_chars: int = DEFAULT_MAX_CHARS,
     score_unit: str = "point",
 ) -> Optional[str]:
     """댓글 목록을 `## {label}` 섹션으로 만든다. 유효한 댓글이 없으면 None.
 
     `score_unit`은 플랫폼이 점수를 부르는 이름이다(HN/Reddit은 point, X/YouTube는 like).
+    `max_comments=None`이면 받은 만큼 전부 싣는다.
     """
     lines: List[str] = []
     for comment in comments:
-        if len(lines) >= max_comments:
+        if max_comments is not None and len(lines) >= max_comments:
             break
         text = _clean(comment.text, max_chars)
         if not text:

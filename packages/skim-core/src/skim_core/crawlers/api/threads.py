@@ -38,12 +38,12 @@ WEB_USER_AGENT = (
     "(KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
 )
 
-MAX_REPLIES = 15
-# 답글은 게시물 문서를 따로 받아야 해서 요청이 는다(실측 1~4초/건). 비용은 회차 상한이 막고,
-# 이 값은 그 예산을 어디에 쓸지만 정한다. `comments`가 삭제·비공개 답글까지 세는 부정확한
-# 값이라 높게 잡으면 멀쩡한 글을 버린다(3으로 두면 답글 1~2개인 12.6%가 통째로 빠졌다).
+# 답글은 문서가 실어 보내는 만큼 전부 담는다. 15개로 자르던 때는 문서에 24개가 와도
+# 9개를 버렸다. 상한이 없으므로 인기 게시물은 본문이 길어진다.
+MAX_REPLIES = None
+# 답글이 0건이라고 보고된 게시물만 건너뛴다. `comments`가 삭제·비공개 답글까지 세는
+# 부정확한 값이라 높게 잡으면 멀쩡한 글이 빠진다(3이던 때 답글 1~2개인 12.6%가 통째로 빠졌다).
 MIN_REPLIES_FOR_FETCH = 1
-MAX_REPLY_FETCHES_PER_RUN = 20
 # 게시물 페이지는 답글이 담긴 SSR 페이로드를 로그인 없이도 준다. 단 threads.net으로
 # 요청하면 리다이렉트 뒤 페이로드가 빠진 셸이 와서, threads.com으로 직접 받아야 한다.
 POST_PAGE_HEADERS = {
@@ -184,14 +184,14 @@ class ThreadsAPICrawler:
             self.session.close()
 
     def attach_replies(self, posts: List[Post]) -> None:
-        """타인 답글을 정본 본문 뒤에 잇는다. 게시물당 요청 1건이 늘어난다."""
-        fetched = 0
+        """타인 답글을 정본 본문 뒤에 잇는다.
+
+        답글이 있다고 보고된 게시물은 전부 조회한다(게시물당 요청 1건, 실측 1~4초).
+        `--count`를 크게 주면 그만큼 크롤이 길어진다.
+        """
         for post in posts:
-            if fetched >= MAX_REPLY_FETCHES_PER_RUN:
-                break
             if (post.comments or 0) < MIN_REPLIES_FOR_FETCH:
                 continue
-            fetched += 1
             section = self.fetch_reply_section(post.url)
             if section:
                 post.content_markdown = append_comment_section(

@@ -386,8 +386,8 @@ class ThreadsReplyTests(unittest.TestCase):
         self.assertIn("threads.com", get.call_args[0][0])
         self.assertNotIn("threads.net", get.call_args[0][0])
 
-    def test_attach_skips_zero_reply_posts_and_caps_fetches(self):
-        """답글 0건만 건너뛴다. comments는 삭제분까지 세는 값이라 더 높이 걸면 멀쩡한 글이 빠진다."""
+    def test_attach_fetches_every_post_reporting_replies(self):
+        """답글 0건만 건너뛰고 나머지는 회차 상한 없이 전부 조회한다."""
         crawler = self._crawler()
         silent = [
             MagicMock(comments=0, url="silent", content="b", content_markdown=None)
@@ -400,9 +400,21 @@ class ThreadsReplyTests(unittest.TestCase):
             crawler.attach_replies(silent + rest)
 
         fetched = [call.args[0] for call in fetch.call_args_list]
-        self.assertEqual(len(fetched), 20)
+        self.assertEqual(len(fetched), 30)
         self.assertNotIn("silent", fetched)
         self.assertEqual(fetched[0], "u0")
+
+    def test_replies_are_not_truncated(self):
+        """문서가 실어 보낸 답글은 개수 제한 없이 전부 담는다."""
+        edges = [{"node": {"thread_items": [_threads_item("root", "원글")]}}]
+        edges += [
+            {"node": {"thread_items": [_threads_item(f"user{i}", f"답글 {i}")]}}
+            for i in range(40)
+        ]
+        section = self._fetch(_threads_doc(edges))
+
+        self.assertEqual(section.count("\n- **"), 40)
+        self.assertIn("답글 39", section)
 
 
 class ProductHuntCommentTests(unittest.TestCase):
