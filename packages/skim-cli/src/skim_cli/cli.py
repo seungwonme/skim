@@ -34,6 +34,7 @@ from skim_core.research.refresh import run_research
 from skim_core.research.search import search_posts
 from skim_core.research.serializer import build_response, utc_now_iso
 from skim_core.research.types import SearchStats
+from skim_core.source_health import scan_source_health
 from skim_core.source_probe import format_probe_result, probe_source
 from skim_core.source_registry import registry_platforms, seed_rows_for
 from skim_core.utils import save_posts_to_file
@@ -439,6 +440,7 @@ def doctor(
         "platforms": [],
         "sessions": [],
         "runs": [],
+        "source_health": [],
         "warnings": [],
     }
 
@@ -493,6 +495,17 @@ def doctor(
         conn.close()
     except Exception as exc:  # pragma: no cover - defensive report path
         report["warnings"].append(f"database check failed: {exc}")
+
+    try:
+        health = scan_source_health(db_path)
+    except Exception as exc:  # pragma: no cover - defensive report path
+        health = []
+        report["warnings"].append(f"source health check failed: {exc}")
+    if platform:
+        health = [issue for issue in health if issue["platform"] == platform]
+    report["source_health"] = health
+    for issue in health:
+        report["warnings"].append(f"{issue['source']}: {issue['detail']}")
 
     if platform and not report["platforms"]:
         report["warnings"].append(f"no posts found for {platform}")
@@ -1181,6 +1194,12 @@ def source_refresh(
         )
         mark = "" if before == result.tier else f"  (변경: {before} -> {result.tier})"
         typer.echo(f"  {row['display_name']:34} {result.tier}{mark}")
+        # 살아있던 피드가 scrape로 떨어지면 피드가 죽었다는 뜻이다.
+        # every.to/Guides가 HTTP 500으로 2개월간 조용히 0건이던 게 이 경우다.
+        if result.tier == "scrape" and before not in ("-", "scrape"):
+            typer.echo(
+                "     [!] 피드가 사라졌다. 소스를 확인하고 필요하면 등록을 내려야 한다."
+            )
         for warning in result.warnings:
             typer.echo(f"     경고: {warning}")
         if before != result.tier:
