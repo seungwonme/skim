@@ -29,3 +29,11 @@ func classifiesUnsupportedURLsAsExternalFallback() throws {
 
     #expect(preview == .external(url))
 }
+
+@Test
+func externalReaderLinksAllowOnlyWebSchemes() throws {
+    #expect(ContentPreview.isSafeExternalLink(try #require(URL(string: "https://example.com"))))
+    #expect(ContentPreview.isSafeExternalLink(try #require(URL(string: "HTTP://example.com"))))
+    #expect(!ContentPreview.isSafeExternalLink(try #require(URL(string: "file:///tmp/private"))))
+    #expect(!ContentPreview.isSafeExternalLink(try #require(URL(string: "custom-app://open"))))
+}

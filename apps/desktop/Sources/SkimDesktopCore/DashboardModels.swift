@@ -121,6 +121,11 @@ public struct DashboardSnapshot: Equatable, Sendable {
         credentials: [],
         databasePath: ""
     )
+
+    /// 글이 아직 없는 관심 소스도 사이드바의 플랫폼 계층에서 사라지지 않게 한다.
+    public var knownPlatforms: [String] {
+        Set(platformCounts.map(\.name) + sources.map(\.platform)).sorted()
+    }
 }
 
 public struct TrackedSource: Identifiable, Equatable, Sendable {
@@ -160,6 +165,11 @@ public struct TrackedSource: Identifiable, Equatable, Sendable {
         self.notes = notes
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+
+    /// `posts.source`가 사용하는 플랫폼 공통 식별 형식.
+    public var postSourceKey: String {
+        "\(platform)/\(displayName)"
     }
 }
 

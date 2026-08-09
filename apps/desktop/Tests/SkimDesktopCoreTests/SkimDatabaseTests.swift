@@ -49,6 +49,34 @@ func databaseReadsFixturePostsAndSources() throws {
 }
 
 @Test
+func dashboardKeepsPlatformsWithTrackedSourcesButNoPosts() {
+    let source = TrackedSource(
+        id: 1,
+        platform: "linkedin",
+        sourceType: "profile",
+        displayName: "Chip Huyen",
+        canonicalID: "chip-huyen",
+        handleOrURL: nil,
+        isEnabled: true,
+        focusLevel: 0,
+        notes: nil,
+        createdAt: "2026-08-10",
+        updatedAt: "2026-08-10"
+    )
+    let snapshot = DashboardSnapshot(
+        summary: DashboardSummary(postsCount: 1, sourcesCount: 1, credentialsCount: 0),
+        posts: [],
+        sources: [source],
+        credentials: [],
+        databasePath: "fixture.db",
+        platformCounts: [PlatformCount(name: "youtube", count: 1)]
+    )
+
+    #expect(snapshot.knownPlatforms == ["linkedin", "youtube"])
+    #expect(source.postSourceKey == "linkedin/Chip Huyen")
+}
+
+@Test
 func recentPostsUsePostTimestampBeforeCrawlBatchTime() throws {
     try withFixtureDatabase { database in
         try database.execute(

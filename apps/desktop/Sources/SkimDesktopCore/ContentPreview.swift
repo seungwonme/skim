@@ -11,6 +11,10 @@ public enum ContentPreview: Equatable, Sendable {
         return .external(url)
     }
 
+    public static func isSafeExternalLink(_ url: URL) -> Bool {
+        ["http", "https"].contains(url.scheme?.lowercased() ?? "")
+    }
+
     private static func youtubePreview(_ url: URL) -> ContentPreview? {
         guard let host = url.host()?.lowercased() else {
             return nil

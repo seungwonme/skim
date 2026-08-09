@@ -6,7 +6,10 @@ import WebKit
 
 struct ContentView: View {
     @State private var snapshot = DashboardSnapshot.empty
+    @State private var workspacePage = WorkspacePage.feed
     @State private var selectedPostID: DashboardPost.ID?
+    @State private var selectedSourceID: TrackedSource.ID?
+    @State private var selectedManagedSourceID: TrackedSource.ID?
     @State private var loadError: String?
     @State private var youtubeInput = ""
     @State private var sourceMessage: Notice?
@@ -15,13 +18,11 @@ struct ContentView: View {
     @State private var readerContentMode = ReaderContentMode.markdown
     @State private var readerMarkdownHeight: CGFloat = 520
     @State private var sortOrder = SortOrder.newest
-    @State private var showManager = false
-    @State private var managerTab = ManagerTab.sources
     @State private var columnVisibility = NavigationSplitViewVisibility.all
-    @State private var sourceFilter: String?
-    @State private var channelPosts: [DashboardPost] = []
+    @State private var sourcePosts: [DashboardPost] = []
     @State private var loadedYears: [String: Int] = [:]
-    @State private var channelBusyMessage: String?
+    @State private var sourceBusyMessage: String?
+    @State private var sourceBusyKey: String?
     @State private var exhaustedChannels: Set<String> = []
     @State private var transcribingPostID: DashboardPost.ID?
     @State private var transcribeError: String?
@@ -30,19 +31,21 @@ struct ContentView: View {
     @State private var pendingDeleteCredential: PlatformCredential?
     @State private var pendingDeleteSource: TrackedSource?
     @State private var isSavingCredential = false
+    @State private var hasLoadedDashboard = false
+    @State private var isLoadingSource = false
     @State private var isLoadingMore = false
     @State private var hasMorePosts = true
     private let pageSize = 200
     @FocusState private var focusedCredentialField: CredentialField?
 
     private var filteredPosts: [DashboardPost] {
-        // 일반 피드는 DB가 이미 플랫폼/검색어로 걸러 내려준다. 채널 모드만
-        // 로드된 채널 목록 안에서 클라이언트 필터링한다.
-        guard sourceFilter != nil else { return snapshot.posts }
+        // 일반 피드는 DB가 이미 플랫폼/검색어로 걸러 내려준다. 관심 소스 모드만
+        // 해당 소스 목록 안에서 클라이언트 필터링한다.
+        guard selectedSourceID != nil else { return snapshot.posts }
 
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !query.isEmpty else { return channelPosts }
-        return channelPosts.filter { post in
+        guard !query.isEmpty else { return sourcePosts }
+        return sourcePosts.filter { post in
             [
                 post.displayTitle,
                 post.source ?? "",
@@ -58,8 +61,8 @@ struct ContentView: View {
 
     private var sortedPosts: [DashboardPost] {
         // 일반 피드는 DB가 정렬 기준대로 전체에서 정렬해 로드하므로 순서를 그대로 둔다.
-        // 채널 모드(sourceFilter)는 로드된 전체에서 클라이언트 정렬한다.
-        guard sourceFilter != nil else { return filteredPosts }
+        // 관심 소스 모드는 로드된 전체에서 클라이언트 정렬한다.
+        guard selectedSourceID != nil else { return filteredPosts }
         switch sortOrder {
         case .newest:
             return filteredPosts.sorted { sortDate($0) > sortDate($1) }
@@ -84,6 +87,22 @@ struct ContentView: View {
         sortedPosts.first { $0.id == selectedPostID } ?? sortedPosts.first
     }
 
+    private var selectedSource: TrackedSource? {
+        snapshot.sources.first { $0.id == selectedSourceID }
+    }
+
+    private var selectedManagedSource: TrackedSource? {
+        snapshot.sources.first { $0.id == selectedManagedSourceID }
+    }
+
+    private var sourceFilter: String? {
+        selectedSource?.postSourceKey
+    }
+
+    private var activeSourceBusyMessage: String? {
+        sourceBusyKey == sourceFilter ? sourceBusyMessage : nil
+    }
+
     private func sortDate(_ post: DashboardPost) -> String {
         // timestamp는 ISO("...T..."), crawledAt은 "YYYY-MM-DD HH:MM:SS" — 구분자만 통일하면 사전순 비교 가능
         (post.timestamp?.isEmpty == false ? post.timestamp! : post.crawledAt)
@@ -95,19 +114,15 @@ struct ContentView: View {
             sidebarList
                 .navigationSplitViewColumnWidth(min: 200, ideal: 232, max: 300)
         } content: {
-            feedList
+            contentColumn
                 .navigationSplitViewColumnWidth(min: 340, ideal: 420)
         } detail: {
-            readerPane
+            detailColumn
                 .navigationSplitViewColumnWidth(min: 500, ideal: 700)
         }
         .frame(minWidth: 1180, minHeight: 720)
         .task {
             loadDashboard()
-        }
-        .sheet(isPresented: $showManager) {
-            managerSheet
-                .frame(width: 1040, height: 660)
         }
         .alert("크레덴셜을 삭제할까요?", isPresented: deleteAlertBinding) {
             Button("삭제", role: .destructive) {
@@ -131,11 +146,38 @@ struct ContentView: View {
         }
     }
 
+    @ViewBuilder
+    private var contentColumn: some View {
+        switch workspacePage {
+        case .feed:
+            feedList
+        case .sources:
+            sourcesPane
+        case .connections:
+            credentialsPane
+        }
+    }
+
+    @ViewBuilder
+    private var detailColumn: some View {
+        switch workspacePage {
+        case .feed:
+            readerPane
+        case .sources:
+            sourceInspectorPane
+        case .connections:
+            credentialEditorPane
+        }
+    }
+
     private var sidebarSelection: Binding<SidebarItem?> {
         Binding(
             get: {
-                if let sourceFilter {
-                    return .channel(String(sourceFilter.dropFirst("youtube/".count)))
+                if workspacePage != .feed {
+                    return nil
+                }
+                if let selectedSourceID {
+                    return .source(selectedSourceID)
                 }
                 if let platformFilter {
                     return .platform(platformFilter)
@@ -143,44 +185,63 @@ struct ContentView: View {
                 return .all
             },
             set: { newValue in
-                switch newValue {
-                case .all, nil:
-                    platformFilter = nil
-                    sourceFilter = nil
-                case let .platform(name):
-                    platformFilter = name
-                    sourceFilter = nil
-                case let .channel(name):
-                    selectChannel(name)
+                // macOS List가 선택을 커밋하는 중 다른 열의 상태까지 바꾸면
+                // NSTableView delegate가 재진입한다. 다음 메인 루프로 미룬다.
+                DispatchQueue.main.async {
+                    applySidebarSelection(newValue)
                 }
             }
         )
     }
 
+    private func applySidebarSelection(_ item: SidebarItem?) {
+        switch item {
+        case .all, nil:
+            guard workspacePage == .feed || item != nil else { return }
+            workspacePage = .feed
+            platformFilter = nil
+            selectedSourceID = nil
+        case let .platform(name):
+            workspacePage = .feed
+            platformFilter = name
+            selectedSourceID = nil
+        case let .source(id):
+            guard let source = snapshot.sources.first(where: { $0.id == id }) else { return }
+            selectSource(source)
+        }
+    }
+
+    private var sidebarNodes: [SidebarNode] {
+        let counts = Dictionary(uniqueKeysWithValues: snapshot.platformCounts.map { ($0.name, $0.count) })
+        return snapshot.knownPlatforms.map { platform in
+            let children = snapshot.sources
+                .filter { $0.platform == platform }
+                .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+                .map { SidebarNode(item: .source($0.id), title: $0.displayName, platform: platform) }
+            return SidebarNode(
+                item: .platform(platform),
+                title: platformDisplayName(platform),
+                platform: platform,
+                count: counts[platform] ?? 0,
+                children: children.isEmpty ? nil : children
+            )
+        }
+    }
+
     private var sidebarList: some View {
         List(selection: sidebarSelection) {
-            Section("피드") {
-                Label("전체", systemImage: "tray.full")
-                    .badge(snapshot.summary.postsCount)
-                    .tag(SidebarItem.all)
-                ForEach(snapshot.platformCounts, id: \.name) { entry in
-                    Label {
-                        Text(entry.name)
-                    } icon: {
-                        Image(systemName: "circle.fill")
-                            .font(.system(size: 8))
-                            .foregroundStyle(platformColor(entry.name))
-                    }
-                    .badge(entry.count)
-                    .tag(SidebarItem.platform(entry.name))
-                }
+            Section("작업 공간") {
+                sidebarWorkspaceRow(.feed, title: "피드", systemImage: "rectangle.stack", count: snapshot.summary.postsCount, shortcut: "1")
+                sidebarWorkspaceRow(.sources, title: "소스 관리", systemImage: "dot.radiowaves.left.and.right", count: snapshot.summary.sourcesCount, shortcut: "2")
+                sidebarWorkspaceRow(.connections, title: "연결", systemImage: "key", count: snapshot.summary.credentialsCount, shortcut: "3")
             }
-            if platformFilter == "youtube" {
-                Section("YouTube 채널") {
-                    ForEach(snapshot.sources.filter { $0.platform == "youtube" }.sorted { $0.displayName < $1.displayName }) { source in
-                        Label(source.displayName, systemImage: "play.rectangle")
-                            .tag(SidebarItem.channel(source.displayName))
-                    }
+
+            Section("플랫폼 / 관심 소스") {
+                sidebarLabel(title: "전체 플랫폼", systemImage: "tray.full", count: snapshot.summary.postsCount)
+                    .tag(SidebarItem.all)
+                OutlineGroup(sidebarNodes, children: \.children) { node in
+                    sidebarNodeLabel(node)
+                        .tag(node.item)
                 }
             }
         }
@@ -188,25 +249,79 @@ struct ContentView: View {
         .navigationTitle("Skim")
     }
 
+    private func sidebarWorkspaceRow(
+        _ page: WorkspacePage,
+        title: String,
+        systemImage: String,
+        count: Int,
+        shortcut: KeyEquivalent
+    ) -> some View {
+        Button {
+            workspacePage = page
+        } label: {
+            sidebarLabel(title: title, systemImage: systemImage, count: count)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .keyboardShortcut(shortcut, modifiers: .command)
+        .listRowBackground(workspacePage == page ? Design.selectedBackground : Color.clear)
+        .accessibilityAddTraits(workspacePage == page ? .isSelected : [])
+    }
+
+    private func sidebarLabel(title: String, systemImage: String, count: Int? = nil) -> some View {
+        HStack(spacing: 8) {
+            Label(title, systemImage: systemImage)
+            Spacer()
+            if let count {
+                Text(count.formatted())
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    private func sidebarNodeLabel(_ node: SidebarNode) -> some View {
+        let isPlatform = if case .platform = node.item { true } else { false }
+        return HStack(spacing: 8) {
+            Image(systemName: isPlatform ? "circle.fill" : "circle")
+                .font(.system(size: isPlatform ? 8 : 6))
+                .foregroundStyle(isPlatform ? platformColor(node.platform) : Color.secondary)
+            Text(node.title)
+                .lineLimit(1)
+            Spacer()
+            if let count = node.count {
+                Text(count.formatted())
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+
     private var feedTitle: String {
-        sourceFilter.map { String($0.dropFirst("youtube/".count)) } ?? platformFilter ?? "전체"
+        selectedSource?.displayName ?? platformFilter.map(platformDisplayName) ?? "전체 플랫폼"
     }
 
     /// 부제목용 건수. 일반 피드는 DB 전체 기준, 채널 모드는 로드된 목록 기준.
     private var feedCount: Int {
-        sourceFilter == nil ? snapshot.filteredCount : filteredPosts.count
+        selectedSourceID == nil ? snapshot.filteredCount : filteredPosts.count
     }
 
     /// 이 값이 바뀌면 첫 페이지를 DB에서 다시 읽는다 (검색어는 디바운스라 별도).
     /// 채널 모드에서 플랫폼 피드로 되돌아올 때 옛 목록이 남는 것도 여기서 막힌다.
     private var feedQueryKey: String {
-        "\(platformFilter ?? "")|\(sourceFilter ?? "")|\(sortOrder.rawValue)"
+        "\(platformFilter ?? "")|\(selectedSourceID.map(String.init) ?? "")|\(sortOrder.rawValue)"
     }
 
     private var feedList: some View {
         Group {
-            if let loadError {
+            if !hasLoadedDashboard {
+                ProgressView("피드 불러오는 중")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let loadError {
                 ContentUnavailableView("데이터를 불러오지 못했습니다", systemImage: "exclamationmark.triangle", description: Text(loadError))
+            } else if selectedSourceID != nil, isLoadingSource {
+                ProgressView("관심 소스 불러오는 중")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if sortedPosts.isEmpty {
                 emptyFeedState
             } else {
@@ -216,15 +331,15 @@ struct ContentView: View {
                             .tag(post.id)
                             .onAppear {
                                 // 일반 피드에서 목록 끝 근처(뒤에서 8번째 이내)면 다음 페이지 로드
-                                if sourceFilter == nil,
+                                if selectedSourceID == nil,
                                    let idx = sortedPosts.firstIndex(where: { $0.id == post.id }),
                                    idx >= sortedPosts.count - 8 {
                                     loadMorePosts()
                                 }
                             }
                     }
-                    if sourceFilter != nil {
-                        channelFooter
+                    if selectedSource?.platform == "youtube" {
+                        youtubeHistoryFooter
                             .listRowSeparator(.hidden)
                     } else if isLoadingMore {
                         HStack {
@@ -240,19 +355,19 @@ struct ContentView: View {
                         .listRowSeparator(.hidden)
                     }
                 }
-                .listStyle(.inset)
+                .listStyle(.plain)
             }
         }
         .searchable(text: $searchText, placement: .toolbar, prompt: "제목, 소스, 본문 검색")
         .navigationTitle(feedTitle)
-        .navigationSubtitle(channelBusyMessage ?? "\(feedCount.formatted())개")
+        .navigationSubtitle(activeSourceBusyMessage ?? "\(feedCount.formatted())개")
         .onChange(of: feedQueryKey) { _, _ in
-            if sourceFilter == nil { loadDashboard() }
+            if selectedSourceID == nil { loadDashboard() }
         }
         .task(id: searchText) {
             // 타이핑 중 매 글자마다 전문 검색을 돌리지 않도록 짧게 미룬다.
             // 다음 글자가 들어오면 task가 취소돼 sleep 단계에서 끊긴다.
-            guard sourceFilter == nil else { return }
+            guard selectedSourceID == nil else { return }
             try? await Task.sleep(for: .milliseconds(250))
             guard !Task.isCancelled else { return }
             loadDashboard()
@@ -270,21 +385,16 @@ struct ContentView: View {
                     Label("정렬", systemImage: "arrow.up.arrow.down")
                 }
                 Button {
-                    loadDashboard()
+                    refreshCurrentFeed()
                 } label: {
                     Label("새로고침", systemImage: "arrow.clockwise")
-                }
-                Button {
-                    showManager = true
-                } label: {
-                    Label("유튜브 채널/크레덴셜 관리", systemImage: "gearshape")
                 }
             }
         }
     }
 
     private func feedRow(_ post: DashboardPost) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
                 Circle()
                     .fill(platformColor(post.platform))
@@ -297,29 +407,25 @@ struct ContentView: View {
                 Text(displayDate(post))
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
+                if let likes = post.likes {
+                    Label(likes.formatted(), systemImage: "hand.thumbsup")
+                }
+                if let comments = post.comments {
+                    Label(comments.formatted(), systemImage: "text.bubble")
+                }
             }
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
             Text(post.displayTitle)
                 .font(.system(size: 13, weight: .semibold))
                 .lineLimit(2)
             Text(cardPreview(post))
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .lineLimit(2)
+                .lineLimit(1)
             transcribeIndicator(post)
-            if post.likes != nil || post.comments != nil {
-                HStack(spacing: 10) {
-                    if let likes = post.likes {
-                        Label(likes.formatted(), systemImage: "hand.thumbsup")
-                    }
-                    if let comments = post.comments {
-                        Label(comments.formatted(), systemImage: "text.bubble")
-                    }
-                }
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-            }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 5)
         .opacity(isTranscribeBlocked(post) ? 0.5 : 1)
     }
 
@@ -354,23 +460,23 @@ struct ContentView: View {
             loadMoreYears()
         } label: {
             Label(
-                channelBusyMessage ?? "이전 1년 더 불러오기 (현재 \(currentChannelYears)년치)",
+                activeSourceBusyMessage ?? "이전 1년 더 불러오기 (현재 \(currentSourceYears)년치)",
                 systemImage: "clock.arrow.circlepath"
             )
             .frame(maxWidth: .infinity)
             .padding(.vertical, 10)
         }
         .buttonStyle(.bordered)
-        .disabled(channelBusyMessage != nil)
+        .disabled(activeSourceBusyMessage != nil)
     }
 
-    private var currentChannelYears: Int {
+    private var currentSourceYears: Int {
         sourceFilter.flatMap { loadedYears[$0] } ?? 1
     }
 
     /// 채널 뷰이고 아직 마지막 영상까지 소진되지 않은 경우에만 더 불러오기 노출
-    private var canLoadMoreChannel: Bool {
-        guard let sourceFilter else {
+    private var canLoadMoreYouTubeHistory: Bool {
+        guard selectedSource?.platform == "youtube", let sourceFilter else {
             return false
         }
         return !exhaustedChannels.contains(sourceFilter)
@@ -379,8 +485,8 @@ struct ContentView: View {
     /// 채널 모드 목록 끝에 붙는 확장 컨트롤. 목록이 비었을 때도 같은 것을 쓴다 —
     /// 업로드가 뜸한 채널은 1년치가 0건이라, 여기서 버튼이 사라지면 넓힐 방법이 없어진다.
     @ViewBuilder
-    private var channelFooter: some View {
-        if canLoadMoreChannel {
+    private var youtubeHistoryFooter: some View {
+        if canLoadMoreYouTubeHistory {
             loadMoreButton
         } else {
             Label("마지막 영상까지 확인했습니다", systemImage: "checkmark.circle")
@@ -393,17 +499,19 @@ struct ContentView: View {
 
     @ViewBuilder
     private var emptyFeedState: some View {
-        if sourceFilter != nil {
+        if selectedSource?.platform == "youtube" {
             VStack(spacing: 12) {
                 ContentUnavailableView(
-                    "최근 \(currentChannelYears)년치 영상 없음",
+                    "최근 \(currentSourceYears)년치 영상 없음",
                     systemImage: "play.slash",
                     description: Text("업로드가 뜸한 채널이면 더 과거까지 넓혀보세요.")
                 )
-                channelFooter
+                youtubeHistoryFooter
                     .frame(maxWidth: 320)
             }
             .padding(.bottom, 40)
+        } else if selectedSource != nil {
+            ContentUnavailableView("이 관심 소스의 글이 없습니다", systemImage: "tray", description: Text("수집 상태를 확인하거나 다른 소스를 선택하세요."))
         } else {
             ContentUnavailableView("결과 없음", systemImage: "tray", description: Text("검색어나 필터를 조정하세요."))
         }
@@ -430,7 +538,7 @@ struct ContentView: View {
                         VStack(alignment: .leading, spacing: 18) {
                             infoStrip(post)
 
-                            if let url = post.url {
+                            if post.platform == "youtube", let url = post.url {
                                 PreviewPane(preview: ContentPreview.classify(url))
                             }
 
@@ -502,48 +610,15 @@ struct ContentView: View {
                     .lineLimit(3)
             }
         }
-        .padding(.horizontal, 30)
-        .padding(.vertical, 18)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 14)
         .background(Design.readerBackground)
     }
 
-    private var managerSheet: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Picker("", selection: $managerTab) {
-                    Text("유튜브 채널").tag(ManagerTab.sources)
-                    Text("크레덴셜").tag(ManagerTab.credentials)
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 240)
-                Spacer()
-                Button("닫기") {
-                    showManager = false
-                }
-                .keyboardShortcut(.cancelAction)
-            }
-            .padding(16)
-
-            Divider()
-
-            if managerTab == .sources {
-                sourcesManagerPane
-            } else {
-                HSplitView {
-                    credentialsPane
-                        .frame(minWidth: 400, idealWidth: 450)
-                    credentialEditorPane
-                        .frame(minWidth: 480)
-                }
-            }
-        }
-        .background(Design.windowBackground)
-    }
-
-    private var sourcesManagerPane: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 10) {
-                sectionLabel("YouTube 구독 추가")
+    private var sourcesPane: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                sectionLabel("YouTube 채널 추가")
                 HStack(spacing: 8) {
                     TextField("youtube.com/@채널", text: $youtubeInput)
                         .textFieldStyle(.plain)
@@ -558,8 +633,13 @@ struct ContentView: View {
                             .frame(width: 30, height: 30)
                     }
                     .buttonStyle(.borderedProminent)
+                    .tint(Design.green)
+                    .accessibilityLabel("YouTube 채널 추가")
                     .disabled(youtubeInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
+                Text("현재 앱에서 직접 등록할 수 있는 소스 유형입니다. 다른 플랫폼 소스도 같은 목록과 피드 계층에 표시됩니다.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 if let sourceMessage {
                     Text(sourceMessage.text)
                         .font(.caption)
@@ -567,26 +647,124 @@ struct ContentView: View {
                         .lineLimit(2)
                 }
             }
+            .padding(16)
 
-            VStack(alignment: .leading, spacing: 10) {
-                sectionLabel("추적 중인 유튜브 채널 \(snapshot.sources.count.formatted())개")
-                if snapshot.sources.isEmpty {
-                    emptyLine("추적 중인 유튜브 채널 없음")
-                } else {
-                    ScrollView {
-                        LazyVStack(spacing: 6) {
-                            ForEach(snapshot.sources) { source in
-                                sourceRow(source)
+            Divider()
+
+            if snapshot.sources.isEmpty {
+                ContentUnavailableView("관심 소스 없음", systemImage: "dot.radiowaves.left.and.right", description: Text("위에서 YouTube 채널을 추가할 수 있습니다."))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List(selection: $selectedManagedSourceID) {
+                    ForEach(snapshot.knownPlatforms, id: \.self) { platform in
+                        let sources = snapshot.sources
+                            .filter { $0.platform == platform }
+                            .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+                        if !sources.isEmpty {
+                            Section(platformDisplayName(platform)) {
+                                ForEach(sources) { source in
+                                    sourceManagementRow(source)
+                                        .tag(source.id)
+                                }
                             }
                         }
                     }
-                    .scrollIndicators(.automatic)
                 }
+                .listStyle(.plain)
             }
         }
-        .padding(20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Design.feedBackground)
+        .navigationTitle("소스 관리")
+        .navigationSubtitle("관심 소스 \(snapshot.sources.count.formatted())개")
+        .toolbar {
+            Button {
+                loadDashboard()
+            } label: {
+                Label("새로고침", systemImage: "arrow.clockwise")
+            }
+        }
+    }
+
+    private var sourceInspectorPane: some View {
+        Group {
+            if let source = selectedManagedSource {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(spacing: 8) {
+                                platformBadge(source.platform)
+                                Label(source.isEnabled ? "수집 중" : "비활성", systemImage: source.isEnabled ? "checkmark.circle.fill" : "pause.circle")
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(source.isEnabled ? Design.green : Color.secondary)
+                            }
+                            Text(source.displayName)
+                                .font(.largeTitle.weight(.semibold))
+                                .textSelection(.enabled)
+                            Text("\(platformDisplayName(source.platform)) / \(source.sourceType)")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        VStack(spacing: 0) {
+                            sourceMetadataRow("소스 ID", source.canonicalID)
+                            Divider()
+                            sourceMetadataRow("주소", source.handleOrURL ?? "-")
+                            Divider()
+                            sourceMetadataRow("관심도", source.focusLevel.formatted())
+                            Divider()
+                            sourceMetadataRow("업데이트", source.updatedAt)
+                        }
+                        .background(Design.panelBackground, in: RoundedRectangle(cornerRadius: 9))
+                        .overlay(RoundedRectangle(cornerRadius: 9).stroke(Design.hairline, lineWidth: 1))
+
+                        HStack {
+                            Button {
+                                workspacePage = .feed
+                                selectSource(source)
+                            } label: {
+                                Label("이 소스의 글 보기", systemImage: "rectangle.stack")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(Design.green)
+
+                            Button {
+                                openSourcePage(source)
+                            } label: {
+                                Label("원본 열기", systemImage: "arrow.up.right")
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(source.handleOrURL == nil && source.platform != "youtube")
+
+                            Button(role: .destructive) {
+                                pendingDeleteSource = source
+                            } label: {
+                                Label("삭제", systemImage: "trash")
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                    .padding(30)
+                    .frame(maxWidth: 760, alignment: .leading)
+                }
+            } else {
+                ContentUnavailableView("관심 소스를 선택하세요", systemImage: "sidebar.right")
+            }
+        }
+        .background(Design.readerBackground)
+    }
+
+    private func sourceMetadataRow(_ title: String, _ value: String) -> some View {
+        HStack(alignment: .top, spacing: 16) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 72, alignment: .leading)
+            Text(value)
+                .font(.callout)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(14)
     }
 
     private var credentialsPane: some View {
@@ -611,6 +789,7 @@ struct ContentView: View {
                     Label("새로 만들기", systemImage: "plus")
                 }
                 .buttonStyle(.borderedProminent)
+                .tint(Design.green)
             }
 
             if snapshot.credentials.isEmpty {
@@ -630,6 +809,15 @@ struct ContentView: View {
         .padding(.horizontal, 18)
         .padding(.vertical, 20)
         .background(Design.feedBackground)
+        .navigationTitle("연결")
+        .navigationSubtitle("저장된 계정 \(snapshot.credentials.count.formatted())개")
+        .toolbar {
+            Button {
+                loadDashboard()
+            } label: {
+                Label("새로고침", systemImage: "arrow.clockwise")
+            }
+        }
     }
 
     private var credentialEditorPane: some View {
@@ -719,7 +907,7 @@ struct ContentView: View {
         .background(Design.readerBackground)
     }
 
-    private func sourceRow(_ source: TrackedSource) -> some View {
+    private func sourceManagementRow(_ source: TrackedSource) -> some View {
         HStack(spacing: 10) {
             Circle()
                 .fill(platformColor(source.platform))
@@ -735,28 +923,14 @@ struct ContentView: View {
             }
             Spacer()
             if source.focusLevel > 0 {
-                Text(source.focusLevel.formatted())
+                Label(source.focusLevel.formatted(), systemImage: "star.fill")
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(Design.amber)
             }
-            Button {
-                openSourcePage(source)
-            } label: {
-                Image(systemName: "info.circle")
-            }
-            .buttonStyle(.borderless)
-            .help("유튜브 채널 정보 열기")
-            Button(role: .destructive) {
-                pendingDeleteSource = source
-            } label: {
-                Image(systemName: "trash")
-            }
-            .buttonStyle(.borderless)
-            .foregroundStyle(Color.red)
+            Image(systemName: source.isEnabled ? "checkmark.circle.fill" : "pause.circle")
+                .foregroundStyle(source.isEnabled ? Design.green : Color.secondary)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(Design.panelBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
+        .padding(.vertical, 4)
     }
 
     private func openSourcePage(_ source: TrackedSource) {
@@ -912,7 +1086,8 @@ struct ContentView: View {
                 .background(readerContentMode == mode ? Design.green : Color.clear, in: Capsule())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(title)
+        .accessibilityLabel(mode == .markdown ? "렌더링된 본문" : "원문 코드")
+        .accessibilityAddTraits(readerContentMode == mode ? .isSelected : [])
     }
 
     @ViewBuilder
@@ -922,7 +1097,6 @@ struct ContentView: View {
             ReaderMarkdownWebView(markdown: markdown, contentHeight: $readerMarkdownHeight)
                 .frame(height: max(readerMarkdownHeight, 260))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
-                .allowsHitTesting(false)
         } else {
             Text(markdown)
                 .font(.system(.body, design: .monospaced))
@@ -1041,13 +1215,52 @@ struct ContentView: View {
         }
     }
 
+    private func platformDisplayName(_ platform: String) -> String {
+        switch platform {
+        case "youtube": "YouTube"
+        case "linkedin": "LinkedIn"
+        case "reddit": "Reddit"
+        case "threads": "Threads"
+        case "x": "X"
+        case "arxiv": "arXiv"
+        case "huggingface": "Hugging Face"
+        case "hackernews": "Hacker News"
+        case "geeknews": "GeekNews"
+        case "producthunt": "Product Hunt"
+        case "ailabs": "AI Labs"
+        default: platform.capitalized
+        }
+    }
+
+    private func refreshCurrentFeed() {
+        if selectedSourceID == nil {
+            loadDashboard()
+        } else {
+            reloadSourcePosts()
+        }
+    }
+
+    private func isCurrentFeedRequest(
+        platform: String?,
+        sourceID: Int64?,
+        search: String,
+        sort: SkimDatabase.PostSort
+    ) -> Bool {
+        platform == platformFilter
+            && sourceID == selectedSourceID
+            && search == searchText
+            && sort.rawValue == dbSort.rawValue
+    }
+
     private func loadDashboard() {
         let databasePath = WorkspaceLocator.defaultDatabasePath()
         let size = pageSize
         let sort = dbSort
         let platform = platformFilter
+        let sourceID = selectedSourceID
         let search = searchText
         Task { @MainActor in
+            defer { hasLoadedDashboard = true }
             do {
                 // 본문 포함 첫 페이지 로드를 메인 스레드에서 돌리면 실행/새로고침마다 UI가 멈춘다.
                 // 나머지는 일반 피드 스크롤 끝에서 loadMorePosts()가 페이지 단위로 이어 로드한다.
@@ -1061,29 +1274,48 @@ struct ContentView: View {
                         search: search
                     )
                 }.value
+                guard isCurrentFeedRequest(platform: platform, sourceID: sourceID, search: search, sort: sort) else { return }
                 snapshot = loaded
+                if let selectedManagedSourceID,
+                   !loaded.sources.contains(where: { $0.id == selectedManagedSourceID })
+                {
+                    self.selectedManagedSourceID = loaded.sources.first?.id
+                } else if selectedManagedSourceID == nil {
+                    selectedManagedSourceID = loaded.sources.first?.id
+                }
+                if let selectedSourceID,
+                   !loaded.sources.contains(where: { $0.id == selectedSourceID })
+                {
+                    self.selectedSourceID = nil
+                    sourcePosts = []
+                }
                 hasMorePosts = loaded.posts.count >= size
-                if let selectedPostID, loaded.posts.contains(where: { $0.id == selectedPostID }) {
-                    self.selectedPostID = selectedPostID
-                } else {
-                    selectedPostID = loaded.posts.first?.id
+                if self.selectedSourceID == nil {
+                    if let selectedPostID, loaded.posts.contains(where: { $0.id == selectedPostID }) {
+                        self.selectedPostID = selectedPostID
+                    } else {
+                        selectedPostID = loaded.posts.first?.id
+                    }
                 }
                 loadError = nil
             } catch {
-                loadError = localizedError(error)
+                if isCurrentFeedRequest(platform: platform, sourceID: sourceID, search: search, sort: sort) {
+                    loadError = localizedError(error)
+                }
             }
         }
     }
 
     /// 일반 피드(채널 필터가 없을 때)에서 스크롤이 끝에 닿으면 다음 페이지를 이어 로드한다.
     private func loadMorePosts() {
-        guard sourceFilter == nil, hasMorePosts, !isLoadingMore else { return }
+        guard selectedSourceID == nil, hasMorePosts, !isLoadingMore else { return }
         isLoadingMore = true
         let databasePath = WorkspaceLocator.defaultDatabasePath()
         let size = pageSize
         let offset = snapshot.posts.count
         let sort = dbSort
         let platform = platformFilter
+        let sourceID = selectedSourceID
         let search = searchText
         Task { @MainActor in
             defer { isLoadingMore = false }
@@ -1100,7 +1332,7 @@ struct ContentView: View {
                     )
                 }.value
                 // 페이지 요청과 응답 사이에 필터가 바뀌었으면 옛 결과를 이어붙이지 않는다.
-                guard platform == platformFilter, search == searchText else { return }
+                guard isCurrentFeedRequest(platform: platform, sourceID: sourceID, search: search, sort: sort) else { return }
                 guard !more.isEmpty else {
                     hasMorePosts = false
                     return
@@ -1116,7 +1348,9 @@ struct ContentView: View {
                 )
                 hasMorePosts = more.count >= size
             } catch {
-                loadError = localizedError(error)
+                if isCurrentFeedRequest(platform: platform, sourceID: sourceID, search: search, sort: sort) {
+                    loadError = localizedError(error)
+                }
             }
         }
     }
@@ -1234,9 +1468,12 @@ struct ContentView: View {
             let database = try SkimDatabase(path: WorkspaceLocator.defaultDatabasePath())
             try database.ensureSchema()
             try database.deleteTrackedSource(id: source.id)
-            if sourceFilter == "youtube/\(source.displayName)" {
-                sourceFilter = nil
-                channelPosts = []
+            if selectedSourceID == source.id {
+                selectedSourceID = nil
+                sourcePosts = []
+            }
+            if selectedManagedSourceID == source.id {
+                selectedManagedSourceID = snapshot.sources.first { $0.id != source.id }?.id
             }
             sourceMessage = Notice(text: "\(source.displayName) 삭제됨", isError: false)
             pendingDeleteSource = nil
@@ -1247,20 +1484,22 @@ struct ContentView: View {
         }
     }
 
-    private func selectChannel(_ name: String) {
-        let filterValue = "youtube/\(name)"
-        sourceFilter = filterValue
-        platformFilter = "youtube"
-        reloadChannelPosts()
+    private func selectSource(_ source: TrackedSource) {
+        let filterValue = source.postSourceKey
+        workspacePage = .feed
+        selectedSourceID = source.id
+        platformFilter = source.platform
+        sourcePosts = []
+        reloadSourcePosts()
 
-        // 처음 선택한 채널은 1년치 히스토리를 자동 백필한다 (upsert라 재실행 무해)
-        if loadedYears[filterValue] == nil {
+        // YouTube의 과거 영상 목록 확장은 해당 소스에서만 제공한다.
+        if source.platform == "youtube", loadedYears[filterValue] == nil {
             loadedYears[filterValue] = 1
-            runChannelBackfill(channel: name, years: 1)
+            runChannelBackfill(channel: source.displayName, years: 1)
         }
     }
 
-    private func fetchChannelPosts(source: String) async throws -> [DashboardPost] {
+    private func fetchSourcePosts(source: String) async throws -> [DashboardPost] {
         let databasePath = WorkspaceLocator.defaultDatabasePath()
         return try await Task.detached(priority: .userInitiated) {
             let database = try SkimDatabase(path: databasePath)
@@ -1268,64 +1507,84 @@ struct ContentView: View {
         }.value
     }
 
-    private func applyChannelPosts(_ posts: [DashboardPost]) {
-        channelPosts = posts
+    private func applySourcePosts(_ posts: [DashboardPost]) {
+        sourcePosts = posts
         if !posts.contains(where: { $0.id == selectedPostID }) {
             selectedPostID = posts.first?.id
         }
     }
 
-    private func reloadChannelPosts() {
+    private func reloadSourcePosts() {
         guard let source = sourceFilter else {
             return
         }
+        isLoadingSource = true
         Task { @MainActor in
+            defer {
+                if source == sourceFilter { isLoadingSource = false }
+            }
             do {
-                applyChannelPosts(try await fetchChannelPosts(source: source))
+                let posts = try await fetchSourcePosts(source: source)
+                guard source == sourceFilter else { return }
+                applySourcePosts(posts)
+                loadError = nil
             } catch {
-                loadError = localizedError(error)
+                if source == sourceFilter {
+                    loadError = localizedError(error)
+                }
             }
         }
     }
 
     private func loadMoreYears() {
-        guard let sourceFilter else {
+        guard let selectedSource, selectedSource.platform == "youtube", let sourceFilter else {
             return
         }
-        let channel = String(sourceFilter.dropFirst("youtube/".count))
         let years = (loadedYears[sourceFilter] ?? 1) + 1
         loadedYears[sourceFilter] = years
-        runChannelBackfill(channel: channel, years: years, autoRetry: true)
+        runChannelBackfill(channel: selectedSource.displayName, years: years, autoRetry: true)
     }
 
     private func runChannelBackfill(channel: String, years: Int, autoRetry: Bool = false) {
         guard let source = sourceFilter else {
             return
         }
-        let beforeCount = channelPosts.count
-        channelBusyMessage = "\(channel) \(years)년치 영상 목록 수집 중..."
+        let beforeCount = sourcePosts.count
+        sourceBusyMessage = "\(channel) \(years)년치 영상 목록 수집 중..."
+        sourceBusyKey = source
         Task { @MainActor in
+            defer {
+                if sourceBusyKey == source {
+                    sourceBusyMessage = nil
+                    sourceBusyKey = nil
+                }
+            }
             do {
                 _ = try await runSkim(["youtube-history", "--channel", channel, "--years", "\(years)"])
-                var posts = try await fetchChannelPosts(source: source)
-                applyChannelPosts(posts)
+                var posts = try await fetchSourcePosts(source: source)
+                guard source == sourceFilter else { return }
+                applySourcePosts(posts)
 
                 // 새 영상이 안 늘면 그 연도 구간이 빈 것 — 한 번 더 과거로 확장해 마지막 영상인지 확인
                 if autoRetry, posts.count == beforeCount {
                     let nextYears = years + 1
                     loadedYears[source] = nextYears
-                    channelBusyMessage = "\(channel) \(nextYears)년치 영상 목록 수집 중..."
+                    sourceBusyMessage = "\(channel) \(nextYears)년치 영상 목록 수집 중..."
                     _ = try await runSkim(["youtube-history", "--channel", channel, "--years", "\(nextYears)"])
-                    posts = try await fetchChannelPosts(source: source)
-                    applyChannelPosts(posts)
+                    posts = try await fetchSourcePosts(source: source)
+                    guard source == sourceFilter else { return }
+                    applySourcePosts(posts)
                     if posts.count == beforeCount {
                         exhaustedChannels.insert(source)
                     }
                 }
-                channelBusyMessage = nil
             } catch {
-                channelBusyMessage = nil
-                sourceMessage = Notice(text: localizedError(error), isError: true)
+                if sourceBusyKey == source {
+                    sourceMessage = Notice(text: localizedError(error), isError: true)
+                }
+                if source == sourceFilter {
+                    loadError = localizedError(error)
+                }
             }
         }
     }
@@ -1339,7 +1598,7 @@ struct ContentView: View {
         Task { @MainActor in
             do {
                 _ = try await runSkim(["youtube-transcribe", url.absoluteString])
-                reloadChannelPosts()
+                reloadSourcePosts()
                 loadDashboard()
             } catch {
                 transcribeError = localizedError(error)
@@ -1433,15 +1692,26 @@ private enum SortOrder: String, CaseIterable {
     case comments = "댓글순"
 }
 
+private enum WorkspacePage: Hashable {
+    case feed
+    case sources
+    case connections
+}
+
 private enum SidebarItem: Hashable {
     case all
     case platform(String)
-    case channel(String)
+    case source(Int64)
 }
 
-private enum ManagerTab: Equatable {
-    case sources
-    case credentials
+private struct SidebarNode: Identifiable {
+    let item: SidebarItem
+    let title: String
+    let platform: String
+    var count: Int? = nil
+    var children: [SidebarNode]? = nil
+
+    var id: SidebarItem { item }
 }
 
 private enum ReaderContentMode: Equatable {
@@ -1499,6 +1769,19 @@ private struct ReaderMarkdownWebView: NSViewRepresentable {
                 }
             }
         }
+
+        func webView(_: WKWebView, decidePolicyFor navigationAction: WKNavigationAction) async -> WKNavigationActionPolicy {
+            guard navigationAction.navigationType == .linkActivated,
+                  let url = navigationAction.request.url
+            else {
+                return .allow
+            }
+            guard ContentPreview.isSafeExternalLink(url) else {
+                return .cancel
+            }
+            NSWorkspace.shared.open(url)
+            return .cancel
+        }
     }
 }
 
@@ -1513,8 +1796,8 @@ private enum MarkdownHTMLRenderer {
             <meta charset="utf-8">
             <meta name="viewport" content="width=device-width, initial-scale=1">
             <style>
-              :root { color-scheme: light dark; --text: #202124; --border: rgba(0,0,0,.12); --soft: rgba(0,0,0,.055); --code: #f5f5f5; --accent: #1769e0; }
-              @media (prefers-color-scheme: dark) { :root { --text: #d7d7d7; --border: rgba(255,255,255,.12); --soft: rgba(255,255,255,.06); --code: #242424; --accent: #62a8ff; } }
+              :root { color-scheme: light dark; --text: #191b18; --border: #dcddd6; --soft: #efefe9; --code: #efefe9; --accent: #236f4a; }
+              @media (prefers-color-scheme: dark) { :root { --text: #e4e7df; --border: rgba(255,255,255,.10); --soft: #1a1d18; --code: #1a1d18; --accent: #4cbd7b; } }
               html, body { margin: 0; padding: 0; background: transparent; color: var(--text); font: 15px/1.68 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Apple SD Gothic Neo", sans-serif; overflow: hidden; }
               body { padding-bottom: 22px; }
               h1, h2, h3 { margin: 1.2em 0 .45em; line-height: 1.24; font-weight: 750; }
@@ -1522,7 +1805,7 @@ private enum MarkdownHTMLRenderer {
               h2 { font-size: 23px; border-bottom: 1px solid var(--border); padding-bottom: .22em; }
               h3 { font-size: 19px; }
               p { margin: .75em 0; }
-              a { color: var(--accent); text-decoration: none; }
+              a { color: var(--accent); text-decoration: none; cursor: pointer; }
               ul, ol { margin: .72em 0 .72em 1.55em; padding: 0; }
               li { margin: .32em 0; }
               blockquote { margin: 1em 0; padding-left: 1em; border-left: 3px solid var(--border); opacity: .78; }
@@ -1664,18 +1947,28 @@ private struct CredentialForm: Equatable {
 }
 
 private enum Design {
-    static let windowBackground = Color(nsColor: NSColor.windowBackgroundColor)
-    static let sidebarBackground = Color(nsColor: NSColor.controlBackgroundColor)
-    static let feedBackground = Color(nsColor: NSColor.textBackgroundColor).opacity(0.96)
-    static let readerBackground = Color(nsColor: NSColor.windowBackgroundColor)
-    static let panelBackground = Color(nsColor: NSColor.textBackgroundColor)
-    static let cardBackground = Color(nsColor: NSColor.textBackgroundColor)
-    static let inputBackground = Color(nsColor: NSColor.controlBackgroundColor)
+    static let feedBackground = dynamicColor(
+        light: NSColor(calibratedRed: 0.984, green: 0.984, blue: 0.973, alpha: 1),
+        dark: NSColor(calibratedRed: 0.102, green: 0.114, blue: 0.094, alpha: 1)
+    )
+    static let readerBackground = dynamicColor(
+        light: NSColor(calibratedRed: 0.957, green: 0.957, blue: 0.941, alpha: 1),
+        dark: NSColor(calibratedRed: 0.071, green: 0.078, blue: 0.063, alpha: 1)
+    )
+    static let panelBackground = feedBackground
+    static let cardBackground = feedBackground
+    static let inputBackground = dynamicColor(
+        light: NSColor(calibratedRed: 0.937, green: 0.937, blue: 0.914, alpha: 1),
+        dark: NSColor(calibratedRed: 0.086, green: 0.094, blue: 0.078, alpha: 1)
+    )
     static let selectedBackground = dynamicColor(
         light: NSColor(calibratedRed: 0.88, green: 0.95, blue: 0.90, alpha: 1),
         dark: NSColor(calibratedRed: 0.08, green: 0.22, blue: 0.16, alpha: 1)
     )
-    static let hairline = Color.black.opacity(0.08)
+    static let hairline = dynamicColor(
+        light: NSColor(calibratedRed: 0.863, green: 0.867, blue: 0.839, alpha: 1),
+        dark: NSColor.white.withAlphaComponent(0.10)
+    )
     static let primaryText = Color(nsColor: NSColor.labelColor)
     static let readerText = Color(nsColor: NSColor.labelColor).opacity(0.92)
     static let green = dynamicColor(
