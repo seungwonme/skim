@@ -39,9 +39,10 @@ DELAY = {"hackernews": 0.1, "geeknews": 6.0}
 # 위 사고에서 차단 후 2,057건을 더 요청했다. 그 재발을 막는 것이 이 상수의 목적이다.
 MAX_CONSECUTIVE_FAILURES = 5
 
-# --cooldown을 준 실행은 멈추는 대신 이만큼 쉬었다 이어간다. 그래도 안 풀리면
-# 차단이 길어진 것이므로 더 버티지 않는다.
-MAX_COOLDOWN_ROUNDS = 3
+# --cooldown을 준 실행이 쉬었다 이어가는 최대 횟수. 30분 대기 두 번으로도 안 풀리는
+# 것을 봤으므로, 차단이 길어도 한 번 걸어두면 끝나도록 넉넉히 둔다. 대기 간격이 있어
+# 이 횟수만큼 늘려도 실제 요청은 라운드당 몇 건뿐이다.
+MAX_COOLDOWN_ROUNDS = 8
 
 SUPPORTED = ("hackernews", "geeknews")
 
