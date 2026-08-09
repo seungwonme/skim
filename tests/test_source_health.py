@@ -158,3 +158,65 @@ def test_sources_are_scored_independently(db_path):
 
     issues = scan_source_health(db_path)
     assert [i["source"] for i in issues] == ["blogs/Broken"]
+
+
+# --- 경계 ---------------------------------------------------------------
+#
+# 임계가 흐려지면 오탐과 누락이 같이 는다. 양쪽 바로 옆을 고정해 둔다.
+
+
+def test_body_rate_threshold_is_a_hard_edge(db_path):
+    """29%p 하락은 조용하고 31%p 하락은 잡힌다 (BODY_RATE_DROP = 0.30)."""
+    for name, empty in (("Quiet", 29), ("Flagged", 31)):
+        _insert(db_path, "blogs", f"blogs/{name}", 60, "본문 " * 300, 300, n=20)
+        _insert(db_path, "blogs", f"blogs/{name}", 3, "본문 " * 300, 300, n=100 - empty)
+        _insert(db_path, "blogs", f"blogs/{name}", 3, "", 0, n=empty)
+
+    assert [i["source"] for i in scan_source_health(db_path)] == ["blogs/Flagged"]
+
+
+def test_low_body_rate_threshold_is_a_hard_edge(db_path):
+    """기준선이 없을 때의 하한선. 본문 51%는 조용하고 49%는 잡힌다 (0.50)."""
+    for name, ok in (("Quiet", 51), ("Flagged", 49)):
+        _insert(db_path, "blogs", f"blogs/{name}", 3, "본문 " * 300, 300, n=ok)
+        _insert(db_path, "blogs", f"blogs/{name}", 3, "", 0, n=100 - ok)
+
+    issues = scan_source_health(db_path)
+    assert [(i["source"], i["kind"]) for i in issues] == [
+        ("blogs/Flagged", "low_body_rate")
+    ]
+
+
+def test_word_count_threshold_is_a_hard_edge(db_path):
+    """기준선의 41%는 통과하고 39%는 잡힌다 (WORD_COUNT_RATIO = 0.40)."""
+    for name, words in (("Quiet", 410), ("Flagged", 390)):
+        _insert(db_path, "blogs", f"blogs/{name}", 60, "본문 " * 1000, 1000, n=20)
+        _insert(db_path, "blogs", f"blogs/{name}", 3, "본문", words, n=20)
+
+    assert [i["source"] for i in scan_source_health(db_path)] == ["blogs/Flagged"]
+
+
+def test_posts_older_than_the_baseline_window_are_ignored(db_path):
+    """기준선은 최근 14일 직전의 120일이다. 그보다 옛날 데이터는 '평소'가 아니다."""
+    _insert(db_path, "blogs", "blogs/Old", 300, "본문 " * 300, 300, n=40)  # 창 밖
+    _insert(db_path, "blogs", "blogs/Old", 3, "", 0, n=10)
+
+    issues = scan_source_health(db_path)
+    # 비교 대상이 없으니 기준선 대비가 아니라 하한선으로 잡혀야 한다.
+    assert [i["kind"] for i in issues] == ["low_body_rate"]
+    assert issues[0]["baseline"] is None
+
+
+def test_windows_are_movable_for_retro_validation(db_path):
+    """되감기 검증이 과거 시점을 재현하려면 창을 옮길 수 있어야 한다.
+
+    producthunt 사고를 실제로 이 방식으로 재현했다.
+    """
+    _insert(db_path, "blogs", "blogs/Past", 200, "본문 " * 300, 300, n=20)
+    _insert(db_path, "blogs", "blogs/Past", 100, "", 0, n=10)
+
+    # 오늘 기준 창에는 양쪽 다 안 들어와 판정할 게 없다.
+    assert scan_source_health(db_path) == []
+
+    issues = scan_source_health(db_path, recent_days=120, baseline_days=200)
+    assert [i["kind"] for i in issues] == ["body_rate_drop"]

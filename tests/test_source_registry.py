@@ -108,6 +108,35 @@ def test_upsert_keeps_notes_when_not_supplied(db_path):
     assert notes == "손으로 적은 메모"
 
 
+def test_upsert_keeps_feed_url_when_the_feed_dies(db_path):
+    """피드가 죽어 probe가 None을 돌려줘도 주소를 지우지 않는다.
+
+    지우면 다음 `source refresh`가 그 소스를 대상에서 빼버려 영영 재확인을 못 한다.
+    every.to/Guides가 HTTP 500으로 조용히 0건이던 게 이 경로다.
+    """
+    upsert_tracked_source(
+        platform="blogs",
+        canonical_id="https://every.to/guides",
+        display_name="Guides",
+        feed_url="https://every.to/guides/feed",
+        fetch_tier="rss+enrich",
+        db_path=db_path,
+    )
+    upsert_tracked_source(
+        platform="blogs",
+        canonical_id="https://every.to/guides",
+        display_name="Guides",
+        feed_url=None,
+        fetch_tier="scrape",
+        db_path=db_path,
+    )
+
+    (row,) = list_tracked_sources("blogs", db_path=db_path)
+    assert row["feed_url"] == "https://every.to/guides/feed"
+    # 등급은 관측값이라 그대로 강등된다. 강등 자체가 유일한 신호다.
+    assert row["fetch_tier"] == "scrape"
+
+
 def test_disabled_source_is_excluded(db_path):
     upsert_tracked_source(
         platform="blogs",

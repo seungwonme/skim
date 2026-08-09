@@ -12,6 +12,7 @@ from skim_cli.cli import app
 from skim_core.db import get_connection, init_db
 
 RECENT_TIMESTAMP = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+BASELINE_TIMESTAMP = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
 
 
 def _insert(db: Path, **kw) -> None:
@@ -65,7 +66,9 @@ class OpsCliTests(unittest.TestCase):
         sessions.mkdir()
         (sessions / "reddit_session.json").write_text("{}", encoding="utf-8")
 
-        result = self.runner.invoke(app, ["doctor", "--db", str(self.db), "--emit", "json"])
+        result = self.runner.invoke(
+            app, ["doctor", "--db", str(self.db), "--emit", "json"]
+        )
 
         self.assertEqual(result.exit_code, 0, result.stderr)
         payload = json.loads(result.stdout)
@@ -81,7 +84,9 @@ class OpsCliTests(unittest.TestCase):
         _insert(self.db, external_id="hn-2", summary="요약만 있음", content_markdown="")
         _insert(self.db, external_id="hn-3", content_markdown="# 본문 있음")
 
-        result = self.runner.invoke(app, ["doctor", "--db", str(self.db), "--emit", "json"])
+        result = self.runner.invoke(
+            app, ["doctor", "--db", str(self.db), "--emit", "json"]
+        )
 
         self.assertEqual(result.exit_code, 0, result.stderr)
         payload = json.loads(result.stdout)
@@ -90,7 +95,9 @@ class OpsCliTests(unittest.TestCase):
         self.assertEqual(thin["total"], 3)
 
     def test_doctor_reports_extractor_availability(self):
-        result = self.runner.invoke(app, ["doctor", "--db", str(self.db), "--emit", "json"])
+        result = self.runner.invoke(
+            app, ["doctor", "--db", str(self.db), "--emit", "json"]
+        )
 
         self.assertEqual(result.exit_code, 0, result.stderr)
         payload = json.loads(result.stdout)
@@ -104,7 +111,9 @@ class OpsCliTests(unittest.TestCase):
     def test_doctor_missing_db_does_not_create_file(self):
         missing = self.root / "data" / "missing.db"
 
-        result = self.runner.invoke(app, ["doctor", "--db", str(missing), "--emit", "json"])
+        result = self.runner.invoke(
+            app, ["doctor", "--db", str(missing), "--emit", "json"]
+        )
 
         self.assertEqual(result.exit_code, 0, result.stderr)
         payload = json.loads(result.stdout)
@@ -112,7 +121,9 @@ class OpsCliTests(unittest.TestCase):
         self.assertFalse(missing.exists())
 
     def test_coverage_json_reports_text_counts(self):
-        result = self.runner.invoke(app, ["coverage", "--db", str(self.db), "--emit", "json"])
+        result = self.runner.invoke(
+            app, ["coverage", "--db", str(self.db), "--emit", "json"]
+        )
 
         self.assertEqual(result.exit_code, 0, result.stderr)
         payload = json.loads(result.stdout)
@@ -164,6 +175,44 @@ class OpsCliTests(unittest.TestCase):
         self.assertEqual(payload["stale_platforms"], ["reddit"])
         self.assertEqual(payload["missing_sessions"], ["reddit"])
         self.assertEqual(payload["commands"], ["uv run skim login reddit"])
+
+    def _seed_extraction_regression(self) -> None:
+        """평소 본문이 차던 소스가 최근 전부 비기 시작한 상태."""
+        for i in range(20):
+            _insert(
+                self.db,
+                external_id=f"base-{i}",
+                timestamp=BASELINE_TIMESTAMP,
+                content_markdown="# 본문",
+            )
+        for i in range(10):
+            _insert(self.db, external_id=f"new-{i}", content_markdown="")
+
+    def test_doctor_reports_per_source_extraction_regression(self):
+        # 소스별 회귀는 플랫폼 합계에 묻힌다. producthunt가 3개월간 그랬다.
+        self._seed_extraction_regression()
+
+        result = self.runner.invoke(
+            app, ["doctor", "--db", str(self.db), "--emit", "json"]
+        )
+
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(
+            [h["kind"] for h in payload["source_health"]], ["body_rate_drop"]
+        )
+        self.assertTrue(any("본문 보유율" in w for w in payload["warnings"]))
+
+    def test_doctor_platform_filter_narrows_source_health(self):
+        self._seed_extraction_regression()
+
+        result = self.runner.invoke(
+            app,
+            ["doctor", "--db", str(self.db), "--platform", "reddit", "--emit", "json"],
+        )
+
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["source_health"], [])
 
 
 if __name__ == "__main__":
