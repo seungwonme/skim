@@ -4,6 +4,7 @@
 응답 구조가 달라 파서가 조용히 틀리기 쉬우므로, 실제 응답 모양을 픽스처로 고정한다.
 """
 
+import json
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -16,6 +17,7 @@ from skim_core.comments import (
 )
 from skim_core.crawlers.api.linkedin import LinkedInAPICrawler
 from skim_core.crawlers.api.reddit import RedditAPICrawler
+from skim_core.crawlers.api.threads import ThreadsAPICrawler
 from skim_core.crawlers.feed.geeknews import _parse_comment_section
 from skim_core.crawlers.feed.producthunt import fetch_comment_section as ph_comments
 
@@ -265,6 +267,136 @@ PRODUCTHUNT_HTML = """
 </div>
 </body></html>
 """
+
+
+def _threads_doc(edges):
+    payload = {"data": {"data": {"edges": edges}}}
+    return (
+        '<html><body><script type="application/json">'
+        + json.dumps(payload, ensure_ascii=False)
+        + "</script></body></html>"
+    )
+
+
+def _threads_item(username, text, taken_at=1786000000, likes=2):
+    return {
+        "post": {
+            "user": {"username": username},
+            "caption": {"text": text},
+            "taken_at": taken_at,
+            "like_count": likes,
+        }
+    }
+
+
+class ThreadsReplyTests(unittest.TestCase):
+    def _crawler(self):
+        with patch.object(ThreadsAPICrawler, "_setup_session", return_value=None):
+            crawler = ThreadsAPICrawler.__new__(ThreadsAPICrawler)
+            return crawler
+
+    def _fetch(self, html):
+        crawler = self._crawler()
+        response = MagicMock(status_code=200, text=html)
+        response.raise_for_status.return_value = None
+        with patch(
+            "skim_core.crawlers.api.threads.requests.get", return_value=response
+        ):
+            return crawler.fetch_reply_section("https://www.threads.net/@root/post/ABC")
+
+    def test_skips_root_post_and_author_self_reply_chain(self):
+        html = _threads_doc(
+            [
+                # edges[0] = 원글 (본문에 이미 담김)
+                {"node": {"thread_items": [_threads_item("root", "원글")]}},
+                # 작성자 연작 — 본문에 이미 있으므로 제외돼야 한다
+                {"node": {"thread_items": [_threads_item("root", "1/ 이어지는 글")]}},
+                # 타인 답글 + 그에 대한 작성자 답변
+                {
+                    "node": {
+                        "thread_items": [
+                            _threads_item("someone", "타인 답글"),
+                            _threads_item("root", "작성자 답변"),
+                        ]
+                    }
+                },
+            ]
+        )
+        section = self._fetch(html)
+
+        self.assertIn("- **@someone** (2 likes,", section)
+        self.assertIn("  - **@root**", section)  # 대화 중 작성자 답변은 남는다
+        self.assertNotIn("1/ 이어지는 글", section)
+        self.assertNotIn("원글", section)
+
+    def test_related_posts_are_not_mistaken_for_replies(self):
+        """같은 문서의 relatedPosts도 thread_items를 갖지만 답글이 아니다."""
+        payload = {
+            "data": {
+                "relatedPosts": {
+                    "threads": [
+                        {"thread_items": [_threads_item("stranger", "추천 게시물")]}
+                    ]
+                }
+            }
+        }
+        html = (
+            '<html><body><script type="application/json">'
+            + json.dumps(payload, ensure_ascii=False)
+            + "</script></body></html>"
+        )
+        self.assertIsNone(self._fetch(html))
+
+    def test_retries_once_when_payload_is_missing(self):
+        """답글 페이로드가 빠진 문서가 간헐적으로 온다. 한 번 더 받아본다."""
+        crawler = self._crawler()
+        empty = MagicMock(status_code=200, text="<html></html>")
+        empty.raise_for_status.return_value = None
+        good = MagicMock(
+            status_code=200,
+            text=_threads_doc(
+                [
+                    {"node": {"thread_items": [_threads_item("root", "원글")]}},
+                    {"node": {"thread_items": [_threads_item("someone", "타인 답글")]}},
+                ]
+            ),
+        )
+        good.raise_for_status.return_value = None
+
+        with patch(
+            "skim_core.crawlers.api.threads.requests.get", side_effect=[empty, good]
+        ) as get:
+            section = crawler.fetch_reply_section(
+                "https://www.threads.net/@root/post/ABC"
+            )
+
+        self.assertEqual(get.call_count, 2)
+        self.assertIn("타인 답글", section)
+
+    def test_requests_threads_com_not_net(self):
+        """threads.net으로 요청하면 페이로드가 빠진 셸이 온다."""
+        crawler = self._crawler()
+        response = MagicMock(status_code=200, text="<html></html>")
+        response.raise_for_status.return_value = None
+        with patch(
+            "skim_core.crawlers.api.threads.requests.get", return_value=response
+        ) as get:
+            crawler.fetch_reply_section("https://www.threads.net/@root/post/ABC")
+
+        self.assertIn("threads.com", get.call_args[0][0])
+        self.assertNotIn("threads.net", get.call_args[0][0])
+
+    def test_attach_skips_low_reply_posts_and_caps_fetches(self):
+        crawler = self._crawler()
+        quiet = [MagicMock(comments=1, url="u", content="b", content_markdown=None)]
+        busy = [
+            MagicMock(comments=9, url=f"u{i}", content="b", content_markdown=None)
+            for i in range(30)
+        ]
+        with patch.object(crawler, "fetch_reply_section", return_value=None) as fetch:
+            crawler.attach_replies(quiet + busy)
+
+        self.assertEqual(fetch.call_count, 20)
 
 
 class ProductHuntCommentTests(unittest.TestCase):

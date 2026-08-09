@@ -112,9 +112,17 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
 | linkedin | `## LinkedIn Comments` | 게시글당 1건 (Voyager `feed/comments`) |
 | youtube | `## YouTube Comments` | 영상당 yt-dlp 1회 |
 | producthunt | `## Product Hunt Comments` | 제품당 1건 (PH 제품 페이지) |
+| threads | `## Threads Replies` | 답글 3개 이상인 게시물만, 회차당 20건까지 |
 
-- threads는 답글을 받지 못한다. 타임라인 응답의 `thread_items`에 타인 답글이 오지 않고,
-  post detail용 `doc_id`가 별도로 필요하다. 넣으려면 브라우저로 좌표를 다시 떠야 한다.
+- threads 답글은 타임라인 GraphQL이 주지 않는다. 대신 게시물 문서의 SSR 페이로드가
+  답글까지 담고 있고 로그인도 필요 없어서, persisted query 좌표(`doc_id`)를 새로 들지 않는다.
+  단 `threads.net`으로 요청하면 리다이렉트 뒤 페이로드가 빠진 셸이 오므로 `threads.com`으로 받는다.
+  같은 URL이라도 페이로드가 빠진 문서가 간헐적으로 와서 한 번 재시도한다.
+- threads는 작성자 self-reply 연작을 답글과 같은 `edges`에 담는다. 그 연작은 이미 본문에
+  있으므로 스레드 시작자가 원글 작성자면 통째로 건너뛴다. 대화 중 작성자가 남긴 답변은 남는다.
+- `comments`(= `direct_reply_count`)가 0보다 커도 답글 섹션이 안 붙을 수 있다. 삭제되거나
+  비공개 계정이 단 답글까지 세는 값이라, 실제 노출되는 답글이 없는 게시물이 있다
+  (브라우저로 열어도 안 보인다). 이 불일치만으로 추출 실패로 판단하지 않는다.
 - 상한은 플랫폼별 `MAX_COMMENTS`(기본 15)와 댓글당 1200자다. 본문 신호를 댓글이 덮지 않게 한다.
 - 댓글 수집 실패는 게시글 저장을 막지 않는다. 본문만 저장하고 경고만 남긴다.
 
