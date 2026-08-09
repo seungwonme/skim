@@ -24,10 +24,16 @@ from typing import Callable, Dict, List, Optional
 
 import typer
 
+from ...comments import Comment, append_comment_section, render_comment_section
 from ...models import Post
 from ...paths import SESSIONS_DIR
 
 SESSION_PATH = SESSIONS_DIR / "x_session.json"
+MAX_REPLIES = 15
+# 스레드는 TweetDetail을 이미 부르므로 답글이 공짜다. 단독 트윗은 요청이 추가로 드는데
+# 실측 3~9초/건이라 무제한으로 두면 크롤이 몇 배 길어진다. 반응이 있는 것만, 회차 상한 안에서.
+MIN_REPLIES_FOR_FETCH = 3
+MAX_REPLY_FETCHES_PER_RUN = 20
 
 
 class XAPICrawler:
@@ -39,6 +45,9 @@ class XAPICrawler:
     """
 
     platform = "x"
+    # 단독 트윗 답글은 요청이 추가로 드는 유일한 경로라 --no-content로 끌 수 있다.
+    # 클래스 속성으로 둬야 생성자를 우회해 만든 인스턴스(테스트)에서도 정의돼 있다.
+    _skip_extra_reply_fetch = False
 
     def __init__(self, debug_mode: bool = False):
         self.platform_name = "X"
@@ -100,9 +109,12 @@ class XAPICrawler:
     async def crawl(self, **options) -> List[Post]:
         count = options.get("count", 10)
         user_id = options.get("user_id")
+        self._skip_extra_reply_fetch = options.get("no_content", False)
         return await self._crawl_impl(count, user_id)
 
-    async def _crawl_impl(self, count: int = 10, user_id: Optional[str] = None) -> List[Post]:
+    async def _crawl_impl(
+        self, count: int = 10, user_id: Optional[str] = None
+    ) -> List[Post]:
         """
         X 게시글 크롤링
 
@@ -114,7 +126,9 @@ class XAPICrawler:
             크롤링된 게시글 목록
         """
         mode = f"사용자 @{user_id}" if user_id else "For You 타임라인"
-        typer.echo(f"[API 모드] {self.platform_name} 크롤링 시작 - {mode} (게시글 {count}개)")
+        typer.echo(
+            f"[API 모드] {self.platform_name} 크롤링 시작 - {mode} (게시글 {count}개)"
+        )
 
         try:
             if user_id:
@@ -232,6 +246,7 @@ class XAPICrawler:
 
         posts: List[Post] = []
         done_conv: set[str] = set()
+        reply_fetches = 0
         for tweet, meta in parsed:
             if len(posts) >= count:
                 break
@@ -241,13 +256,27 @@ class XAPICrawler:
             group = conv_groups[conv]
             # 그룹 안에 작성자 자신에게 단 답글이 있으면 self-reply 스레드다
             is_thread = any(
-                gm["reply_to_user"] and gm["reply_to_user"] == gm["author_id"] for _, gm in group
+                gm["reply_to_user"] and gm["reply_to_user"] == gm["author_id"]
+                for _, gm in group
             )
             if is_thread:
                 done_conv.add(conv)
                 post = self._build_thread_post(conv, group)
             else:
                 post = self._parse_single_tweet(tweet)
+                # 단독 트윗은 스레드와 달리 TweetDetail을 부르지 않았다. 반응이 있는 것만
+                # 회차 상한 안에서 재조회해 답글을 채운다.
+                if (
+                    post
+                    and not self._skip_extra_reply_fetch
+                    and reply_fetches < MAX_REPLY_FETCHES_PER_RUN
+                    and (post.comments or 0) >= MIN_REPLIES_FOR_FETCH
+                ):
+                    reply_fetches += 1
+                    post.content_markdown = append_comment_section(
+                        post.content_markdown or post.content,
+                        self._reply_section(conv, meta["author_id"]),
+                    )
             if post:
                 posts.append(post)
                 if self.debug_mode:
@@ -273,6 +302,58 @@ class XAPICrawler:
             "created_at": legacy.get("created_at", ""),
         }
 
+    def _reply_section(
+        self,
+        conv_id: str,
+        root_author_id: Optional[str],
+        source_tweets: Optional[list[dict]] = None,
+    ) -> Optional[str]:
+        """conversation에 달린 타인 답글을 본문용 섹션으로 만든다.
+
+        `source_tweets`가 오면 이미 받은 TweetDetail 응답을 재사용해 요청이 늘지 않는다.
+        스레드 병합이 작성자 본인 트윗만 쓰고 나머지를 버리던 자리를 그대로 활용한다.
+        """
+        tweets = (
+            source_tweets
+            if source_tweets is not None
+            else self._fetch_thread_detail(conv_id)
+        )
+        if not tweets:
+            return None
+
+        collected: list[Comment] = []
+        for tweet in tweets:
+            meta = self._tweet_meta(tweet)
+            if not meta or meta["is_rt"]:
+                continue
+            # TweetDetail 응답에는 이 대화와 무관한 추천/광고 트윗도 섞여 온다.
+            # conversation_id가 다르면 답글이 아니다.
+            if meta["conv_id"] != conv_id:
+                continue
+            if meta["id"] == conv_id or meta["author_id"] == root_author_id:
+                continue
+            content, _, _ = self._clean_content_and_media(tweet)
+            if not content:
+                continue
+            legacy = tweet.get("legacy", {})
+            collected.append(
+                Comment(
+                    author=f"@{meta['author_screen']}",
+                    text=content,
+                    score=legacy.get("favorite_count"),
+                    created=(self._parse_timestamp(meta["created_at"]) or "")[
+                        :16
+                    ].replace("T", " ")
+                    or None,
+                )
+            )
+
+        # API는 시간순으로 주지만 읽는 쪽에는 반응이 큰 답글이 먼저인 편이 낫다.
+        collected.sort(key=lambda comment: comment.score or 0, reverse=True)
+        return render_comment_section(
+            "X Replies", collected, max_comments=MAX_REPLIES, score_unit="like"
+        )
+
     def _build_thread_post(
         self, conv_id: str, fallback_group: list[tuple[dict, dict]]
     ) -> Optional[Post]:
@@ -294,14 +375,23 @@ class XAPICrawler:
             return None
 
         # 스레드 주인 = 루트 트윗 작성자(없으면 가장 이른 트윗 작성자)
-        root = indexed.get(conv_id) or min(indexed.values(), key=lambda x: int(x[1]["id"]))
+        root = indexed.get(conv_id) or min(
+            indexed.values(), key=lambda x: int(x[1]["id"])
+        )
         root_author = root[1]["author_id"]
 
         own = [pair for pair in indexed.values() if pair[1]["author_id"] == root_author]
         own.sort(key=lambda pair: int(pair[1]["id"]))
         if len(own) <= 1:
-            # 이어지는 self-reply가 실제로 없으면 단독 트윗으로 처리
-            return self._parse_single_tweet(root[0])
+            # 이어지는 self-reply가 실제로 없으면 단독 트윗으로 처리.
+            # 재조회는 이미 끝났으니 답글은 추가 요청 없이 붙인다.
+            post = self._parse_single_tweet(root[0])
+            if post:
+                post.content_markdown = append_comment_section(
+                    post.content_markdown or post.content,
+                    self._reply_section(conv_id, root_author, source),
+                )
+            return post
 
         texts: list[str] = []
         image_urls: list[str] = []
@@ -323,6 +413,9 @@ class XAPICrawler:
             platform="x",
             author=author,
             content=content,
+            content_markdown=append_comment_section(
+                content, self._reply_section(conv_id, root_author, source)
+            ),
             timestamp=self._parse_timestamp(root_meta["created_at"]),
             url=f"https://x.com/{author}/status/{tweet_id}" if tweet_id else None,
             likes=root_legacy.get("favorite_count", 0),
@@ -489,7 +582,11 @@ class XAPICrawler:
             # 사진 첨부의 CDN 원본 URL(pbs.twimg.com)을 보존한다
             if m.get("type") == "photo" and m.get("media_url_https"):
                 image_urls.append(m["media_url_https"])
-            media_link = m.get("expanded_url") or m.get("display_url") or m.get("media_url_https")
+            media_link = (
+                m.get("expanded_url")
+                or m.get("display_url")
+                or m.get("media_url_https")
+            )
             if media_link:
                 media_fallbacks.append(media_link)
             if media_url:

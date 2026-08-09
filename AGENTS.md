@@ -94,9 +94,29 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
 ### 데이터 계약: DB는 소비 준비가 끝난 상태다
 
 - `posts.content_markdown`은 **추출이 완료된 정본 본문**이다. 이 DB를 읽는 소비자(AI, digest, 데스크톱 앱, research)는 재추출 절차 없이 그대로 사용한다고 가정한다.
-- 따라서 추출 완결성은 크롤러의 책임이다. 저장 시점에 링크 원문 본문, 플랫폼 자체 본문(Ask/Show HN 텍스트, GeekNews 한국어 요약), 토론(HN 상위 댓글)까지 채워야 한다. "링크만 저장"은 계약 위반이다.
+- 따라서 추출 완결성은 크롤러의 책임이다. 저장 시점에 링크 원문 본문, 플랫폼 자체 본문(Ask/Show HN 텍스트, GeekNews 한국어 요약), 토론(댓글)까지 채워야 한다. "링크만 저장"은 계약 위반이다.
 - 예외는 `--no-content` 명시 실행과 `youtube-history` 백필 행(임베드용 목록, 자막은 사용자가 요청할 때 `youtube-transcribe`로 채움)뿐이다.
 - 크롤러가 본문에 합성하는 섹션 라벨은 항상 영어로 쓴다 (예: `## Hacker News Comments`, `## Original Article`). 가용한 메타데이터(작성자, 작성시각, 점수)는 텍스트에 함께 표기한다.
+
+#### 댓글 수집
+
+댓글은 `skim_core.comments`의 `Comment`로 정규화한 뒤 `render_comment_section()`으로 섹션을 만들고
+`append_comment_section()`으로 본문 뒤에 잇는다. 각 크롤러가 자기 포맷을 따로 만들지 않는다.
+
+| 플랫폼 | 섹션 라벨 | 추가 요청 |
+|--------|-----------|-----------|
+| hackernews | `## Hacker News Comments` | Algolia item API 1건 |
+| geeknews | `## GeekNews Comments` | 없음 (지표 수집이 받는 토픽 HTML 재사용) |
+| x | `## X Replies` | 스레드는 없음(TweetDetail 재사용). 단독 트윗은 답글 3개 이상인 것만, 회차당 20건까지 |
+| reddit | `## Reddit Comments` | 게시글당 1건 (초당 1요청 간격) |
+| linkedin | `## LinkedIn Comments` | 게시글당 1건 (Voyager `feed/comments`) |
+| youtube | `## YouTube Comments` | 영상당 yt-dlp 1회 |
+| producthunt | `## Product Hunt Comments` | 제품당 1건 (PH 제품 페이지) |
+
+- threads는 답글을 받지 못한다. 타임라인 응답의 `thread_items`에 타인 답글이 오지 않고,
+  post detail용 `doc_id`가 별도로 필요하다. 넣으려면 브라우저로 좌표를 다시 떠야 한다.
+- 상한은 플랫폼별 `MAX_COMMENTS`(기본 15)와 댓글당 1200자다. 본문 신호를 댓글이 덮지 않게 한다.
+- 댓글 수집 실패는 게시글 저장을 막지 않는다. 본문만 저장하고 경고만 남긴다.
 
 ### Crawler 유형과 패턴
 
@@ -117,7 +137,8 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
 - `packages/skim-core/src/skim_core/models.py`: `Post` Pydantic 모델
 - `packages/skim-core/src/skim_core/db.py`: SQLite WAL 모드, `UNIQUE(platform, external_id)` 중복 제거
 - `packages/skim-core/src/skim_core/enrichment.py`: `bunx defuddle`, `yt-dlp`, transcript 정리
-- `packages/skim-core/src/skim_core/feed_utils.py`: RSS/Atom 파싱, KST 변환
+- `packages/skim-core/src/skim_core/comments.py`: 플랫폼 중립 `Comment`와 본문 댓글 섹션 합성
+- `packages/skim-core/src/skim_core/feed_utils.py`: RSS/Atom 파싱, KST 변환. `FEED_HEADERS`의 Chrome 버전은 news.hada.io 차단선에 걸리므로 함부로 낮추지 않는다
 - `packages/skim-core/src/skim_core/feed_config.py`: RSS URL, YouTube 채널 ID, API endpoint 설정
 - `apps/desktop/`: SwiftUI desktop reader for local `data/skim.db`
 

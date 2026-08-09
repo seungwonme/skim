@@ -5,18 +5,86 @@
 
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Any, List
+from typing import Any, List, Optional
 
+import requests
+from bs4 import BeautifulSoup
+
+from ...comments import Comment, append_comment_section, render_comment_section
 from ...enrichment import enrich_with_content
 from ...feed_config import PRODUCTHUNT_RSS
-from ...feed_utils import fetch_feed
+from ...feed_utils import FEED_HEADERS, fetch_feed
 from ...models import Post
+
+MAX_COMMENTS = 15
+# 개별 댓글은 `data-test="comment-{id}"`로만 안정적으로 잡힌다.
+# 같은 접두사의 `comment-form`, `comments-feed`는 컨테이너라 제외해야 한다.
+_COMMENT_ID = re.compile(r"^comment-\d+$")
 
 # PH 피드 content에는 제품 외부 사이트로 가는 리다이렉트(/r/p/{id})가 들어있다.
 # /products/{slug} 페이지는 JS SPA + 403이라 본문 추출이 불가하므로, 이 링크를 enrich 대상으로 쓴다.
 _RP_HREF = re.compile(r'href="(https://www\.producthunt\.com/r/p/[^"]+)"')
 # 피드 content_html 첫 <p>는 제품 태그라인이다 (그 뒤 <p>는 Discussion/Link 링크).
 _TAGLINE = re.compile(r"<p>\s*(.*?)\s*</p>", re.DOTALL)
+
+
+def fetch_comment_section(product_url: str) -> Optional[str]:
+    """제품 페이지의 댓글을 본문용 마크다운 섹션으로 만든다.
+
+    본문 enrich는 외부 제품 사이트를 보므로 PH 페이지를 따로 받아야 한다(제품당 요청 1건).
+    """
+    if not product_url or "producthunt.com/products/" not in product_url:
+        return None
+    try:
+        response = requests.get(product_url, headers=FEED_HEADERS, timeout=20)
+        response.raise_for_status()
+    except Exception:  # pylint: disable=broad-except
+        return None
+
+    soup = BeautifulSoup(response.text, "html.parser")
+    collected: List[Comment] = []
+    for node in soup.select("[data-test]"):
+        if not _COMMENT_ID.match(node.get("data-test") or ""):
+            continue
+        inner = node.select_one("div.flex.flex-1")
+        if not inner:
+            continue
+
+        # 자식 블록은 [작성자 헤더, 본문, 액션] 순이다. 액션은 time/Upvote로 확실히
+        # 걸러지지만 헤더는 아바타가 있을 때만 표시가 나서(없으면 이름만 든 텍스트 블록)
+        # 남은 블록의 첫 줄을 헤더로 본다.
+        created = None
+        blocks: List[str] = []
+        for block in inner.find_all(recursive=False):
+            text = " ".join(block.get_text(" ", strip=True).split())
+            if not text:
+                continue
+            time_el = block.select_one("time")
+            if time_el or text.startswith("Upvote"):
+                if time_el:
+                    created = time_el.get("datetime")
+                continue
+            blocks.append(text)
+
+        if len(blocks) < 2:  # 헤더만 있고 본문이 없는 노드
+            continue
+
+        # 아바타 alt가 가장 정확하다. 헤더 텍스트는 "이름 제품명 Maker" 꼴로 섞여 온다.
+        avatar = node.select_one("img[alt]")
+        author = (avatar.get("alt") if avatar else "") or blocks[0]
+        body = " ".join(blocks[1:]).strip()
+        if body:
+            collected.append(
+                Comment(
+                    author=author or "unknown",
+                    text=body,
+                    created=(created or "")[:16].replace("T", " ") or None,
+                )
+            )
+
+    return render_comment_section(
+        "Product Hunt Comments", collected, max_comments=MAX_COMMENTS
+    )
 
 
 def _redirect_url(item: dict) -> str:
@@ -98,5 +166,10 @@ class ProductHuntCrawler:
 
         if not no_content:
             enrich_with_content(items)
+            for item in items:
+                item["content_markdown"] = append_comment_section(
+                    item.get("content_markdown"),
+                    fetch_comment_section(item.get("url", "")),
+                )
 
         return [_item_to_post(item) for item in items]

@@ -27,9 +27,11 @@ try:
 except ImportError:  # pragma: no cover — optional dependency
     fitz = None  # type: ignore[assignment]
 
+from .comments import Comment, append_comment_section, render_comment_section
 from .paths import workspace_root
 
 SRT_TO_TXT = str(workspace_root() / "scripts" / "srt_to_txt.sh")
+YOUTUBE_MAX_COMMENTS = 15
 
 
 def _run_group(cmd: list, timeout: int) -> subprocess.CompletedProcess:
@@ -243,7 +245,9 @@ def _looks_like_placeholder_content(content: str) -> bool:
         return False
     if normalized.lower() in _PLACEHOLDER_EXACT:
         return True
-    return bool(_PLACEHOLDER_START.search(normalized) or _PLACEHOLDER_ANY.search(normalized))
+    return bool(
+        _PLACEHOLDER_START.search(normalized) or _PLACEHOLDER_ANY.search(normalized)
+    )
 
 
 def _is_content_usable(data: Optional[dict], title: str, min_words: int = 60) -> bool:
@@ -264,7 +268,9 @@ def _is_content_usable(data: Optional[dict], title: str, min_words: int = 60) ->
     return True
 
 
-def extract_article_content(url: str, title: str) -> tuple[Optional[dict], str, Optional[str]]:
+def extract_article_content(
+    url: str, title: str
+) -> tuple[Optional[dict], str, Optional[str]]:
     """
     품질 게이트가 붙은 본문 추출 — Python 내부에서 전부 처리.
 
@@ -284,7 +290,9 @@ def extract_article_content(url: str, title: str) -> tuple[Optional[dict], str, 
     thin_reason_1 = (
         "http fetch failed"
         if not html
-        else "trafilatura empty" if not data else f"thin (words={data.get('word_count', 0)})"
+        else "trafilatura empty"
+        if not data
+        else f"thin (words={data.get('word_count', 0)})"
     )
 
     # 2) Playwright 렌더 + trafilatura
@@ -326,7 +334,13 @@ def extract_article_content(url: str, title: str) -> tuple[Optional[dict], str, 
         print(f"    [!] defuddle fallback 예외: {e}")
 
     fallback = rendered_data or data
-    best_method = "playwright+trafilatura" if rendered_data else "trafilatura" if data else "failed"
+    best_method = (
+        "playwright+trafilatura"
+        if rendered_data
+        else "trafilatura"
+        if data
+        else "failed"
+    )
     return fallback, best_method, f"{thin_reason_1}; {thin_reason_2}"
 
 
@@ -443,6 +457,52 @@ def extract_youtube_transcript(url: str, timeout: int = 60) -> Optional[dict]:
         }
 
 
+def extract_youtube_comments(
+    url: str, limit: int = YOUTUBE_MAX_COMMENTS, timeout: int = 90
+) -> Optional[str]:
+    """yt-dlp로 상위 댓글을 받아 본문용 마크다운 섹션으로 만든다.
+
+    자막과 달리 요청이 따로 들어가므로 실패해도 자막 추출을 막지 않는다.
+    답글은 받지 않는다(max_comments의 마지막 인자 0) — 영상 댓글의 답글은
+    대개 잡담이라 본문 신호 대비 길이만 늘린다.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        _run_group(
+            [
+                "yt-dlp",
+                "--skip-download",
+                "--write-comments",
+                "--write-info-json",
+                "--extractor-args",
+                f"youtube:comment_sort=top;max_comments={limit},all,{limit},0",
+                "-o",
+                f"{tmpdir}/%(id)s.%(ext)s",
+                url,
+            ],
+            timeout=timeout,
+        )
+
+        info_files = list(Path(tmpdir).glob("*.info.json"))
+        if not info_files:
+            return None
+        try:
+            info = json.loads(info_files[0].read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
+    collected = [
+        Comment(
+            author=str(raw.get("author") or "unknown"),
+            text=str(raw.get("text") or ""),
+            score=raw.get("like_count"),
+        )
+        for raw in (info.get("comments") or [])
+    ]
+    return render_comment_section(
+        "YouTube Comments", collected, max_comments=limit, score_unit="like"
+    )
+
+
 def _parse_subtitle_codes(section_text: str) -> List[str]:
     """yt-dlp --list-subs 출력에서 자막 코드 목록을 추출합니다."""
     codes: List[str] = []
@@ -490,9 +550,13 @@ def _resolve_preferred_subtitle_codes(available_codes: List[str]) -> List[str]:
     if not available_codes:
         return []
 
-    if any(code == "en-orig" or code.startswith("en-orig-") for code in available_codes):
+    if any(
+        code == "en-orig" or code.startswith("en-orig-") for code in available_codes
+    ):
         prefixes = ["en-orig", "en", "ko"]
-    elif any(code == "ko-orig" or code.startswith("ko-orig-") for code in available_codes):
+    elif any(
+        code == "ko-orig" or code.startswith("ko-orig-") for code in available_codes
+    ):
         prefixes = ["ko-orig", "ko", "en"]
     else:
         prefixes = ["en", "ko"]
@@ -593,6 +657,21 @@ def _enrich_article_item(item: dict, url: str) -> Optional[dict]:
     return data
 
 
+def _apply_youtube_comments(item: dict, url: str) -> None:
+    """영상 댓글을 본문 뒤에 잇는다. 자막과 별개 요청이라 자막이 없어도 남길 가치가 있다."""
+    try:
+        section = extract_youtube_comments(url)
+    except Exception as e:  # noqa: BLE001 - 댓글 실패가 영상 저장을 막지 않는다
+        print(f"    [!] 댓글 추출 실패: {e}")
+        return
+    if not section:
+        return
+    item["content_markdown"] = append_comment_section(
+        item.get("content_markdown"), section
+    )
+    print(f"    -> 댓글 {section.count(chr(10) + '- ') + 1}건")
+
+
 def enrich_with_content(items: List[dict]) -> List[dict]:
     """각 항목에 defuddle로 원문 콘텐츠 추가"""
     targets = list(items)
@@ -631,6 +710,8 @@ def enrich_with_content(items: List[dict]) -> List[dict]:
                     item["content_markdown"] = ""
                     item["word_count"] = 0
                     print(f"    [!] 자막 추출 실패: {e}")
+
+            _apply_youtube_comments(item, url)
             continue
 
         # GeekNews: 토픽 페이지의 한국어 요약을 1차 본문으로 삼고, 원문 추출은 뒤에 붙인다.
@@ -715,7 +796,9 @@ def _pdf_page_text(page) -> str:
     return "\n".join(b[4].strip() for b in left + right)
 
 
-def extract_pdf_text(pdf_url: str, timeout: int = 30, min_words: int = 100) -> Optional[dict]:
+def extract_pdf_text(
+    pdf_url: str, timeout: int = 30, min_words: int = 100
+) -> Optional[dict]:
     """arXiv PDF를 내려받아 본문 텍스트를 추출 (2단 레이아웃 대응)."""
     if fitz is None:
         return None
@@ -788,7 +871,9 @@ def enrich_papers_with_content(items: List[dict]) -> List[dict]:
                     item["content_markdown"] = abstract
                     item["word_count"] = len(abstract.split())
                     item["enrichment_method"] = "failed"
-                    print(f"    -> HTML/PDF 없음, abstract 폴백 ({item['word_count']} words)")
+                    print(
+                        f"    -> HTML/PDF 없음, abstract 폴백 ({item['word_count']} words)"
+                    )
                 else:
                     item["content_markdown"] = ""
                     item["word_count"] = 0
@@ -796,7 +881,9 @@ def enrich_papers_with_content(items: List[dict]) -> List[dict]:
                     print("    -> HTML/PDF/abstract 모두 없음")
 
     html_n = sum(
-        1 for it in targets if it.get("enrichment_method") is None and it.get("word_count", 0) > 0
+        1
+        for it in targets
+        if it.get("enrichment_method") is None and it.get("word_count", 0) > 0
     )
     pdf_n = sum(1 for it in targets if it.get("enrichment_method") == "pdf")
     abstract_n = sum(
