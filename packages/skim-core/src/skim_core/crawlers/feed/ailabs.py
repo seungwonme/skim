@@ -77,7 +77,9 @@ def _parse_date_text(text: str) -> Optional[datetime]:
     month, day, year = m.group(1), m.group(2), m.group(3)
     for fmt in ("%b %d, %Y", "%B %d, %Y"):
         try:
-            return datetime.strptime(f"{month} {day}, {year}", fmt).replace(tzinfo=timezone.utc)
+            return datetime.strptime(f"{month} {day}, {year}", fmt).replace(
+                tzinfo=timezone.utc
+            )
         except ValueError:
             continue
     return None
@@ -203,7 +205,6 @@ def _fetch_sitemap_lastmod_map(sitemap_url: str) -> Dict[str, str]:
 
 _SITEMAP_URLS = {
     "www.anthropic.com": "https://www.anthropic.com/sitemap.xml",
-    "www.langchain.com": "https://www.langchain.com/sitemap.xml",
     "openai.com": "https://openai.com/sitemap.xml",
 }
 
@@ -274,7 +275,9 @@ def _resolve_entry_datetime(
     published_raw = meta.get("published") or ""
     iso_dt = _parse_iso8601(published_raw)
     is_sitemap_only = (
-        bool(_sitemap_published(url)) and iso_dt and _sitemap_published(url) == published_raw
+        bool(_sitemap_published(url))
+        and iso_dt
+        and _sitemap_published(url) == published_raw
     )
 
     # anchor 텍스트가 있고 article meta가 sitemap lastmod 밖에 없으면 anchor 우선
@@ -336,7 +339,9 @@ def _parse_anthropic_index(source: dict, html: str) -> List[Dict[str, Any]]:
             collected[href] = {
                 "href": href,
                 "absolute_url": (
-                    href if href.startswith("http") else f"https://www.anthropic.com{href}"
+                    href
+                    if href.startswith("http")
+                    else f"https://www.anthropic.com{href}"
                 ),
                 "anchor_date": anchor_date,
                 "title_hint": title_hint,
@@ -353,45 +358,12 @@ def _parse_anthropic_index(source: dict, html: str) -> List[Dict[str, Any]]:
     return list(collected.values())
 
 
-def _parse_langchain_index(source: dict, html: str) -> List[Dict[str, Any]]:
-    """LangChain /blog 인덱스에서 (url, anchor_date_text, title_hint) 수집."""
-    del source
-    soup = BeautifulSoup(html, "html.parser")
-
-    seen: set = set()
-    entries: List[Dict[str, Any]] = []
-    for container in soup.select(".w-dyn-item"):
-        anchor = container.find(
-            "a",
-            href=lambda h: (
-                h and h.startswith("/blog/") and "/blog/category/" not in h and h != "/blog/"
-            ),
-        )
-        h2 = container.find("h2")
-        if not anchor or not h2:
-            continue
-        href = anchor["href"]
-        if href in seen:
-            continue
-        seen.add(href)
-
-        anchor_text = container.get_text(" ", strip=True)
-        entries.append(
-            {
-                "href": href,
-                "absolute_url": f"https://www.langchain.com{href}",
-                "anchor_date": _parse_date_text(anchor_text),
-                "title_hint": h2.get_text(strip=True),
-                "default_author": "LangChain",
-            }
-        )
-    return entries
-
-
 # === 소스 타입별 수집 ======================================================
 
 
-def _collect_from_rss(source: dict, since: datetime, limit: Optional[int] = None) -> List[dict]:
+def _collect_from_rss(
+    source: dict, since: datetime, limit: Optional[int] = None
+) -> List[dict]:
     """RSS 소스(OpenAI 등)."""
     results = fetch_feed(source["url"], f"ailabs/{source['name']}", since)
     return results[:limit] if limit else results
@@ -438,7 +410,9 @@ def _collect_from_html(
                 "title": title,
                 "url": url,
                 "author": author,
-                "published": entry_dt.astimezone(timezone.utc).isoformat() if entry_dt else "",
+                "published": entry_dt.astimezone(timezone.utc).isoformat()
+                if entry_dt
+                else "",
                 "summary": "",
                 "external_id": _external_id_from_url(url),
             }
@@ -470,14 +444,6 @@ def _dispatch(
             limit=limit,
             fast_metadata=fast_metadata,
         )
-    if t == "langchain":
-        return _collect_from_html(
-            source,
-            since,
-            _parse_langchain_index,
-            limit=limit,
-            fast_metadata=fast_metadata,
-        )
     return []
 
 
@@ -498,7 +464,14 @@ def _item_to_post(item: dict) -> Post:
     extras = {
         key: value
         for key, value in item.items()
-        if key in ("enrichment_method", "enrichment_error", "description", "image", "original_url")
+        if key
+        in (
+            "enrichment_method",
+            "enrichment_error",
+            "description",
+            "image",
+            "original_url",
+        )
         and value is not None
     }
     return Post(
