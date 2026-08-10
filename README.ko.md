@@ -82,6 +82,10 @@ uv run skim crawl reddit --subreddit python --sort hot --count 10
 ```bash
 uv run skim research "AI video" --days 7 --emit summary
 uv run skim research "vector database" --sources hackernews,arxiv --emit json
+
+# `--emit json`은 본문을 전문으로 싣는다. 에이전트에 넘기기 전에 줄인다.
+uv run skim research "agents" --fields platform,title,url,timestamp
+uv run skim research "agents" --max-chars 2000    # 자른 글에는 truncated가 붙는다
 ```
 
 로컬 데이터 점검과 bundle 생성:
@@ -89,9 +93,21 @@ uv run skim research "vector database" --sources hackernews,arxiv --emit json
 ```bash
 uv run skim doctor
 uv run skim doctor --platform reddit
+uv run skim doctor --strict            # warning이 있으면 exit 1 (cron 연동용)
+uv run skim backup --keep 3            # 온라인 백업 + quick_check
 uv run skim refresh-plan --days 1
 uv run skim coverage --days 7 --emit json
 uv run skim bundle "AI video" --days 7
+uv run skim bundle --days 1 --group-by platform    # topic 없이: 최근 글을 본문까지
+```
+
+SQLite 밖으로 꺼내기:
+
+```bash
+uv run skim export ./exported --days 7                 # 글 하나당 마크다운 파일 1개
+uv run skim export ./exported --days 7 --format json
+uv run skim source export --out sources.opml           # 소스 목록 공유·백업
+uv run skim source import sources.opml --platform blogs
 ```
 
 ## Agent Skill
