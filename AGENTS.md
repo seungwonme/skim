@@ -198,6 +198,11 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
   조용히 넘어가면 "그날 그만큼밖에 없었다"로 읽힌다.
 - **불완전한 본문은 표시한다.** everyto는 구독자 벽까지만 저장되므로
   `content_status="paywalled"`를 단다. 표시가 없으면 반쪽을 완결된 글로 요약한다.
+- **서브피드 이름을 `platform`에 넣지 않는다.** `db.py`는 Post의 `platform`을 인자보다
+  우선하므로, `fetch_feed`가 넣는 피드 이름(`hackernews/show`)을 그대로 넘기면 DB에
+  별도 플랫폼 행이 생긴다. 서브피드는 `source`에 남긴다 (blogs가 쓰는 방식).
+  2026-08-10에 Show/Ask HN 60행이 그렇게 갈렸다. hnrss show/ask가 실제로 저장된
+  회차가 그때가 처음이라 도입 시점(#14)에는 안 드러났다.
 - **한 호스트에 물린 소스는 폴백 경로를 둔다.** 데일리는 고정 창으로 돌아 그 회차를
   놓치면 다음 날 창에 다시 안 들어온다. 그대로 영구 유실이다. hackernews는 피드 세
   장이 전부 hnrss.org라 502에 같이 넘어가므로, 0건인 피드를 Algolia

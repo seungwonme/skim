@@ -112,6 +112,44 @@ class TestAlgoliaFallbackQuery(unittest.TestCase):
         self.assertIn(f"created_at_i>={int(aware.timestamp())}", captured[0])
 
 
+class TestSubFeedLabeling(unittest.TestCase):
+    """서브피드 이름이 DB의 platform으로 새지 않는지 본다.
+
+    db.py는 Post의 platform을 인자보다 우선한다. fetch_feed가 넣는 피드 이름을
+    그대로 넘기면 `hackernews/show`라는 별도 플랫폼 행이 생긴다
+    (2026-08-10 프로덕션에서 60행 발생, 수리함).
+    """
+
+    def test_sub_feed_name_goes_to_source_not_platform(self):
+        crawler = hackernews.HackerNewsCrawler()
+        item = hackernews._algolia_item(_hit("55"), "hackernews/show")
+
+        post = crawler._item_to_post(item)
+
+        self.assertEqual(post.platform, "hackernews")
+        self.assertEqual(post.source, "hackernews/show")
+
+    def test_every_crawled_post_is_labeled_hackernews(self):
+        responses = {
+            "hackernews": [_item("1")],
+            "hackernews/show": [hackernews._algolia_item(_hit("2"), "hackernews/show")],
+            "hackernews/ask": [hackernews._algolia_item(_hit("3"), "hackernews/ask")],
+        }
+
+        with patch.object(
+            hackernews,
+            "fetch_feed",
+            side_effect=lambda url, name, since: responses[name],
+        ):
+            posts = asyncio.run(
+                hackernews.HackerNewsCrawler().crawl(
+                    since=datetime(2026, 8, 10, tzinfo=timezone.utc), no_content=True
+                )
+            )
+
+        self.assertEqual({p.platform for p in posts}, {"hackernews"})
+
+
 class TestFallbackTrigger(unittest.TestCase):
     def setUp(self):
         self.since = datetime(2026, 8, 10, tzinfo=timezone.utc)

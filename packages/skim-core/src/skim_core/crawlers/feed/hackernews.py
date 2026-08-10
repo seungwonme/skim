@@ -405,7 +405,11 @@ class HackerNewsCrawler:
             and value
         }
         return Post(
-            platform=item.get("platform", self.platform),
+            # 피드 이름(hackernews/show 등)을 platform에 그대로 넘기면 안 된다.
+            # db.py가 Post의 platform을 우선하므로 DB에 `hackernews/show`라는
+            # 별도 플랫폼 행이 생긴다. 서브피드는 source로 남긴다 (blogs와 같은 방식).
+            platform=self.platform,
+            source=item.get("platform") or self.platform,
             author=item.get("author", ""),
             title=item.get("title", ""),
             content="",
