@@ -80,5 +80,43 @@ class RenderJoinTimeoutTests(unittest.TestCase):
         self.assertLess(elapsed, 3, "join이 무기한 기다리면 크롤 프로세스가 멈춘다")
 
 
+class CrawlerSessionTests(unittest.TestCase):
+    """arxiv/huggingface가 재시도 세션을 실제로 쓰는지 확인한다.
+
+    make_retrying_session은 PR #14에서 만들었지만 이 두 크롤러에는 연결되지
+    않아, 데일리에서 조용히 멈춰 있던 바로 그 소스가 503 한 번에 다시 유실될
+    수 있었다.
+    """
+
+    def _max_retries(self, session):
+        return session.get_adapter("https://example.com").max_retries.total
+
+    def test_arxiv_uses_a_retrying_session(self):
+        from skim_core.crawlers.feed import arxiv
+
+        self.assertGreaterEqual(self._max_retries(arxiv._SESSION), 3)
+
+    def test_huggingface_uses_a_retrying_session(self):
+        from skim_core.crawlers.feed import huggingface
+
+        self.assertGreaterEqual(self._max_retries(huggingface._SESSION), 3)
+
+    def test_arxiv_category_failure_is_not_silent_zero(self):
+        # feedparser에 URL을 직접 주면 실패해도 빈 피드를 돌려줘, 4개 카테고리 중
+        # 하나가 죽어도 나머지가 정상 카운트를 만들어 0건 회귀 감지에 안 걸린다.
+        from requests import RequestException
+
+        from skim_core.crawlers.feed import arxiv
+
+        with (
+            patch.object(
+                arxiv._SESSION, "get", side_effect=RequestException("503")
+            ),
+            patch("skim_core.crawlers.feed.arxiv.typer.echo") as echo,
+        ):
+            self.assertIsNone(arxiv._fetch_category("cs.AI"))
+        self.assertTrue(echo.called)
+
+
 if __name__ == "__main__":
     unittest.main()

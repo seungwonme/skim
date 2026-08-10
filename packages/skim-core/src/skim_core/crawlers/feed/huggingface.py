@@ -7,11 +7,14 @@ import re
 from datetime import datetime, timezone
 from typing import Any, List
 
-import requests
-
 from ...enrichment import enrich_papers_with_content
 from ...feed_config import HUGGINGFACE_PAPERS_URL
+from ...feed_utils import FEED_TIMEOUT_SECONDS, make_retrying_session
 from ...models import Post
+
+# 단발 요청이면 503 한 번에 그 회차가 통째로 0건이 된다.
+# raise_for_status가 crawl 안에 있어 예외가 CLI까지 올라가기 때문이다.
+_SESSION = make_retrying_session()
 
 
 def _parse_iso(value: str) -> Any:
@@ -33,7 +36,7 @@ class HuggingFaceCrawler:
         no_content = options.get("no_content", False)
         since = options.get("since")
 
-        resp = requests.get(HUGGINGFACE_PAPERS_URL, timeout=15)
+        resp = _SESSION.get(HUGGINGFACE_PAPERS_URL, timeout=FEED_TIMEOUT_SECONDS)
         resp.raise_for_status()
         papers = resp.json()
 

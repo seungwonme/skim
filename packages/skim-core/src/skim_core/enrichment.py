@@ -806,7 +806,9 @@ def extract_pdf_text(
     if fitz is None:
         return None
     try:
-        resp = requests.get(pdf_url, headers=_UA_HEADERS, timeout=timeout)
+        # arxiv.org/pdf를 한 회차에 최대 50건 연속으로 때리는 경로다. 단발이면
+        # 여기서 막힐 때 본문이 조용히 abstract 폴백으로 떨어진다.
+        resp = _HTTP_SESSION.get(pdf_url, timeout=timeout)
         resp.raise_for_status()
     except requests.RequestException as exc:
         print(f"    [!] PDF fetch 실패 ({pdf_url[:60]}...): {exc}")
