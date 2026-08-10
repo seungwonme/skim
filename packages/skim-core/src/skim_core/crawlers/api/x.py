@@ -308,6 +308,23 @@ class XAPICrawler:
         root_author_id: Optional[str],
         source_tweets: Optional[list[dict]] = None,
     ) -> Optional[str]:
+        """답글 섹션을 만들되 절대 예외를 위로 올리지 않는다.
+
+        이 함수는 `_parse_tweets` 루프 안에서 불린다. 상류 응답 구조가 바뀌어 파싱이
+        터지면 그 회차의 트윗이 통째로 유실되므로, 답글만 포기하고 본문은 살린다.
+        """
+        try:
+            return self._build_reply_section(conv_id, root_author_id, source_tweets)
+        except Exception as exc:  # noqa: BLE001 - 답글 실패가 게시물 저장을 막지 않는다
+            typer.echo(f"   [!] X 답글 파싱 실패: {exc}")
+            return None
+
+    def _build_reply_section(
+        self,
+        conv_id: str,
+        root_author_id: Optional[str],
+        source_tweets: Optional[list[dict]] = None,
+    ) -> Optional[str]:
         """conversation에 달린 타인 답글을 본문용 섹션으로 만든다.
 
         `source_tweets`가 오면 이미 받은 TweetDetail 응답을 재사용해 요청이 늘지 않는다.

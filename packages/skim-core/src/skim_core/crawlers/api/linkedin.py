@@ -8,6 +8,7 @@ endpoint를 호출합니다. DOM 파싱 없이 normalized payload에서 게시�
 
 import json
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, List, Optional
@@ -24,6 +25,8 @@ LINKEDIN_BASE_URL = "https://www.linkedin.com"
 VOYAGER_FEED_URL = f"{LINKEDIN_BASE_URL}/voyager/api/feed/updatesV2"
 VOYAGER_COMMENTS_URL = f"{LINKEDIN_BASE_URL}/voyager/api/feed/comments"
 MAX_COMMENTS = 15
+# 댓글은 게시글당 요청 1건이다. 호스트별 간격을 둬서 연속 호출로 눈에 띄지 않게 한다.
+COMMENT_REQUEST_INTERVAL_SECONDS = 1.0
 LINKEDIN_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
@@ -106,8 +109,20 @@ class LinkedInAPICrawler:
     def attach_comments(self, posts: List[Post]) -> None:
         """게시글별 댓글을 정본 본문 뒤에 잇는다. 게시글당 요청 1건이 늘어난다."""
         failures = 0
-        for post in posts:
-            section = self.fetch_comment_section(post.external_id)
+        for index, post in enumerate(posts):
+            if (post.comments or 0) < 1:
+                continue
+            # 게시글당 요청 1건이라 호스트별 간격을 둔다 (reddit과 같은 패턴).
+            if index:
+                time.sleep(COMMENT_REQUEST_INTERVAL_SECONDS)
+            # HTTP 실패는 fetch_comment_section 안에서 None이 된다. 여기서 잡는 건
+            # Voyager 응답 구조가 바뀌었을 때의 파싱 실패다.
+            try:
+                section = self.fetch_comment_section(post.external_id)
+            except Exception as exc:  # noqa: BLE001 - 댓글 실패가 게시글 저장을 막지 않는다
+                failures += 1
+                typer.echo(f"   [!] LinkedIn 댓글 파싱 실패: {exc}")
+                continue
             if section is None and post.external_id:
                 failures += 1
                 continue
