@@ -37,7 +37,9 @@ jobs:
         run: pnpm install
 
       - name: Sync Python workspace
-        run: uv sync
+        # --locked: lockfile과 어긋나면 조용히 갱신하지 말고 실패한다.
+        # 그냥 uv sync면 CI가 로컬과 다른 버전으로 통과할 수 있다.
+        run: uv sync --locked
 
       - name: Install Playwright browsers
         run: uv run playwright install
