@@ -3,6 +3,7 @@
 @description Every.to 크롤러 (RSS, 멀티 피드)
 """
 
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, List
 
@@ -11,6 +12,25 @@ from ...feed_config import EVERY_TO_FEEDS
 from ...feed_utils import fetch_feed
 from ...models import Post
 from ...source_registry import resolve_feed_sources
+
+
+# 구독자 벽. 무료 미리보기가 여기서 끊기고 나머지는 프로모 문구로 채워진다.
+# (2026-08-10 실측: "...to unlock this piece and learn about:")
+_PAYWALL = re.compile(
+    r"(?:to unlock this piece|unlock this piece and learn|"
+    r"subscribe to (?:read|continue|unlock))",
+    re.IGNORECASE,
+)
+
+
+def is_truncated(body: str) -> bool:
+    """본문이 구독자 벽에서 잘렸는지 판정한다.
+
+    잘린 글을 완결된 본문으로 두면 소비 시점(research/digest/데스크톱)에서
+    문장 중간에서 끝난 글을 그대로 요약하게 된다. 로그인은 붙이지 않기로 했으므로
+    (사용자 결정, 2026-08-10) 최소한 표시는 남긴다.
+    """
+    return bool(_PAYWALL.search(body or ""))
 
 
 def _item_to_post(item: dict) -> Post:
@@ -32,6 +52,11 @@ def _item_to_post(item: dict) -> Post:
         source=item.get("platform", ""),
         content_markdown=item.get("content_markdown", ""),
         word_count=item.get("word_count"),
+        **(
+            {"content_status": "paywalled"}
+            if is_truncated(item.get("content_markdown", ""))
+            else {}
+        ),
         **extras,
     )
 

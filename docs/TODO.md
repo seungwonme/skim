@@ -53,6 +53,14 @@ Probed and failed, so nobody re-checks them by hand (2026-08-10):
   date field on any entry. `fetch_feed` drops undated entries, so registering it collects
   nothing while looking healthy. Needs a custom parser that reads dates off the article page.
 
+## Known Limits
+
+- `everyto` — Every.to articles are stored only up to the subscriber wall, so the
+  body ends mid-piece and the rest is promo copy. Adding a login was considered and
+  declined (2026-08-10): it needs a paid subscription and session upkeep. Truncated
+  rows now carry `content_status: paywalled` in extras, so consumers can tell a cut
+  body from a complete one instead of summarizing half an article as if it were whole.
+
 ## Retired Sources
 
 - `bluesky` — added 2026-08-10 and removed the same day. The crawler worked (HTTP 200,

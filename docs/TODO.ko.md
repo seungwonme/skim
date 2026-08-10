@@ -53,6 +53,14 @@ Skim에 넣을 source 후보와 promotion checklist입니다. 구현 계획은 `
 
 - Google AI blogs and research updates
 
+## 알려진 한계
+
+- `everyto` - Every.to 글은 구독자 벽 직전까지만 저장돼서 본문이 문장 중간에서
+  끊기고 나머지는 프로모 문구다. 로그인 연결은 검토 후 하지 않기로 했다
+  (2026-08-10). 유료 구독과 세션 관리가 따라붙는다. 대신 잘린 행에
+  `content_status: paywalled`를 붙여, 소비 시점에 반쪽짜리를 완결된 글로
+  요약하지 않게 했다.
+
 ## 제외된 소스
 
 - `bluesky` - 2026-08-10에 추가했다가 같은 날 제거했다. 크롤러는 동작했지만
