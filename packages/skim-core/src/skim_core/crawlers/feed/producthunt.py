@@ -171,6 +171,9 @@ class ProductHuntCrawler:
             return []
 
         items.sort(key=lambda x: x.get("published", ""), reverse=True)
+        # CLI가 마지막에 posts[:count]로 자르므로, 버려질 항목을 enrichment하지 않는다.
+        if options.get("count") is not None:
+            items = items[: options["count"]]
 
         for item in items:
             item["enrich_url"] = _redirect_url(item)
