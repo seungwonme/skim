@@ -196,11 +196,12 @@ def _algolia_item(hit: dict, source_name: str) -> Optional[dict]:
     }
 
 
-def fetch_algolia_fallback(since: datetime) -> List[dict]:
-    """hnrss가 죽은 회차에 Algolia로 같은 창을 다시 채운다.
+def fetch_algolia_fallback(since: datetime, only: Optional[set] = None) -> List[dict]:
+    """hnrss가 0건을 준 피드를 Algolia로 다시 채운다.
 
-    hnrss.org는 단일 호스트라 502가 나면 세 피드가 한꺼번에 0건이 된다. 데일리는
-    고정 창으로 돌아 다음 날 창에 그 글이 다시 안 들어오므로 그대로 영구 유실이다.
+    hnrss.org는 502를 피드 단위로 낸다. 세 장이 같이 죽기도 하고 한 장만 죽기도
+    한다. 데일리는 고정 창으로 돌아 다음 날 창에 그 글이 다시 안 들어오므로,
+    한 장만 죽어도 그 피드 몫은 그대로 영구 유실이다.
     """
     if since.tzinfo is None:
         since = since.replace(tzinfo=KST)
@@ -208,6 +209,8 @@ def fetch_algolia_fallback(since: datetime) -> List[dict]:
 
     items: List[dict] = []
     for source_name, tags, extra_filter, limit in HACKERNEWS_ALGOLIA_FALLBACK:
+        if only is not None and source_name not in only:
+            continue
         numeric = ",".join(f for f in (extra_filter, f"created_at_i>={ts}") if f)
         try:
             resp = _ALGOLIA_SESSION.get(
@@ -253,6 +256,7 @@ class HackerNewsCrawler:
             # 본문이 알맹이라 점수 문턱에 걸리면 대부분 사라진다.
             items: List[dict] = []
             seen_links: set[str] = set()
+            empty_feeds: set[str] = set()
 
             def collect(fetched: List[dict]) -> None:
                 for item in fetched:
@@ -273,13 +277,21 @@ class HackerNewsCrawler:
                         f"   [!] {name}: 피드 상한 {limit}건에 닿았습니다. "
                         "창 안의 더 오래된 글은 수집되지 않습니다."
                     )
+                if not fetched:
+                    empty_feeds.add(name)
                 collect(fetched)
 
-            if not items:
-                # 세 피드가 동시에 0건이면 글이 없는 게 아니라 hnrss가 죽은 것이다.
-                # 호스트가 하나라 502가 나면 셋이 같이 넘어간다.
-                typer.echo("   [!] hnrss 전 피드 0건. Algolia로 폴백합니다.")
-                collect(fetch_algolia_fallback(since))
+            if empty_feeds:
+                # 0건은 글이 없어서가 아니라 hnrss가 죽어서다. HN은 하루 창에
+                # 세 피드 어느 쪽도 0건이 되는 날이 없다. 502가 세 장을 같이
+                # 죽이기도 하고 한 장만 죽이기도 해서, 살아남은 피드가 있어도
+                # 죽은 피드 몫은 그대로 유실된다 (2026-08-10 프로덕션 실측).
+                # 정말 글이 없었다면 Algolia도 0건을 주므로 무해하다.
+                typer.echo(
+                    f"   [!] hnrss {', '.join(sorted(empty_feeds))} 0건. "
+                    "Algolia로 폴백합니다."
+                )
+                collect(fetch_algolia_fallback(since, only=empty_feeds))
 
             items.sort(key=lambda x: x.get("published", ""), reverse=True)
             # CLI가 마지막에 posts[:count]로 자르므로, 버려질 항목을 enrichment하지 않는다.

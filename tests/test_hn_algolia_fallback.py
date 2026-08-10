@@ -121,13 +121,16 @@ class TestFallbackTrigger(unittest.TestCase):
             patch.object(hackernews, "fetch_feed", return_value=[]),
             patch.object(
                 hackernews, "fetch_algolia_fallback", return_value=[_item("333")]
-            ),
+            ) as fallback,
         ):
             posts = asyncio.run(
                 hackernews.HackerNewsCrawler().crawl(since=self.since, no_content=True)
             )
 
         self.assertEqual([p.external_id for p in posts], ["333"])
+        self.assertEqual(
+            fallback.call_args.kwargs["only"], set(hackernews.HACKERNEWS_FEEDS)
+        )
 
     def test_does_not_fall_back_when_hnrss_works(self):
         with (
@@ -142,21 +145,47 @@ class TestFallbackTrigger(unittest.TestCase):
         # 피드 3장이 같은 항목을 주므로 url 중복 제거로 1건만 남는다.
         self.assertEqual(len(posts), 1)
 
-    def test_partial_feed_failure_does_not_trigger_fallback(self):
-        """한 장이라도 살아 있으면 폴백을 돌리지 않는다. 중복 요청만 늘어난다."""
-        responses = iter([[_item("1")], [], []])
+    def test_one_dead_feed_is_refilled_even_if_the_others_live(self):
+        """hnrss 502는 피드 단위로 온다. 살아남은 피드가 있어도 죽은 몫은 유실된다.
+
+        2026-08-10 프로덕션에서 newest만 502가 났고 show/ask는 살아 있었다.
+        "전부 0건일 때만" 조건에서는 30점 이상 글 전량이 그대로 사라졌다.
+        """
+        responses = {
+            "hackernews": [],
+            "hackernews/show": [_item("1")],
+            "hackernews/ask": [_item("2")],
+        }
 
         with (
             patch.object(
-                hackernews, "fetch_feed", side_effect=lambda *a, **k: next(responses)
+                hackernews,
+                "fetch_feed",
+                side_effect=lambda url, name, since: responses[name],
             ),
-            patch.object(hackernews, "fetch_algolia_fallback") as fallback,
+            patch.object(
+                hackernews, "fetch_algolia_fallback", return_value=[_item("3")]
+            ) as fallback,
         ):
-            asyncio.run(
+            posts = asyncio.run(
                 hackernews.HackerNewsCrawler().crawl(since=self.since, no_content=True)
             )
 
-        fallback.assert_not_called()
+        # 죽은 피드 한 장만 Algolia로 다시 친다.
+        self.assertEqual(fallback.call_args.kwargs["only"], {"hackernews"})
+        self.assertEqual(sorted(p.external_id for p in posts), ["1", "2", "3"])
+
+    def test_fallback_only_queries_the_named_feeds(self):
+        calls = []
+
+        def fake_get(url, params=None, timeout=None):
+            calls.append(params["tags"])
+            return FakeResponse({"hits": []})
+
+        with patch.object(hackernews._ALGOLIA_SESSION, "get", side_effect=fake_get):
+            hackernews.fetch_algolia_fallback(self.since, only={"hackernews/ask"})
+
+        self.assertEqual(calls, ["story,ask_hn"])
 
 
 if __name__ == "__main__":
