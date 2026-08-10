@@ -27,9 +27,11 @@ from skim_core.db import (
     init_db,
     list_tracked_sources,
     migrate_canonical_body,
+    POST_STATES,
     platforms_with_recent_posts,
     save_posts,
     save_run,
+    set_post_state,
     update_run_progress,
     upsert_tracked_source,
 )
@@ -1079,7 +1081,11 @@ def _bundle_summary(
 
 
 def _recent_posts(
-    db_path: Path, days: int, platforms: Optional[list[str]], limit: int
+    db_path: Path,
+    days: int,
+    platforms: Optional[list[str]],
+    limit: int,
+    unread_only: bool = False,
 ) -> list[dict]:
     """topic 없이 최근 게시글을 본문까지 읽는다.
 
@@ -1091,12 +1097,18 @@ def _recent_posts(
     if platforms:
         where.append(f"platform IN ({','.join('?' * len(platforms))})")
         params.extend(platforms)
+    if unread_only:
+        where.append(
+            "posts.id NOT IN (SELECT post_id FROM feedback "
+            f"WHERE action IN ({','.join('?' * len(POST_STATES))}))"
+        )
+        params.extend(POST_STATES)
     params.append(limit)
 
     conn = get_connection(db_path)
     try:
         rows = conn.execute(
-            f"""SELECT {", ".join(ALLOWED_POST_FIELDS[:-2])}
+            f"""SELECT posts.id, {", ".join(ALLOWED_POST_FIELDS[:-2])}
                 FROM posts
                 WHERE {" AND ".join(where)}
                 ORDER BY COALESCE(NULLIF(timestamp, ''), crawled_at) DESC
@@ -1106,6 +1118,35 @@ def _recent_posts(
     finally:
         conn.close()
     return [dict(row) for row in rows]
+
+
+@app.command("mark")
+def mark_posts(
+    post_ids: List[int] = typer.Argument(..., help="posts.id (공백 구분)"),
+    state: str = typer.Option(
+        "read", "--state", help="read | archived | unread (unread는 상태를 지운다)"
+    ),
+    db: Optional[Path] = typer.Option(None, "--db", help="SQLite DB 경로"),
+) -> None:
+    """게시글의 소비 상태를 기록합니다.
+
+    하루 200건대가 들어오는데 어디까지 봤는지 표시할 데가 없었다. `feedback`
+    테이블이 스키마만 있고 행이 0개였어서 새 컬럼 대신 그걸 쓴다.
+    """
+    if state not in (*POST_STATES, "unread"):
+        typer.echo(
+            f"[skim] invalid --state: {state!r}. "
+            f"choose from {[*POST_STATES, 'unread']}",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    db_path = _db_or_default(db)
+    init_db(db_path)
+    target = None if state == "unread" else state
+    for post_id in post_ids:
+        set_post_state(post_id, target, db_path)
+    typer.echo(f"{len(post_ids)}건 -> {state}")
 
 
 VALID_REFRESH_MODES = {"auto", "never", "force"}
@@ -1351,6 +1392,7 @@ def export_posts(
     limit: int = typer.Option(200, "--limit", help="최대 건수"),
     db: Optional[Path] = typer.Option(None, "--db", help="SQLite DB 경로"),
     fmt: str = typer.Option("md", "--format", help="md 또는 json"),
+    unread: bool = typer.Option(False, "--unread", help="아직 안 읽은 글만"),
 ) -> None:
     """정본 본문을 파일로 꺼낸다. 본문이 DB에만 있어 손으로 복사하던 자리다."""
     _validate_platform(platform)
@@ -1363,7 +1405,9 @@ def export_posts(
         typer.echo(f"missing database: {db_path}", err=True)
         raise typer.Exit(1)
 
-    rows = _recent_posts(db_path, days, [platform] if platform else None, limit)
+    rows = _recent_posts(
+        db_path, days, [platform] if platform else None, limit, unread_only=unread
+    )
     if not rows:
         typer.echo("내보낼 게시글이 없습니다.")
         return

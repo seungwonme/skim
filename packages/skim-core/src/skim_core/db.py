@@ -868,6 +868,53 @@ def platforms_with_recent_posts(days: int, db_path: Optional[Path] = None) -> se
     return {row[0] for row in rows}
 
 
+# 소비 상태. 새 컬럼을 만들지 않고 이미 있던 feedback 테이블을 쓴다. 이 테이블은
+# 스키마와 add_feedback()만 있고 호출자가 0개, 행이 0개인 채로 남아 있었다.
+POST_STATES = ("read", "archived")
+
+
+def set_post_state(
+    post_id: int, state: Optional[str], db_path: Optional[Path] = None
+) -> None:
+    """게시글의 소비 상태를 기록한다. state=None이면 지운다 (=안 읽음).
+
+    상태는 게시글당 하나다. 같은 글을 read -> archived로 바꾸면 앞의 값을 지운다.
+    """
+    if state is not None and state not in POST_STATES:
+        raise ValueError(f"unknown post state: {state!r} (choose from {POST_STATES})")
+
+    conn = get_connection(db_path)
+    try:
+        conn.execute(
+            f"DELETE FROM feedback WHERE post_id = ? AND action IN "
+            f"({','.join('?' * len(POST_STATES))})",
+            (post_id, *POST_STATES),
+        )
+        if state is not None:
+            conn.execute(
+                "INSERT INTO feedback (post_id, action) VALUES (?, ?)",
+                (post_id, state),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def post_states(db_path: Optional[Path] = None) -> dict:
+    """{post_id: state} 매핑. 상태가 없는 글은 키가 없다."""
+    conn = get_connection(db_path)
+    try:
+        rows = conn.execute(
+            f"""SELECT post_id, action FROM feedback
+                WHERE action IN ({",".join("?" * len(POST_STATES))})
+                ORDER BY id""",
+            POST_STATES,
+        ).fetchall()
+    finally:
+        conn.close()
+    return {row["post_id"]: row["action"] for row in rows}
+
+
 def add_feedback(post_id: int, action: str, db_path: Optional[Path] = None) -> None:
     """사용자 피드백을 저장합니다."""
     conn = get_connection(db_path)

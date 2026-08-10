@@ -258,10 +258,22 @@ public final class SkimDatabase {
         offset: Int = 0,
         sort: PostSort = .newest
     ) throws -> [DashboardPost] {
-        try query(
+        // 이 앱은 파이프라인이 소유한 DB를 읽는다. `feedback`이 없는 옛 파일도 있을 수
+        // 있어서, 없으면 상태 칸을 NULL로 채운다 (prepare 단계에서 통째로 죽지 않게).
+        let stateColumn = try hasTable("feedback")
+            ? """
+              (SELECT action FROM feedback
+                WHERE feedback.post_id = posts.id
+                  AND feedback.action IN ('read', 'archived')
+                ORDER BY feedback.id DESC LIMIT 1)
+              """
+            : "NULL"
+
+        return try query(
             """
-            SELECT id, platform, source, external_id, author, title, content, url, timestamp,
-                   likes, comments, summary, content_markdown, word_count, crawled_at, extra
+            SELECT posts.id, platform, source, external_id, author, title, content, url, timestamp,
+                   likes, comments, summary, content_markdown, word_count, crawled_at, extra,
+                   \(stateColumn)
             FROM posts
             WHERE \(clause)
             ORDER BY \(sort.orderClause)
@@ -285,9 +297,26 @@ public final class SkimDatabase {
                 contentMarkdown: text(statement, 12),
                 wordCount: int(statement, 13),
                 crawledAt: text(statement, 14) ?? "",
-                imageURLs: Self.imageURLs(fromExtra: text(statement, 15))
+                imageURLs: Self.imageURLs(fromExtra: text(statement, 15)),
+                state: text(statement, 16)
             )
         }
+    }
+
+    /// 게시글의 소비 상태를 기록합니다. `state`가 nil이면 지웁니다(= 안 읽음).
+    ///
+    /// CLI의 `skim mark`와 같은 테이블을 쓴다. 새 컬럼을 만들지 않고 스키마만 있고
+    /// 행이 0개이던 `feedback`을 재사용한다.
+    public func setPostState(id: Int64, state: String?) throws {
+        try execute(
+            "DELETE FROM feedback WHERE post_id = ? AND action IN ('read', 'archived')",
+            bindings: [.integer(id)]
+        )
+        guard let state, state == "read" || state == "archived" else { return }
+        try execute(
+            "INSERT INTO feedback (post_id, action) VALUES (?, ?)",
+            bindings: [.integer(id), .text(state)]
+        )
     }
 
     /// extra JSON의 `images`(첨부 배열)와 `image`(og:image)를 중복 제거해 합칩니다.
@@ -666,8 +695,17 @@ public final class SkimDatabase {
         UNIQUE(platform, login_identifier)
     );
 
+    CREATE TABLE IF NOT EXISTS feedback (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        post_id     INTEGER NOT NULL REFERENCES posts(id),
+        action      TEXT NOT NULL,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE INDEX IF NOT EXISTS idx_posts_platform ON posts(platform);
     CREATE INDEX IF NOT EXISTS idx_posts_crawled_at ON posts(crawled_at);
+    CREATE INDEX IF NOT EXISTS idx_feedback_post_id ON feedback(post_id);
+    CREATE INDEX IF NOT EXISTS idx_feedback_action ON feedback(action);
     CREATE INDEX IF NOT EXISTS idx_tracked_sources_platform ON tracked_sources(platform);
     CREATE INDEX IF NOT EXISTS idx_tracked_sources_enabled ON tracked_sources(is_enabled);
     CREATE INDEX IF NOT EXISTS idx_credentials_platform ON platform_credentials(platform);

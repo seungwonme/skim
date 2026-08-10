@@ -18,6 +18,8 @@ public struct DashboardPost: Identifiable, Equatable, Sendable {
     public let crawledAt: String
     /// 크롤러가 extra JSON에 남긴 첨부/대표 이미지 CDN URL (SNS images + og:image)
     public let imageURLs: [String]
+    /// 소비 상태. `feedback` 테이블의 read/archived 행에서 온다 (없으면 nil = 안 읽음).
+    public let state: String?
 
     public init(
         id: Int64,
@@ -35,7 +37,8 @@ public struct DashboardPost: Identifiable, Equatable, Sendable {
         contentMarkdown: String? = nil,
         wordCount: Int? = nil,
         crawledAt: String,
-        imageURLs: [String] = []
+        imageURLs: [String] = [],
+        state: String? = nil
     ) {
         self.id = id
         self.platform = platform
@@ -53,7 +56,10 @@ public struct DashboardPost: Identifiable, Equatable, Sendable {
         self.wordCount = wordCount
         self.crawledAt = crawledAt
         self.imageURLs = imageURLs
+        self.state = state
     }
+
+    public var isRead: Bool { state != nil }
 
     public var displayTitle: String {
         guard let title, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {

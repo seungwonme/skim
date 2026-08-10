@@ -255,6 +255,51 @@ func searchRunsOverWholeDatabaseAndTreatsWildcardsAsLiterals() throws {
     }
 }
 
+/// 읽음 상태는 CLI(`skim mark`)와 같은 `feedback` 행을 쓴다. 새 컬럼을 만들지 않고
+/// 스키마만 있고 행이 0개이던 테이블을 재사용한다.
+@Test
+func postStateRoundTripsThroughTheFeedbackTable() throws {
+    try withFixtureDatabase { database in
+        try database.execute(
+            """
+            INSERT INTO posts (platform, author, content, crawled_at)
+            VALUES ('blogs', 'a', 'body', '2026-08-10 01:00:00');
+            """
+        )
+        let postID = try #require(try database.fetchRecentPosts(limit: 1).first).id
+
+        #expect(try database.fetchRecentPosts(limit: 1).first?.isRead == false)
+
+        try database.setPostState(id: postID, state: "read")
+        #expect(try database.fetchRecentPosts(limit: 1).first?.state == "read")
+        #expect(try database.fetchRecentPosts(limit: 1).first?.isRead == true)
+
+        // 상태는 게시글당 하나다. 바꾸면 앞의 값이 남으면 안 된다.
+        try database.setPostState(id: postID, state: "archived")
+        #expect(try database.fetchRecentPosts(limit: 1).first?.state == "archived")
+
+        try database.setPostState(id: postID, state: nil)
+        #expect(try database.fetchRecentPosts(limit: 1).first?.state == nil)
+    }
+}
+
+@Test
+func unknownPostStateIsIgnored() throws {
+    try withFixtureDatabase { database in
+        try database.execute(
+            """
+            INSERT INTO posts (platform, author, content, crawled_at)
+            VALUES ('blogs', 'a', 'body', '2026-08-10 01:00:00');
+            """
+        )
+        let postID = try #require(try database.fetchRecentPosts(limit: 1).first).id
+
+        try database.setPostState(id: postID, state: "starred")
+
+        #expect(try database.fetchRecentPosts(limit: 1).first?.state == nil)
+    }
+}
+
 private func withFixtureDatabase(_ body: (SkimDatabase) throws -> Void) throws {
     let directory = FileManager.default.temporaryDirectory.appending(
         path: "skim-desktop-\(UUID().uuidString)",
