@@ -412,13 +412,19 @@ class XAPICrawler:
 
         texts: list[str] = []
         image_urls: list[str] = []
+        statuses: list[str] = []
         for tweet, _ in own:
-            content, images, _ = self._clean_content_and_media(tweet)
+            content, images, status = self._clean_content_and_media(tweet)
             if content:
                 texts.append(content)
+                if status:
+                    statuses.append(status)
             image_urls.extend(images)
         if not texts:
             return None
+        # 스레드 전체가 폴백 본문일 때만 표시한다. 한 조각만 미디어면 나머지
+        # 텍스트가 본문을 이루므로 폴백이라고 부를 수 없다.
+        thread_status = statuses[0] if len(statuses) == len(texts) else None
         content = "\n\n---\n\n".join(texts) if len(texts) > 1 else texts[0]
 
         root_tweet, root_meta = root
@@ -441,6 +447,7 @@ class XAPICrawler:
             views=int(views) if views else None,
             external_id=tweet_id or None,
             **({"images": list(dict.fromkeys(image_urls))} if image_urls else {}),
+            **({"content_status": thread_status} if thread_status else {}),
         )
 
     def _fetch_thread_detail(self, conv_id: str) -> Optional[list[dict]]:

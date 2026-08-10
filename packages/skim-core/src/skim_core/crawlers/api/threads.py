@@ -564,11 +564,20 @@ class ThreadsAPICrawler:
                 if candidates and candidates[0].get("url"):
                     image_urls.append(candidates[0]["url"])
 
-        if not contents:
+        # 이미지만 올린 게시물은 본문이 비지만 버리면 행 자체가 안 생겨,
+        # 그날 그 계정이 무엇을 올렸는지가 통째로 사라진다. x가 이미 쓰는
+        # 사다리(본문 -> 미디어 링크 -> 버림)를 따른다.
+        content_status = None
+        if contents:
+            # 여러 self-reply를 구분자로 합침
+            content = (
+                "\n\n---\n\n".join(contents) if len(contents) > 1 else contents[0]
+            )
+        elif image_urls:
+            content = "\n".join(dict.fromkeys(image_urls))
+            content_status = "media_link"
+        else:
             return None
-
-        # 여러 self-reply를 구분자로 합침
-        content = "\n\n---\n\n".join(contents) if len(contents) > 1 else contents[0]
 
         # 타임스탬프 (첫 번째 포스트 기준)
         taken_at = first_post.get("taken_at", 0)
@@ -604,4 +613,5 @@ class ThreadsAPICrawler:
             reposts=repost_count,
             external_id=str(external_id) if external_id else None,
             **({"images": list(dict.fromkeys(image_urls))} if image_urls else {}),
+            **({"content_status": content_status} if content_status else {}),
         )
