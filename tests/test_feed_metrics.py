@@ -105,7 +105,9 @@ class HackerNewsMetricsTests(unittest.TestCase):
     def test_fetch_hn_metrics_reads_score_and_descendants(self):
         resp = MagicMock()
         resp.json.return_value = {"score": 41, "descendants": 60}
-        with patch("skim_core.crawlers.feed.hackernews.requests.get", return_value=resp):
+        with patch(
+            "skim_core.crawlers.feed.hackernews.requests.get", return_value=resp
+        ):
             self.assertEqual(fetch_hn_metrics("100"), {"likes": 41, "comments": 60})
 
     def test_fetch_hn_metrics_returns_none_on_error(self):
@@ -173,7 +175,9 @@ class HackerNewsMetricsTests(unittest.TestCase):
 
 class GeekNewsMetricsTests(unittest.TestCase):
     def test_topic_id_from_url(self):
-        self.assertEqual(topic_id_from_url("https://news.hada.io/topic?id=32235"), "32235")
+        self.assertEqual(
+            topic_id_from_url("https://news.hada.io/topic?id=32235"), "32235"
+        )
         self.assertIsNone(topic_id_from_url("https://news.hada.io/"))
         self.assertIsNone(topic_id_from_url(""))
 
@@ -183,7 +187,8 @@ class GeekNewsMetricsTests(unittest.TestCase):
         with patch("skim_core.crawlers.feed.geeknews.requests.get", return_value=resp):
             metrics = fetch_geeknews_metrics("32235")
 
-        self.assertEqual(metrics, {"likes": 7, "comments": 3})
+        self.assertEqual(metrics["likes"], 7)
+        self.assertEqual(metrics["comments"], 3)
 
     def test_fetch_metrics_returns_none_on_error(self):
         with patch(
@@ -231,7 +236,9 @@ class GeekNewsMetricsTests(unittest.TestCase):
         with (
             patch("skim_core.crawlers.feed.geeknews.fetch_feed", return_value=items),
             patch("skim_core.crawlers.feed.geeknews.enrich_with_content"),
-            patch("skim_core.crawlers.feed.geeknews.fetch_geeknews_metrics") as fetch_metrics,
+            patch(
+                "skim_core.crawlers.feed.geeknews.fetch_geeknews_metrics"
+            ) as fetch_metrics,
         ):
             posts = asyncio.run(crawler.crawl(since=SINCE, no_content=True))
 

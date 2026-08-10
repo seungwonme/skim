@@ -9,6 +9,7 @@
 
 import json
 import re
+import time
 from datetime import datetime, timezone
 from html import unescape
 from pathlib import Path
@@ -19,16 +20,30 @@ import feedparser
 import requests
 import typer
 
+from ...comments import Comment, append_comment_section, render_comment_section
 from ...models import Post
 from ...paths import SESSIONS_DIR
 
 SESSION_PATH = SESSIONS_DIR / "reddit_session.json"
+# 링크 게시물은 본문이 제목뿐이라 토론이 사실상 본체다. 상한은 hackernews와 맞춘다.
+MAX_COMMENTS = 15
+# 댓글은 게시글당 요청 1건이라 기본 50건 크롤이면 연속 50요청이 된다.
+# Reddit 관례인 초당 1요청에 맞춰 간격을 둔다.
+COMMENT_REQUEST_INTERVAL_SECONDS = 1.0
+# 세션이 만료되면 전 건이 403이라 남은 요청이 전부 헛돈다. 초반에 끊는다.
+MAX_CONSECUTIVE_COMMENT_FAILURES = 3
 REDDIT_BASE_URL = "https://www.reddit.com"
 REDDIT_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
 )
-HOME_FEED_COOKIE_NAMES = {"reddit_session", "token_v2", "session_tracker", "loid", "csrf_token"}
+HOME_FEED_COOKIE_NAMES = {
+    "reddit_session",
+    "token_v2",
+    "session_tracker",
+    "loid",
+    "csrf_token",
+}
 VERIFICATION_TITLE = "please wait for verification"
 
 
@@ -61,8 +76,12 @@ class RedditAPICrawler:
         count = options.get("count", 10)
         subreddit = options.get("subreddit")
         sort = options.get("sort", "hot")
+        no_content = options.get("no_content", False)
         try:
-            return self.fetch_listing(count=count, subreddit=subreddit, sort=sort)
+            posts = self.fetch_listing(count=count, subreddit=subreddit, sort=sort)
+            if not no_content:
+                self.attach_comments(posts)
+            return posts
         finally:
             # 크롤러 인스턴스는 1회성이다. 직접 만든 세션은 커넥션 풀을 정리한다.
             if self._owns_session:
@@ -102,7 +121,9 @@ class RedditAPICrawler:
             try:
                 listing = self.fetch_listing_page(url)
             except requests.HTTPError as exc:
-                status_code = exc.response.status_code if exc.response is not None else None
+                status_code = (
+                    exc.response.status_code if exc.response is not None else None
+                )
                 if normalized_subreddit and status_code == 403:
                     return self.fetch_subreddit_rss(
                         count=count,
@@ -118,6 +139,92 @@ class RedditAPICrawler:
                 break
 
         return posts[:count]
+
+    def attach_comments(self, posts: List[Post]) -> None:
+        """각 게시글의 상위 댓글을 정본 본문(content_markdown) 뒤에 잇는다.
+
+        게시글당 요청 1건이 늘어난다. `--no-content`면 호출되지 않는다.
+        """
+        failures = 0
+        consecutive = 0
+        for index, post in enumerate(posts):
+            if consecutive >= MAX_CONSECUTIVE_COMMENT_FAILURES:
+                typer.echo(
+                    f"   [!] Reddit 댓글 수집을 중단합니다 "
+                    f"(연속 {consecutive}건 실패, 남은 {len(posts) - index}건은 본문만 저장)"
+                )
+                break
+            if index:
+                time.sleep(COMMENT_REQUEST_INTERVAL_SECONDS)
+
+            section = self.fetch_comment_section(post.url)
+            if section is None and post.url:
+                failures += 1
+                consecutive += 1
+                continue
+            consecutive = 0
+            body = post.content_markdown or post.content
+            post.content_markdown = append_comment_section(body, section)
+
+        if failures:
+            typer.echo(f"   [!] Reddit 댓글 수집 실패 {failures}건 (본문만 저장)")
+
+    def fetch_comment_section(self, url: Optional[str]) -> Optional[str]:
+        """permalink의 댓글 트리를 본문용 마크다운 섹션으로 만든다."""
+        if not url:
+            return None
+
+        comment_url = self.append_query_params(
+            url.rstrip("/") + ".json",
+            {"limit": str(MAX_COMMENTS), "sort": "top", "raw_json": "1"},
+        )
+        try:
+            payload = self.fetch_listing_page(comment_url)
+        except Exception:  # noqa: BLE001 - 댓글 실패가 게시글 저장을 막지 않는다
+            return None
+
+        # 댓글 응답은 [게시글 listing, 댓글 listing] 2원소 배열이다.
+        if not isinstance(payload, list) or len(payload) < 2:
+            return None
+
+        collected: List[Comment] = []
+
+        def walk(listing: dict, depth: int) -> None:
+            children = (listing or {}).get("data", {}).get("children") or []
+            for child in children:
+                if len(collected) >= MAX_COMMENTS:
+                    return
+                # "더 보기"(kind=more)와 삭제된 댓글은 본문이 없다.
+                if child.get("kind") != "t1":
+                    continue
+                data = child.get("data") or {}
+                body = (data.get("body") or "").strip()
+                if not body or body in {"[deleted]", "[removed]"}:
+                    continue
+                created = data.get("created_utc")
+                collected.append(
+                    Comment(
+                        author=f"u/{data.get('author') or 'unknown'}",
+                        text=body,
+                        score=data.get("score"),
+                        created=(
+                            datetime.fromtimestamp(created, tz=timezone.utc).strftime(
+                                "%Y-%m-%d %H:%M UTC"
+                            )
+                            if created
+                            else None
+                        ),
+                        depth=depth,
+                    )
+                )
+                replies = data.get("replies")
+                if depth < 1 and isinstance(replies, dict):
+                    walk(replies, depth + 1)
+
+        walk(payload[1], 0)
+        return render_comment_section(
+            "Reddit Comments", collected, max_comments=MAX_COMMENTS
+        )
 
     def build_listing_url(
         self,
@@ -156,11 +263,15 @@ class RedditAPICrawler:
             response.raise_for_status()
 
         if not self.is_json_response(response):
-            raise ValueError(f"Reddit listing JSON 응답을 받지 못했습니다: {response.url}")
+            raise ValueError(
+                f"Reddit listing JSON 응답을 받지 못했습니다: {response.url}"
+            )
 
         return response.json()
 
-    def fetch_subreddit_rss(self, *, count: int, subreddit: str, sort: str) -> List[Post]:
+    def fetch_subreddit_rss(
+        self, *, count: int, subreddit: str, sort: str
+    ) -> List[Post]:
         """비로그인 subreddit JSON endpoint가 403일 때 Atom feed로 fallback."""
         url = self.build_subreddit_rss_url(subreddit=subreddit, sort=sort, limit=count)
         response = self.session.get(url, timeout=15)
@@ -184,7 +295,9 @@ class RedditAPICrawler:
     def is_json_response(response: requests.Response) -> bool:
         """JSON 응답 여부를 확인합니다."""
         content_type = response.headers.get("content-type", "").lower()
-        return "application/json" in content_type or response.text.lstrip().startswith("{")
+        return "application/json" in content_type or response.text.lstrip().startswith(
+            "{"
+        )
 
     def solve_verification_challenge(self, url: str, html: str) -> None:
         """Reddit verification challenge를 풀어 세션 쿠키를 확보합니다."""
@@ -242,7 +355,11 @@ class RedditAPICrawler:
         """직접 이미지 링크, preview 원본, 갤러리에서 이미지 CDN URL을 수집합니다."""
         urls: List[str] = []
         dest = post_data.get("url_overridden_by_dest") or ""
-        if dest.split("?")[0].lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".webp")):
+        if (
+            dest.split("?")[0]
+            .lower()
+            .endswith((".jpg", ".jpeg", ".png", ".gif", ".webp"))
+        ):
             urls.append(dest)
         for img in (post_data.get("preview") or {}).get("images") or []:
             src = (img.get("source") or {}).get("url")
@@ -298,7 +415,9 @@ class RedditAPICrawler:
         raw_id = entry.get("id", "")
         external_id = raw_id.removeprefix("t3_") if raw_id else ""
         title = (entry.get("title") or "").strip()
-        content_html = entry.get("summary") or entry.get("content", [{}])[0].get("value", "")
+        content_html = entry.get("summary") or entry.get("content", [{}])[0].get(
+            "value", ""
+        )
         content = self.strip_html(content_html) or title
         link = entry.get("link") or ""
 

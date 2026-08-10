@@ -10,6 +10,7 @@ import requests
 import typer
 from bs4 import BeautifulSoup
 
+from ...comments import Comment, append_comment_section, render_comment_section
 from ...enrichment import enrich_with_content
 from ...feed_config import GEEKNEWS_RSS
 from ...feed_utils import FEED_HEADERS, fetch_feed
@@ -18,6 +19,7 @@ from ...timestamp import _REL_KO, relative_ko_to_iso
 
 GEEKNEWS_URL = "https://news.hada.io/"
 _TOPIC_ID = re.compile(r"topic\?id=(\d+)")
+MAX_COMMENTS = 15
 
 
 def topic_id_from_url(url: str) -> Optional[str]:
@@ -31,11 +33,49 @@ def _digits_to_int(raw: str) -> Optional[int]:
     return int(digits) if digits else None
 
 
+def _parse_comment_section(soup: BeautifulSoup) -> Optional[str]:
+    """토픽 페이지의 댓글 목록을 본문용 마크다운 섹션으로 만든다.
+
+    지표를 받으려고 어차피 토픽 HTML을 통째로 받으므로 추가 요청이 들지 않는다.
+    GeekNews는 댓글 점수를 노출하지 않아 작성자와 작성시각까지가 가용 메타데이터다.
+    """
+    collected: List[Comment] = []
+    for row in soup.select(".comment_row"):
+        body_el = row.select_one(".comment_contents")
+        if not body_el:
+            continue
+        text = body_el.get_text(" ", strip=True)
+        if not text:
+            continue
+
+        author_el = row.select_one('.commentinfo a[href^="/@"]')
+        author = author_el.get_text(strip=True) if author_el else "unknown"
+
+        # 상대시각("14시간전")보다 title의 절대시각이 안정적이다.
+        time_el = row.select_one(".commentinfo time")
+        created = time_el.get("title") if time_el else None
+
+        # 들여쓰기는 `style="--depth:N"`으로만 노출된다.
+        depth = 0
+        depth_match = re.search(r"--depth:\s*(\d+)", row.get("style") or "")
+        if depth_match:
+            depth = min(int(depth_match.group(1)), 3)
+
+        collected.append(
+            Comment(author=author, text=text, created=created, depth=depth)
+        )
+
+    return render_comment_section(
+        "GeekNews Comments", collected, max_comments=MAX_COMMENTS
+    )
+
+
 def fetch_geeknews_metrics(topic_id: str) -> Optional[dict]:
-    """토픽 페이지에서 포인트와 댓글 수를 가져온다.
+    """토픽 페이지에서 포인트, 댓글 수, 댓글 본문을 가져온다.
 
     RSS는 지표를 싣지 않아 `--days` 경로로 저장한 행은 likes/comments가 비어 있었다.
     홈페이지 스크래핑 경로만 지표를 채우던 비대칭을 없앤다.
+    같은 응답에 댓글 본문도 들어 있으므로 `comment_section`으로 함께 돌려준다.
     """
     try:
         resp = requests.get(
@@ -56,11 +96,17 @@ def fetch_geeknews_metrics(topic_id: str) -> Optional[dict]:
 
     # 댓글 수는 링크 텍스트("댓글 3개")보다 data 속성이 안정적이다.
     comment_el = soup.select_one("[data-topic-comment-count]")
-    comments = _digits_to_int(comment_el.get("data-topic-comment-count")) if comment_el else None
+    comments = (
+        _digits_to_int(comment_el.get("data-topic-comment-count"))
+        if comment_el
+        else None
+    )
 
-    if likes is None and comments is None:
+    comment_section = _parse_comment_section(soup)
+
+    if likes is None and comments is None and comment_section is None:
         return None
-    return {"likes": likes, "comments": comments}
+    return {"likes": likes, "comments": comments, "comment_section": comment_section}
 
 
 class GeekNewsCrawler:
@@ -82,6 +128,9 @@ class GeekNewsCrawler:
                     if metrics:
                         item["likes"] = metrics["likes"]
                         item["comments"] = metrics["comments"]
+                        item["content_markdown"] = append_comment_section(
+                            item.get("content_markdown"), metrics.get("comment_section")
+                        )
             return [self._item_to_post(item) for item in items]
         else:
             return self._scrape_homepage(count)
@@ -114,7 +163,9 @@ class GeekNewsCrawler:
 
                 # 요약 텍스트
                 desc_el = row.select_one(".topicdesc a")
-                description = desc_el.get_text(strip=True).lstrip("- ") if desc_el else ""
+                description = (
+                    desc_el.get_text(strip=True).lstrip("- ") if desc_el else ""
+                )
 
                 # 메타 정보 (.topicinfo: 포인트, 작성자, 시간, 댓글)
                 topicinfo = row.select_one(".topicinfo")

@@ -94,9 +94,44 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
 ### 데이터 계약: DB는 소비 준비가 끝난 상태다
 
 - `posts.content_markdown`은 **추출이 완료된 정본 본문**이다. 이 DB를 읽는 소비자(AI, digest, 데스크톱 앱, research)는 재추출 절차 없이 그대로 사용한다고 가정한다.
-- 따라서 추출 완결성은 크롤러의 책임이다. 저장 시점에 링크 원문 본문, 플랫폼 자체 본문(Ask/Show HN 텍스트, GeekNews 한국어 요약), 토론(HN 상위 댓글)까지 채워야 한다. "링크만 저장"은 계약 위반이다.
+- 따라서 추출 완결성은 크롤러의 책임이다. 저장 시점에 링크 원문 본문, 플랫폼 자체 본문(Ask/Show HN 텍스트, GeekNews 한국어 요약), 토론(댓글)까지 채워야 한다. "링크만 저장"은 계약 위반이다.
 - 예외는 `--no-content` 명시 실행과 `youtube-history` 백필 행(임베드용 목록, 자막은 사용자가 요청할 때 `youtube-transcribe`로 채움)뿐이다.
 - 크롤러가 본문에 합성하는 섹션 라벨은 항상 영어로 쓴다 (예: `## Hacker News Comments`, `## Original Article`). 가용한 메타데이터(작성자, 작성시각, 점수)는 텍스트에 함께 표기한다.
+
+#### 댓글 수집
+
+댓글은 `skim_core.comments`의 `Comment`로 정규화한 뒤 `render_comment_section()`으로 섹션을 만들고
+`append_comment_section()`으로 본문 뒤에 잇는다. 각 크롤러가 자기 포맷을 따로 만들지 않는다.
+
+| 플랫폼 | 섹션 라벨 | 추가 요청 |
+|--------|-----------|-----------|
+| hackernews | `## Hacker News Comments` | Algolia item API 1건 |
+| geeknews | `## GeekNews Comments` | 없음 (지표 수집이 받는 토픽 HTML 재사용) |
+| x | `## X Replies` | 스레드는 없음(TweetDetail 재사용). 단독 트윗은 답글 3개 이상인 것만, 회차당 20건까지 |
+| reddit | `## Reddit Comments` | 게시글당 1건 (초당 1요청 간격) |
+| linkedin | `## LinkedIn Comments` | 게시글당 1건 (Voyager `feed/comments`) |
+| youtube | `## YouTube Comments` | 영상당 yt-dlp 1회 |
+| producthunt | `## Product Hunt Comments` | 제품당 1건 (PH 제품 페이지) |
+| threads | `## Threads Replies` | 답글 1개 이상인 게시물 전부, 게시물당 1건 |
+
+- threads 답글은 타임라인 GraphQL이 주지 않는다. 대신 게시물 문서의 SSR 페이로드가
+  답글까지 담고 있고 로그인도 필요 없어서, persisted query 좌표(`doc_id`)를 새로 들지 않는다.
+  단 `threads.net`으로 요청하면 리다이렉트 뒤 페이로드가 빠진 셸이 오므로 `threads.com`으로 받는다.
+  같은 URL이라도 페이로드가 빠진 문서가 간헐적으로 와서 한 번 재시도한다.
+- threads는 작성자 self-reply 연작을 답글과 같은 `edges`에 담는다. 그 연작은 이미 본문에
+  있으므로 스레드 시작자가 원글 작성자면 통째로 건너뛴다. 대화 중 작성자가 남긴 답변은 남는다.
+- `comments`(= `direct_reply_count`)가 0보다 커도 답글 섹션이 안 붙을 수 있다. 삭제되거나
+  비공개 계정이 단 답글까지 세는 값이라, 실제 노출되는 답글이 없는 게시물이 있다
+  (브라우저로 열어도 안 보인다). 이 불일치만으로 추출 실패로 판단하지 않는다.
+- 그래서 `comments`를 조회 임계로 높게 잡으면 안 된다. 반대 방향 오차도 있어서, `comments=1`인
+  글에서 답글 2건이 나오기도 한다. 임계는 "0건만 거른다"로 둔다.
+- **threads 답글에 페이지네이션을 붙이지 않는다.** 문서가 한 번에 주는 만큼(실측 최대 24건)이
+  전부이고, 그 이상은 `BarcelonaPostPageRefetchableDirectQuery`를 4건씩 반복 호출해야 한다.
+  그 요청은 세션 쿠키와 `x-fb-lsd` 토큰을 요구해 **계정으로 식별된다**. 지금 방식은 로그인이
+  필요 없어 계정이 노출되지 않으므로, 답글 수집량보다 계정 안전을 우선한 결정이다(2026-08-10).
+- 상한은 댓글당 1200자다. 개수 상한(`MAX_COMMENTS`)은 플랫폼마다 다르고 threads는 없다
+  (`None`이면 받은 만큼 전부). 15로 자르던 때는 문서에 24건이 와도 9건을 버렸다.
+- 댓글 수집 실패는 게시글 저장을 막지 않는다. 본문만 저장하고 경고만 남긴다.
 
 ### Crawler 유형과 패턴
 
@@ -117,7 +152,8 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
 - `packages/skim-core/src/skim_core/models.py`: `Post` Pydantic 모델
 - `packages/skim-core/src/skim_core/db.py`: SQLite WAL 모드, `UNIQUE(platform, external_id)` 중복 제거
 - `packages/skim-core/src/skim_core/enrichment.py`: `bunx defuddle`, `yt-dlp`, transcript 정리
-- `packages/skim-core/src/skim_core/feed_utils.py`: RSS/Atom 파싱, KST 변환
+- `packages/skim-core/src/skim_core/comments.py`: 플랫폼 중립 `Comment`와 본문 댓글 섹션 합성
+- `packages/skim-core/src/skim_core/feed_utils.py`: RSS/Atom 파싱, KST 변환. `FEED_HEADERS`의 Chrome 버전은 news.hada.io 차단선에 걸리므로 함부로 낮추지 않는다
 - `packages/skim-core/src/skim_core/feed_config.py`: RSS URL, YouTube 채널 ID, API endpoint 설정
 - `apps/desktop/`: SwiftUI desktop reader for local `data/skim.db`
 

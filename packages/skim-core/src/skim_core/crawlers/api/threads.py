@@ -23,7 +23,9 @@ from typing import Any, Dict, List, Optional
 
 import requests
 import typer
+from bs4 import BeautifulSoup
 
+from ...comments import Comment, append_comment_section, render_comment_section
 from ...models import Post
 from ...paths import SESSIONS_DIR
 
@@ -35,6 +37,24 @@ WEB_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
 )
+
+# 답글은 문서가 실어 보내는 만큼 전부 담는다. 15개로 자르던 때는 문서에 24개가 와도
+# 9개를 버렸다. 상한이 없으므로 인기 게시물은 본문이 길어진다.
+MAX_REPLIES = None
+# 답글이 0건이라고 보고된 게시물만 건너뛴다. `comments`가 삭제·비공개 답글까지 세는
+# 부정확한 값이라 높게 잡으면 멀쩡한 글이 빠진다(3이던 때 답글 1~2개인 12.6%가 통째로 빠졌다).
+MIN_REPLIES_FOR_FETCH = 1
+# 게시물 페이지는 답글이 담긴 SSR 페이로드를 로그인 없이도 준다. 단 threads.net으로
+# 요청하면 리다이렉트 뒤 페이로드가 빠진 셸이 와서, threads.com으로 직접 받아야 한다.
+POST_PAGE_HEADERS = {
+    "User-Agent": WEB_USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9,ko;q=0.8",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Upgrade-Insecure-Requests": "1",
+}
 
 # persisted query 좌표. Meta가 웹앱을 재배포하면 doc_id가 바뀌어 execution error가 난다.
 # 갱신하려면 브라우저로 threads.com을 열어 graphql/query 요청의 doc_id를 다시 읽는다.
@@ -153,11 +173,143 @@ class ThreadsAPICrawler:
     async def crawl(self, **options) -> List[Post]:
         count = options.get("count", 5)
         user_id = options.get("user_id")
+        no_content = options.get("no_content", False)
         try:
-            return await self._crawl_impl(count, user_id)
+            posts = await self._crawl_impl(count, user_id)
+            if not no_content:
+                self.attach_replies(posts)
+            return posts
         finally:
             # 크롤러 인스턴스는 1회성이다. 세션 커넥션 풀을 정리한다.
             self.session.close()
+
+    def attach_replies(self, posts: List[Post]) -> None:
+        """타인 답글을 정본 본문 뒤에 잇는다.
+
+        답글이 있다고 보고된 게시물은 전부 조회한다(게시물당 요청 1건, 실측 1~4초).
+        `--count`를 크게 주면 그만큼 크롤이 길어진다.
+        """
+        for post in posts:
+            if (post.comments or 0) < MIN_REPLIES_FOR_FETCH:
+                continue
+            section = self.fetch_reply_section(post.url)
+            if section:
+                post.content_markdown = append_comment_section(
+                    post.content_markdown or post.content, section
+                )
+
+    def fetch_reply_section(self, url: Optional[str]) -> Optional[str]:
+        """게시물 페이지의 SSR 페이로드에서 답글을 뽑아 마크다운 섹션으로 만든다.
+
+        타임라인 GraphQL 응답에는 타인 답글이 오지 않는다. 게시물 문서는 답글까지 담고
+        있고 로그인도 필요 없어서, persisted query 좌표(doc_id)를 따로 들지 않아도 된다.
+        """
+        if not url:
+            return None
+        # threads.net으로 요청하면 리다이렉트 뒤 페이로드가 빠진 셸이 온다.
+        page_url = url.replace("threads.net", "threads.com")
+
+        # 같은 URL이라도 답글 페이로드가 빠진 문서가 간헐적으로 온다(실측). 한 번 더 받아본다.
+        root_author, threads = "", []
+        for _ in range(2):
+            try:
+                response = requests.get(page_url, headers=POST_PAGE_HEADERS, timeout=25)
+                response.raise_for_status()
+            except Exception:  # noqa: BLE001 - 답글 실패가 게시물 저장을 막지 않는다
+                return None
+            root_author, threads = self._extract_reply_threads(response.text)
+            if threads:
+                break
+
+        collected: List[Comment] = []
+        for thread in threads:
+            items = thread.get("thread_items") or []
+            if not items:
+                continue
+            # 작성자가 스스로 시작한 스레드는 self-reply 연작이라 이미 본문에 담겨 있다.
+            # 대화 도중 작성자가 남의 답글에 단 답변은 depth>0이라 그대로 살아남는다.
+            starter = ((items[0].get("post") or {}).get("user") or {}).get("username")
+            if root_author and starter == root_author:
+                continue
+            for depth, item in enumerate(items):
+                post_data = item.get("post") or {}
+                text = ((post_data.get("caption") or {}) or {}).get("text") or ""
+                if not text:
+                    continue
+                user = (post_data.get("user") or {}).get("username") or "unknown"
+                taken_at = post_data.get("taken_at")
+                collected.append(
+                    Comment(
+                        author=f"@{user}",
+                        text=text,
+                        score=post_data.get("like_count"),
+                        created=(
+                            datetime.fromtimestamp(taken_at, tz=timezone.utc).strftime(
+                                "%Y-%m-%d %H:%M UTC"
+                            )
+                            if taken_at
+                            else None
+                        ),
+                        depth=min(depth, 1),
+                    )
+                )
+
+        return render_comment_section(
+            "Threads Replies", collected, max_comments=MAX_REPLIES, score_unit="like"
+        )
+
+    @staticmethod
+    def _extract_reply_threads(html: str) -> tuple[str, List[Dict[str, Any]]]:
+        """문서에 심긴 JSON에서 (루트 작성자, 답글 스레드 목록)을 찾는다.
+
+        페이로드는 `data.data.edges`에 [루트 게시물, 답글, 답글...] 순으로 담긴다.
+        같은 문서의 `relatedPosts`도 thread_items를 갖지만 그건 무관한 추천 게시물이라,
+        edges 배열만 집어 첫 항목(루트)을 버린다.
+        """
+        found: List[Dict[str, Any]] = []
+        root_author = ""
+
+        def thread_author(thread: Dict[str, Any]) -> str:
+            items = thread.get("thread_items") or []
+            if not items:
+                return ""
+            return ((items[0].get("post") or {}).get("user") or {}).get(
+                "username"
+            ) or ""
+
+        def walk(node: Any) -> None:
+            nonlocal root_author
+            if isinstance(node, dict):
+                edges = node.get("edges")
+                if isinstance(edges, list) and len(edges) > 1:
+                    threads = [
+                        edge.get("node")
+                        for edge in edges
+                        if isinstance(edge, dict) and isinstance(edge.get("node"), dict)
+                    ]
+                    if threads and all(
+                        t.get("thread_items") is not None for t in threads
+                    ):
+                        if not root_author:
+                            root_author = thread_author(threads[0])
+                        found.extend(threads[1:])  # [0]은 본문에 이미 담긴 루트 게시물
+                        return
+                for value in node.values():
+                    walk(value)
+            elif isinstance(node, list):
+                for value in node:
+                    walk(value)
+
+        soup = BeautifulSoup(html, "html.parser")
+        for tag in soup.find_all("script", attrs={"type": "application/json"}):
+            raw = tag.string or ""
+            if "thread_items" not in raw:
+                continue
+            try:
+                walk(json.loads(raw))
+            except ValueError:
+                continue
+        return root_author, found
 
     async def _crawl_impl(
         self, count: int = 5, user_id: Optional[str] = None

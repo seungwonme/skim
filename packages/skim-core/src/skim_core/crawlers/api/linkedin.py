@@ -16,18 +16,27 @@ from urllib.parse import urljoin, urlparse
 import requests
 import typer
 
+from ...comments import Comment, append_comment_section, render_comment_section
 from ...models import Post
 from ...paths import DATA_DIR, SESSIONS_DIR
 
 LINKEDIN_BASE_URL = "https://www.linkedin.com"
 VOYAGER_FEED_URL = f"{LINKEDIN_BASE_URL}/voyager/api/feed/updatesV2"
+VOYAGER_COMMENTS_URL = f"{LINKEDIN_BASE_URL}/voyager/api/feed/comments"
+MAX_COMMENTS = 15
 LINKEDIN_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
 )
 REQUIRED_COOKIE_NAMES = {"li_at", "JSESSIONID"}
 REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
-SESSION_REJECTED_REASONS = {"login", "authwall", "checkpoint", "challenge", "self-redirect-loop"}
+SESSION_REJECTED_REASONS = {
+    "login",
+    "authwall",
+    "checkpoint",
+    "challenge",
+    "self-redirect-loop",
+}
 
 
 def _classify_redirect(response: requests.Response) -> str:
@@ -83,19 +92,97 @@ class LinkedInAPICrawler:
 
     async def crawl(self, **options) -> List[Post]:
         count = options.get("count", 5)
+        no_content = options.get("no_content", False)
         try:
-            return self.fetch_feed(count=count)
+            posts = self.fetch_feed(count=count)
+            if not no_content:
+                self.attach_comments(posts)
+            return posts
         finally:
             # 크롤러 인스턴스는 1회성이다. 직접 만든 세션은 커넥션 풀을 정리한다.
             if self._owns_session:
                 self.session.close()
+
+    def attach_comments(self, posts: List[Post]) -> None:
+        """게시글별 댓글을 정본 본문 뒤에 잇는다. 게시글당 요청 1건이 늘어난다."""
+        failures = 0
+        for post in posts:
+            section = self.fetch_comment_section(post.external_id)
+            if section is None and post.external_id:
+                failures += 1
+                continue
+            body = post.content_markdown or post.content
+            post.content_markdown = append_comment_section(body, section)
+
+        if failures:
+            typer.echo(f"   [!] LinkedIn 댓글 수집 실패 {failures}건 (본문만 저장)")
+
+    def fetch_comment_section(self, external_id: Optional[str]) -> Optional[str]:
+        """activity id의 댓글을 본문용 마크다운 섹션으로 만든다."""
+        if not external_id:
+            return None
+        activity_id = self._extract_activity_id(str(external_id)) or str(external_id)
+        if not activity_id.isdigit():
+            return None
+
+        try:
+            response = self.session.get(
+                VOYAGER_COMMENTS_URL,
+                params={
+                    "count": str(MAX_COMMENTS),
+                    "q": "comments",
+                    "sortOrder": "RELEVANCE",
+                    "updateId": f"activity:{activity_id}",
+                },
+                allow_redirects=False,
+                timeout=20,
+            )
+        except Exception:  # noqa: BLE001 - 댓글 실패가 게시글 저장을 막지 않는다
+            return None
+
+        if response.status_code != 200:
+            return None
+        try:
+            payload = response.json()
+        except ValueError:
+            return None
+
+        # Voyager는 정규화 응답이라 실데이터가 elements가 아닌 included에 온다.
+        collected: List[Comment] = []
+        for entry in payload.get("included") or []:
+            if not str(entry.get("$type", "")).endswith("feed.Comment"):
+                continue
+            # RELEVANCE 정렬은 답글을 부모보다 먼저 주기도 해서 그대로 담으면 순서가
+            # 뒤엉킨다. 트리를 재구성할 만한 값이 아니라 최상위 댓글만 담는다.
+            # spartan: 답글까지 필요해지면 parentCommentUrn으로 부모 뒤에 끼워 넣는다.
+            if entry.get("parentCommentUrn"):
+                continue
+            text = self._extract_path(entry, "commentV2.text") or ""
+            if not text:
+                continue
+            author = self._extract_path(entry, "commenterForDashConversion.title.text")
+            created_ms = entry.get("createdTime")
+            created = None
+            if isinstance(created_ms, (int, float)):
+                created = datetime.fromtimestamp(
+                    created_ms / 1000, tz=timezone.utc
+                ).strftime("%Y-%m-%d %H:%M UTC")
+            collected.append(
+                Comment(author=author or "unknown", text=text, created=created)
+            )
+
+        return render_comment_section(
+            "LinkedIn Comments", collected, max_comments=MAX_COMMENTS
+        )
 
     def fetch_feed(self, *, count: int) -> List[Post]:
         """LinkedIn 홈 피드 게시글을 수집합니다."""
         typer.echo(f"[API 모드] LinkedIn 크롤링 시작... (게시글 {count}개)")
 
         if not self._has_login_session:
-            typer.echo("❌ 세션 파일이 없거나 LinkedIn 쿠키가 부족합니다. 먼저 로그인하세요:")
+            typer.echo(
+                "❌ 세션 파일이 없거나 LinkedIn 쿠키가 부족합니다. 먼저 로그인하세요:"
+            )
             typer.echo("  uv run skim login linkedin")
             return []
 
@@ -195,7 +282,9 @@ class LinkedInAPICrawler:
                 posts.append(post)
         return posts
 
-    def _ordered_update_items(self, data: dict, urn_index: dict[str, dict]) -> list[dict]:
+    def _ordered_update_items(
+        self, data: dict, urn_index: dict[str, dict]
+    ) -> list[dict]:
         element_urns = self._find_first_elements(data)
         if not element_urns:
             return []
@@ -244,7 +333,10 @@ class LinkedInAPICrawler:
         return (
             "feed.Update" in item_type
             or "fsd_update" in entity_urn
-            or (isinstance(item.get("commentary"), dict) and isinstance(item.get("actor"), dict))
+            or (
+                isinstance(item.get("commentary"), dict)
+                and isinstance(item.get("actor"), dict)
+            )
         )
 
     def _extract_post(self, item: dict, urn_index: dict) -> Optional[Post]:
@@ -302,7 +394,9 @@ class LinkedInAPICrawler:
             return False
         for key in ("text", "accessibilityText"):
             value = sub_desc.get(key)
-            if isinstance(value, str) and ("promoted" in value.lower() or "광고" in value):
+            if isinstance(value, str) and (
+                "promoted" in value.lower() or "광고" in value
+            ):
                 return True
         return False
 
@@ -372,7 +466,9 @@ class LinkedInAPICrawler:
 
         if isinstance(raw_value, (int, float)):
             seconds = raw_value / 1000 if raw_value > 10_000_000_000 else raw_value
-            return datetime.fromtimestamp(seconds, tz=timezone.utc).isoformat(timespec="seconds")
+            return datetime.fromtimestamp(seconds, tz=timezone.utc).isoformat(
+                timespec="seconds"
+            )
 
         return None
 
@@ -502,7 +598,9 @@ class LinkedInAPICrawler:
                     return text
         if isinstance(raw_value, list):
             return " ".join(
-                part for part in (self._extract_text(item) for item in raw_value) if part
+                part
+                for part in (self._extract_text(item) for item in raw_value)
+                if part
             ).strip()
         return str(raw_value).strip()
 
