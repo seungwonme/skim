@@ -37,9 +37,11 @@ jobs:
         run: pnpm install
 
       - name: Sync Python workspace
-        # --locked: lockfile과 어긋나면 조용히 갱신하지 말고 실패한다.
+        # --frozen: 재해석하지 않고 uv.lock에 적힌 버전 그대로 설치한다.
         # 그냥 uv sync면 CI가 로컬과 다른 버전으로 통과할 수 있다.
-        run: uv sync --locked
+        # --locked는 쓸 수 없다. uv.lock이 상대 exclude-newer(span)를 기록하는데
+        # 그건 사용자 전역 uv 설정이라 CI에는 없고, 그 차이만으로 재해석이 필요하다고 판정한다.
+        run: uv sync --frozen
 
       - name: Install Playwright browsers
         run: uv run playwright install
