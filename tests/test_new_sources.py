@@ -60,15 +60,21 @@ class ArxivMultiCategoryTests(unittest.TestCase):
         shared = _arxiv_entry("Shared", "https://arxiv.org/abs/1", stamp)
         unique = _arxiv_entry("Unique", "https://arxiv.org/abs/2", stamp)
 
-        def fake_fetch(category):
+        def fake_fetch(category, start=0):
             feed = MagicMock()
             # cs.AI와 cs.LG 양쪽에 같은 논문이 올라온 상황
+            if start:
+                feed.entries = []
+                return feed
             feed.entries = (
                 [shared] if category in ("cs.CL", "cs.CV") else [shared, unique]
             )
             return feed
 
-        with patch.object(arxiv, "_fetch_category", fake_fetch):
+        with (
+            patch.object(arxiv, "_fetch_category", fake_fetch),
+            patch.object(arxiv.time, "sleep"),
+        ):
             posts = asyncio.run(
                 ArxivCrawler().crawl(
                     since=now - timedelta(days=2), no_content=True, count=50
@@ -87,8 +93,11 @@ class ArxivMultiCategoryTests(unittest.TestCase):
         now = datetime.now(timezone.utc)
         stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        def fake_fetch(category):
+        def fake_fetch(category, start=0):
             feed = MagicMock()
+            if start:
+                feed.entries = []
+                return feed
             feed.entries = (
                 [_arxiv_entry("Only CV", "https://arxiv.org/abs/9", stamp)]
                 if category == "cs.CV"
@@ -96,7 +105,10 @@ class ArxivMultiCategoryTests(unittest.TestCase):
             )
             return feed
 
-        with patch.object(arxiv, "_fetch_category", fake_fetch):
+        with (
+            patch.object(arxiv, "_fetch_category", fake_fetch),
+            patch.object(arxiv.time, "sleep"),
+        ):
             posts = asyncio.run(
                 ArxivCrawler().crawl(
                     since=now - timedelta(days=2), no_content=True, count=50

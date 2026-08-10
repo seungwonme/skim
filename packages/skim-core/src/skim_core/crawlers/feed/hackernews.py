@@ -14,7 +14,7 @@ import typer
 from bs4 import BeautifulSoup
 
 from ...enrichment import enrich_with_content
-from ...feed_config import HACKERNEWS_FEEDS
+from ...feed_config import HACKERNEWS_FEED_LIMITS, HACKERNEWS_FEEDS
 from ...feed_utils import fetch_feed
 from ...models import Post
 from ...timestamp import epoch_to_iso
@@ -189,7 +189,16 @@ class HackerNewsCrawler:
             items = []
             seen_links: set[str] = set()
             for name, feed_url in HACKERNEWS_FEEDS.items():
-                for item in fetch_feed(feed_url, name, since):
+                fetched = fetch_feed(feed_url, name, since)
+                # 피드 한 장이 창을 다 못 덮으면 그 뒤 글은 어느 경로로도 안 잡힌다.
+                # 조용히 넘어가면 "그날 HN에 이만큼밖에 없었다"로 읽히므로 남긴다.
+                limit = HACKERNEWS_FEED_LIMITS.get(name, 0)
+                if limit and len(fetched) >= limit:
+                    typer.echo(
+                        f"   [!] {name}: 피드 상한 {limit}건에 닿았습니다. "
+                        "창 안의 더 오래된 글은 수집되지 않습니다."
+                    )
+                for item in fetched:
                     link = item.get("url") or ""
                     # 점수가 오른 Show HN은 newest에도 올라와 같은 글이 두 번 온다.
                     if link and link in seen_links:

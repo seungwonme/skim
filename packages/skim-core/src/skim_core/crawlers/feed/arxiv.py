@@ -4,6 +4,7 @@
 """
 
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, List
 
@@ -12,7 +13,11 @@ import typer
 from requests import RequestException
 
 from ...enrichment import enrich_papers_with_content
-from ...feed_config import ARXIV_CATEGORIES, arxiv_api_url
+from ...feed_config import (
+    ARXIV_CATEGORIES,
+    ARXIV_MAX_RESULTS_PER_CATEGORY,
+    arxiv_api_url,
+)
 from ...feed_utils import (
     FEED_TIMEOUT_SECONDS,
     KST,
@@ -26,8 +31,21 @@ from ...models import Post
 # 그 사이 제출분까지 거슬러 가지 못한다.
 _SESSION = make_retrying_session()
 
+# 창이 한 장보다 넓을 때 이어서 받을 최대 페이지 수. 폭주 방지용 상한이다.
+ARXIV_MAX_PAGES = 10
+# arXiv API 권고 간격.
+ARXIV_REQUEST_INTERVAL_SECONDS = 3
 
-def _fetch_category(category: str):
+
+def _parse_entry_dt(published: str):
+    """엔트리 발행일을 aware datetime으로. 실패하면 None."""
+    try:
+        return datetime.fromisoformat((published or "").replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+
+
+def _fetch_category(category: str, start: int = 0):
     """카테고리 피드를 받는다. 실패는 None으로 돌려 0건과 구분한다.
 
     feedparser에 URL을 직접 주면 실패해도 빈 피드를 조용히 돌려주기 때문에,
@@ -35,7 +53,9 @@ def _fetch_category(category: str):
     걸리지 않는다.
     """
     try:
-        resp = _SESSION.get(arxiv_api_url(category), timeout=FEED_TIMEOUT_SECONDS)
+        resp = _SESSION.get(
+            arxiv_api_url(category, start=start), timeout=FEED_TIMEOUT_SECONDS
+        )
         resp.raise_for_status()
     except RequestException as e:
         typer.echo(f"   [!] arXiv {category} 요청 실패: {e}")
@@ -45,6 +65,36 @@ def _fetch_category(category: str):
 
 class ArxivCrawler:
     platform = "arxiv"
+
+    def _entries(self, category: str, count: int, since):
+        """카테고리 엔트리를 창이 끝날 때까지 페이지 단위로 흘린다.
+
+        한 장(50건)이 실측 4시간25분치라(2026-08-10, cs.AI) count를 그보다 크게
+        잡으면 페이징 없이는 못 채운다. count가 한 장 안에 들어오면 요청은
+        지금과 똑같이 1회다.
+        """
+        fetched = 0
+        for page in range(ARXIV_MAX_PAGES):
+            if fetched >= count:
+                return
+            feed = _fetch_category(category, start=page * ARXIV_MAX_RESULTS_PER_CATEGORY)
+            if feed is None or not feed.entries:
+                return
+
+            oldest_in_window = False
+            for entry in feed.entries:
+                yield entry, category
+                fetched += 1
+
+            # 이 페이지의 마지막 항목이 창보다 오래됐으면 다음 페이지는 전부 창 밖이다.
+            last = feed.entries[-1].get("published", "")
+            last_dt = _parse_entry_dt(last)
+            if last_dt is not None and since is not None and last_dt < since:
+                oldest_in_window = True
+            if oldest_in_window:
+                return
+            # arXiv는 연속 요청 사이 3초를 권고한다.
+            time.sleep(ARXIV_REQUEST_INTERVAL_SECONDS)
 
     async def crawl(self, **options: Any) -> List[Post]:
         count = options.get("count", 50)
@@ -59,10 +109,7 @@ class ArxivCrawler:
         items: List[dict] = []
         seen_urls: set[str] = set()
         for category in ARXIV_CATEGORIES:
-            feed = _fetch_category(category)
-            if feed is None:
-                continue
-            for entry in feed.entries:
+            for entry, category in self._entries(category, count, since):
                 pub = entry.get("published", "")
                 try:
                     entry_dt = datetime.fromisoformat(pub.replace("Z", "+00:00"))
