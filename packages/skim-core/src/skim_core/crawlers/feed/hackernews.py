@@ -7,6 +7,7 @@
 """
 
 import re
+from datetime import datetime
 from typing import Any, List, Optional
 
 import requests
@@ -14,8 +15,17 @@ import typer
 from bs4 import BeautifulSoup
 
 from ...enrichment import enrich_with_content
-from ...feed_config import HACKERNEWS_FEEDS
-from ...feed_utils import fetch_feed
+from ...feed_config import (
+    HACKERNEWS_ALGOLIA_FALLBACK,
+    HACKERNEWS_FEED_LIMITS,
+    HACKERNEWS_FEEDS,
+)
+from ...feed_utils import (
+    FEED_TIMEOUT_SECONDS,
+    KST,
+    fetch_feed,
+    make_retrying_session,
+)
 from ...models import Post
 from ...timestamp import epoch_to_iso
 
@@ -23,8 +33,11 @@ HN_API_BASE = "https://hacker-news.firebaseio.com/v0"
 # 댓글 트리를 요청 1번으로 통째로 주는 Algolia item API
 HN_ALGOLIA_ITEM = "https://hn.algolia.com/api/v1/items/{}"
 HN_ALGOLIA_SEARCH = "https://hn.algolia.com/api/v1/search"
+HN_ALGOLIA_SEARCH_BY_DATE = "https://hn.algolia.com/api/v1/search_by_date"
 MAX_COMMENTS = 15
 MAX_COMMENT_CHARS = 1200
+
+_ALGOLIA_SESSION = make_retrying_session()
 
 # 제목 끝의 꼬리표. 같은 글이라도 피드와 HN이 다르게 붙인다
 # ("... consent order (2 July 2026)" vs "... consent order [pdf]").
@@ -87,37 +100,39 @@ def _html_to_text(html: str) -> str:
 
 def fetch_hn_discussion(story_id: str) -> Optional[dict]:
     """Algolia item API로 스토리 텍스트와 상위 댓글(1단계 대댓글 포함)을 가져온다."""
+    # 파싱까지 try 안에 둔다. HTTP만 감싸면 Algolia 응답 구조가 바뀔 때 walk()의
+    # 예외가 crawl 루프로 올라가 그 회차 HN이 통째로 저장 0건이 된다.
     try:
         resp = requests.get(HN_ALGOLIA_ITEM.format(story_id), timeout=15)
         resp.raise_for_status()
         data = resp.json()
+
+        comments: List[str] = []
+
+        def walk(children: list, depth: int) -> None:
+            for child in children or []:
+                if len(comments) >= MAX_COMMENTS:
+                    return
+                text = _html_to_text(child.get("text") or "")[:MAX_COMMENT_CHARS]
+                if text:
+                    indent = "  " * depth
+                    author = child.get("author") or "unknown"
+                    # HN은 댓글 점수를 공개하지 않으므로 작성시각까지가 가용 메타데이터다.
+                    created = (child.get("created_at") or "")[:16].replace("T", " ")
+                    meta = f" ({created} UTC)" if created else ""
+                    comments.append(f"{indent}- **{author}**{meta}: {text}")
+                    if depth < 1:
+                        walk(child.get("children") or [], depth + 1)
+
+        walk(data.get("children") or [], 0)
+        return {
+            "story_text": _html_to_text(data.get("text") or ""),
+            "comments": comments,
+            "points": data.get("points"),
+        }
     except Exception as e:
         typer.echo(f"   [!] HN 댓글 수집 실패(id={story_id}): {e}")
         return None
-
-    comments: List[str] = []
-
-    def walk(children: list, depth: int) -> None:
-        for child in children or []:
-            if len(comments) >= MAX_COMMENTS:
-                return
-            text = _html_to_text(child.get("text") or "")[:MAX_COMMENT_CHARS]
-            if text:
-                indent = "  " * depth
-                author = child.get("author") or "unknown"
-                # HN은 댓글 점수를 공개하지 않으므로 작성시각까지가 가용 메타데이터다.
-                created = (child.get("created_at") or "")[:16].replace("T", " ")
-                meta = f" ({created} UTC)" if created else ""
-                comments.append(f"{indent}- **{author}**{meta}: {text}")
-                if depth < 1:
-                    walk(child.get("children") or [], depth + 1)
-
-    walk(data.get("children") or [], 0)
-    return {
-        "story_text": _html_to_text(data.get("text") or ""),
-        "comments": comments,
-        "points": data.get("points"),
-    }
 
 
 _FEED_POINTS = re.compile(r"Points:\s*(\d+)")
@@ -157,6 +172,61 @@ def fetch_hn_metrics(story_id: str) -> Optional[dict]:
     return {"likes": data.get("score"), "comments": data.get("descendants")}
 
 
+def _algolia_item(hit: dict, source_name: str) -> Optional[dict]:
+    """Algolia hit을 fetch_feed가 만드는 item dict와 같은 모양으로 바꾼다."""
+    story_id = hit.get("objectID")
+    if not story_id:
+        return None
+    created = hit.get("created_at_i")
+    return {
+        "platform": source_name,
+        "title": hit.get("title") or "",
+        # 링크가 없는 Ask HN은 토론 페이지가 곧 원문이다.
+        "url": hit.get("url") or f"https://news.ycombinator.com/item?id={story_id}",
+        "content_html": "",
+        "author": hit.get("author") or source_name.split("/")[-1],
+        # hnrss guid와 같은 모양으로 맞춘다. 같은 글이 두 경로로 들어와도
+        # _story_id가 같은 값을 뽑아 external_id가 갈리지 않는다.
+        "external_id": f"item?id={story_id}",
+        "published": epoch_to_iso(created) if created else "",
+        "summary": "",
+        # Algolia가 지표를 같이 준다. 이 값을 채워 두면 뒤의 지표 폴백이 돌지 않는다.
+        "likes": hit.get("points"),
+        "num_comments": hit.get("num_comments"),
+    }
+
+
+def fetch_algolia_fallback(since: datetime, only: Optional[set] = None) -> List[dict]:
+    """hnrss가 0건을 준 피드를 Algolia로 다시 채운다.
+
+    hnrss.org는 502를 피드 단위로 낸다. 세 장이 같이 죽기도 하고 한 장만 죽기도
+    한다. 데일리는 고정 창으로 돌아 다음 날 창에 그 글이 다시 안 들어오므로,
+    한 장만 죽어도 그 피드 몫은 그대로 영구 유실이다.
+    """
+    if since.tzinfo is None:
+        since = since.replace(tzinfo=KST)
+    ts = int(since.timestamp())
+
+    items: List[dict] = []
+    for source_name, tags, extra_filter, limit in HACKERNEWS_ALGOLIA_FALLBACK:
+        if only is not None and source_name not in only:
+            continue
+        numeric = ",".join(f for f in (extra_filter, f"created_at_i>={ts}") if f)
+        try:
+            resp = _ALGOLIA_SESSION.get(
+                HN_ALGOLIA_SEARCH_BY_DATE,
+                params={"tags": tags, "numericFilters": numeric, "hitsPerPage": limit},
+                timeout=FEED_TIMEOUT_SECONDS,
+            )
+            resp.raise_for_status()
+            hits = resp.json().get("hits") or []
+        except Exception as e:  # pylint: disable=broad-except
+            typer.echo(f"   [!] {source_name}: Algolia 폴백 실패 - {e}")
+            continue
+        items.extend(x for x in (_algolia_item(h, source_name) for h in hits) if x)
+    return items
+
+
 def compose_hn_body(article_md: str, discussion: Optional[dict]) -> str:
     """스토리 텍스트 + 링크 원문 + 댓글을 하나의 정본 본문으로 합친다."""
     parts = []
@@ -184,16 +254,45 @@ class HackerNewsCrawler:
         if since:
             # newest는 30점 문턱이 걸려 있고 show/ask는 없다. Ask/Show HN은 링크가 아니라
             # 본문이 알맹이라 점수 문턱에 걸리면 대부분 사라진다.
-            items = []
+            items: List[dict] = []
             seen_links: set[str] = set()
-            for name, feed_url in HACKERNEWS_FEEDS.items():
-                for item in fetch_feed(feed_url, name, since):
+            empty_feeds: set[str] = set()
+
+            def collect(fetched: List[dict]) -> None:
+                for item in fetched:
                     link = item.get("url") or ""
                     # 점수가 오른 Show HN은 newest에도 올라와 같은 글이 두 번 온다.
                     if link and link in seen_links:
                         continue
                     seen_links.add(link)
                     items.append(item)
+
+            for name, feed_url in HACKERNEWS_FEEDS.items():
+                fetched = fetch_feed(feed_url, name, since)
+                # 피드 한 장이 창을 다 못 덮으면 그 뒤 글은 어느 경로로도 안 잡힌다.
+                # 조용히 넘어가면 "그날 HN에 이만큼밖에 없었다"로 읽히므로 남긴다.
+                limit = HACKERNEWS_FEED_LIMITS.get(name, 0)
+                if limit and len(fetched) >= limit:
+                    typer.echo(
+                        f"   [!] {name}: 피드 상한 {limit}건에 닿았습니다. "
+                        "창 안의 더 오래된 글은 수집되지 않습니다."
+                    )
+                if not fetched:
+                    empty_feeds.add(name)
+                collect(fetched)
+
+            if empty_feeds:
+                # 0건은 글이 없어서가 아니라 hnrss가 죽어서다. HN은 하루 창에
+                # 세 피드 어느 쪽도 0건이 되는 날이 없다. 502가 세 장을 같이
+                # 죽이기도 하고 한 장만 죽이기도 해서, 살아남은 피드가 있어도
+                # 죽은 피드 몫은 그대로 유실된다 (2026-08-10 프로덕션 실측).
+                # 정말 글이 없었다면 Algolia도 0건을 주므로 무해하다.
+                typer.echo(
+                    f"   [!] hnrss {', '.join(sorted(empty_feeds))} 0건. "
+                    "Algolia로 폴백합니다."
+                )
+                collect(fetch_algolia_fallback(since, only=empty_feeds))
+
             items.sort(key=lambda x: x.get("published", ""), reverse=True)
             # CLI가 마지막에 posts[:count]로 자르므로, 버려질 항목을 enrichment하지 않는다.
             if options.get("count") is not None:
@@ -306,7 +405,11 @@ class HackerNewsCrawler:
             and value
         }
         return Post(
-            platform=item.get("platform", self.platform),
+            # 피드 이름(hackernews/show 등)을 platform에 그대로 넘기면 안 된다.
+            # db.py가 Post의 platform을 우선하므로 DB에 `hackernews/show`라는
+            # 별도 플랫폼 행이 생긴다. 서브피드는 source로 남긴다 (blogs와 같은 방식).
+            platform=self.platform,
+            source=item.get("platform") or self.platform,
             author=item.get("author", ""),
             title=item.get("title", ""),
             content="",

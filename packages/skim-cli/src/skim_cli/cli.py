@@ -18,7 +18,9 @@ from skim_core.crawlers import REGISTRY
 from skim_core.crawlers.auth.cdp import login as cdp_login
 from skim_core.db import (
     DB_PATH,
+    backfill_blank_authors,
     backfill_canonical_urls,
+    dedupe_by_url,
     backup_db,
     canonical_body,
     check_integrity,
@@ -455,6 +457,33 @@ def migrate(db: Optional[Path] = typer.Option(None, "--db", help="SQLite DB 경�
     )
     filled = backfill_canonical_urls(db)
     typer.echo(f"canonical_url 채움: {filled}건")
+    authors = backfill_blank_authors(db)
+    typer.echo(f"빈 작성자 채움: {authors}건")
+
+
+@app.command()
+def dedupe(
+    platform: str = typer.Argument(..., help="정리할 플랫폼 (예: ailabs)"),
+    db: Optional[Path] = typer.Option(None, "--db", help="SQLite DB 경로"),
+    apply: bool = typer.Option(
+        False, "--apply", help="실제로 지운다 (기본은 미리보기)"
+    ),
+):
+    """같은 URL이 여러 행으로 갈라진 것을 하나로 접습니다.
+
+    id 체계가 도중에 바뀌면 같은 글이 두 번 저장된다. 행을 지우므로 기본은
+    미리보기이고, `--apply`를 붙여야 실제로 지운다. 먼저 `skim backup`을 권한다.
+    """
+    result = dedupe_by_url(platform, db, dry_run=not apply)
+    if not apply:
+        typer.echo(
+            f"[미리보기] {platform}: URL {result['groups']}개, "
+            f"지울 중복 {result['removed']}건. 실제로 지우려면 --apply"
+        )
+        return
+    typer.echo(
+        f"{platform}: URL {result['groups']}개, 중복 {result['removed']}건 삭제"
+    )
 
 
 @app.command()

@@ -12,6 +12,7 @@ from skim_core.crawlers.api.linkedin import LinkedInAPICrawler
 from skim_core.crawlers.api.reddit import RedditAPICrawler
 from skim_core.crawlers.api.threads import ThreadsAPICrawler
 from skim_core.crawlers.api.x import XAPICrawler
+from skim_core.crawlers.feed import geeknews, hackernews, producthunt
 from skim_core.models import Post
 
 
@@ -144,6 +145,64 @@ class XIsolationTests(unittest.TestCase):
             patch("skim_core.crawlers.api.x.typer.echo"),
         ):
             self.assertIsNone(crawler._reply_section("123", "456"))
+
+
+class HackerNewsIsolationTests(unittest.TestCase):
+    def test_comment_tree_parse_failure_returns_none(self):
+        # Algolia가 children에 dict를 주면 walk()가 터진다. HTTP만 감싸던 시절엔
+        # 이 예외가 crawl 루프까지 올라가 그 회차 HN이 통째로 저장 0건이 됐다.
+        response = MagicMock(status_code=200)
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"children": {"not": "a list"}}
+        with (
+            patch.object(hackernews.requests, "get", return_value=response),
+            patch("skim_core.crawlers.feed.hackernews.typer.echo"),
+        ):
+            self.assertIsNone(hackernews.fetch_hn_discussion("123"))
+
+    def test_http_failure_still_returns_none(self):
+        with (
+            patch.object(
+                hackernews.requests, "get", side_effect=OSError("connection reset")
+            ),
+            patch("skim_core.crawlers.feed.hackernews.typer.echo"),
+        ):
+            self.assertIsNone(hackernews.fetch_hn_discussion("123"))
+
+
+class GeekNewsIsolationTests(unittest.TestCase):
+    def test_markup_change_does_not_escape(self):
+        # news.hada.io의 마크업이 바뀌어 셀렉터가 터져도 크롤은 계속돼야 한다.
+        response = MagicMock(status_code=200)
+        response.raise_for_status.return_value = None
+        response.text = "<html></html>"
+        with (
+            patch.object(geeknews.requests, "get", return_value=response),
+            patch.object(
+                geeknews, "_parse_comment_section", side_effect=AttributeError("dom")
+            ),
+            patch("skim_core.crawlers.feed.geeknews.typer.echo"),
+        ):
+            self.assertIsNone(geeknews.fetch_geeknews_metrics("42"))
+
+
+class ProductHuntIsolationTests(unittest.TestCase):
+    def test_dom_parse_failure_returns_none(self):
+        response = MagicMock(status_code=200)
+        response.raise_for_status.return_value = None
+        response.text = "<html></html>"
+        with (
+            patch.object(producthunt.requests, "get", return_value=response),
+            patch.object(
+                producthunt, "_parse_comment_section", side_effect=TypeError("dom")
+            ),
+            patch("skim_core.crawlers.feed.producthunt.typer.echo"),
+        ):
+            self.assertIsNone(
+                producthunt.fetch_comment_section(
+                    "https://www.producthunt.com/products/x"
+                )
+            )
 
 
 if __name__ == "__main__":

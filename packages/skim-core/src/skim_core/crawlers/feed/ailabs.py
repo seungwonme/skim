@@ -412,7 +412,9 @@ def _dispatch(
     if t == "rss":
         results = _collect_from_rss(source, since, limit=limit)
         for item in results:
-            if item.get("url") and not item.get("external_id"):
+            # 피드 guid가 아니라 URL로 고정한다. 소스가 RSS/HTML 경로를 오가면
+            # id 체계가 바뀌어 같은 글이 두 행으로 갈라진다 (실측 182행 중복).
+            if item.get("url"):
                 item["external_id"] = _external_id_from_url(item["url"])
         return results
     if t == "anthropic":
@@ -525,6 +527,12 @@ class AILabsCrawler:
             return []
 
         all_items.sort(key=lambda x: x.get("published", ""), reverse=True)
+        # 소스별 limit(=count)은 과수집 방지용이고, count는 전역 상한이다.
+        # 소스 9개면 최대 9*count개가 모이므로 여기서 한 번 더 자른다.
+        # CLI가 마지막에 posts[:count]로 자르므로 이 절단이 없으면 버려질 항목까지
+        # 원문 추출을 돈다.
+        if options.get("count") is not None:
+            all_items = all_items[: options["count"]]
 
         if not no_content:
             enrich_with_content(all_items)

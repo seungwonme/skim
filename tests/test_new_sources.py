@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 from skim_core.crawlers import REGISTRY
+from skim_core.crawlers.feed import arxiv
 from skim_core.crawlers.feed.arxiv import ArxivCrawler
 from skim_core.crawlers.feed.hackernews import HackerNewsCrawler
 from skim_core.crawlers.feed.lobsters import (
@@ -59,15 +60,21 @@ class ArxivMultiCategoryTests(unittest.TestCase):
         shared = _arxiv_entry("Shared", "https://arxiv.org/abs/1", stamp)
         unique = _arxiv_entry("Unique", "https://arxiv.org/abs/2", stamp)
 
-        def fake_parse(url):
+        def fake_fetch(category, start=0):
             feed = MagicMock()
             # cs.AI와 cs.LG 양쪽에 같은 논문이 올라온 상황
+            if start:
+                feed.entries = []
+                return feed
             feed.entries = (
-                [shared] if "cs.CL" in url or "cs.CV" in url else [shared, unique]
+                [shared] if category in ("cs.CL", "cs.CV") else [shared, unique]
             )
             return feed
 
-        with patch("skim_core.crawlers.feed.arxiv.feedparser.parse", fake_parse):
+        with (
+            patch.object(arxiv, "_fetch_category", fake_fetch),
+            patch.object(arxiv.time, "sleep"),
+        ):
             posts = asyncio.run(
                 ArxivCrawler().crawl(
                     since=now - timedelta(days=2), no_content=True, count=50
@@ -86,16 +93,22 @@ class ArxivMultiCategoryTests(unittest.TestCase):
         now = datetime.now(timezone.utc)
         stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        def fake_parse(url):
+        def fake_fetch(category, start=0):
             feed = MagicMock()
+            if start:
+                feed.entries = []
+                return feed
             feed.entries = (
                 [_arxiv_entry("Only CV", "https://arxiv.org/abs/9", stamp)]
-                if "cs.CV" in url
+                if category == "cs.CV"
                 else []
             )
             return feed
 
-        with patch("skim_core.crawlers.feed.arxiv.feedparser.parse", fake_parse):
+        with (
+            patch.object(arxiv, "_fetch_category", fake_fetch),
+            patch.object(arxiv.time, "sleep"),
+        ):
             posts = asyncio.run(
                 ArxivCrawler().crawl(
                     since=now - timedelta(days=2), no_content=True, count=50
@@ -122,7 +135,15 @@ class HackerNewsMultiFeedTests(unittest.TestCase):
             # 점수가 오른 Show HN은 newest에도 올라온다.
             return [common] if "show" in url or "newest" in url else []
 
-        with patch("skim_core.crawlers.feed.hackernews.fetch_feed", fake_fetch):
+        # 0건인 피드는 Algolia 폴백을 부른다. 여기서 보려는 건 중복 제거뿐이라
+        # 폴백까지 막지 않으면 테스트가 실제 네트워크를 탄다.
+        with (
+            patch("skim_core.crawlers.feed.hackernews.fetch_feed", fake_fetch),
+            patch(
+                "skim_core.crawlers.feed.hackernews.fetch_algolia_fallback",
+                return_value=[],
+            ),
+        ):
             posts = asyncio.run(
                 HackerNewsCrawler().crawl(
                     since=now - timedelta(days=1), no_content=True
@@ -139,7 +160,13 @@ class HackerNewsMultiFeedTests(unittest.TestCase):
             seen.append(url)
             return []
 
-        with patch("skim_core.crawlers.feed.hackernews.fetch_feed", fake_fetch):
+        with (
+            patch("skim_core.crawlers.feed.hackernews.fetch_feed", fake_fetch),
+            patch(
+                "skim_core.crawlers.feed.hackernews.fetch_algolia_fallback",
+                return_value=[],
+            ),
+        ):
             asyncio.run(
                 HackerNewsCrawler().crawl(
                     since=now - timedelta(days=1), no_content=True

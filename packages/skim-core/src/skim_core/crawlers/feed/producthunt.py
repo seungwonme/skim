@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, List, Optional
 
 import requests
+import typer
 from bs4 import BeautifulSoup
 
 from ...comments import Comment, append_comment_section, render_comment_section
@@ -35,13 +36,20 @@ def fetch_comment_section(product_url: str) -> Optional[str]:
     """
     if not product_url or "producthunt.com/products/" not in product_url:
         return None
+    # 파싱까지 try 안에 둔다. HTTP만 감싸면 PH의 DOM이 바뀔 때 셀렉터 예외가
+    # crawl 루프로 올라가 그 회차 Product Hunt가 통째로 저장 0건이 된다.
     try:
         response = requests.get(product_url, headers=FEED_HEADERS, timeout=20)
         response.raise_for_status()
-    except Exception:  # pylint: disable=broad-except
+        return _parse_comment_section(response.text)
+    except Exception as e:  # pylint: disable=broad-except
+        typer.echo(f"   [!] Product Hunt 댓글 수집 실패({product_url}): {e}")
         return None
 
-    soup = BeautifulSoup(response.text, "html.parser")
+
+def _parse_comment_section(html: str) -> Optional[str]:
+    """제품 페이지 HTML에서 댓글 섹션을 만든다."""
+    soup = BeautifulSoup(html, "html.parser")
     collected: List[Comment] = []
     for node in soup.select("[data-test]"):
         if not _COMMENT_ID.match(node.get("data-test") or ""):
@@ -122,6 +130,10 @@ def _item_to_post(item: dict) -> Post:
         source=item.get("platform", ""),
         content_markdown=item.get("content_markdown", ""),
         word_count=item.get("word_count"),
+        # 피드가 런치별 고유 id(tag:...,2005:Post/1219088)를 주는데 버리고 있었다.
+        # 없으면 db가 URL로 병합해서, 같은 제품 페이지의 두 번째 이후 런치가
+        # 아예 저장되지 않는다.
+        external_id=item.get("external_id"),
         **extras,
     )
 
@@ -159,6 +171,9 @@ class ProductHuntCrawler:
             return []
 
         items.sort(key=lambda x: x.get("published", ""), reverse=True)
+        # CLI가 마지막에 posts[:count]로 자르므로, 버려질 항목을 enrichment하지 않는다.
+        if options.get("count") is not None:
+            items = items[: options["count"]]
 
         for item in items:
             item["enrich_url"] = _redirect_url(item)

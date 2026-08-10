@@ -4,15 +4,43 @@
 """
 
 # Hacker News - hnrss.org (공식보다 풍부한 데이터, 필터링 지원)
-HACKERNEWS_RSS = "https://hnrss.org/newest?points=30"
+# count 기본값이 20이라 하루 창(--days 1)에 30점 넘긴 글의 일부만 들어왔다
+# (2026-08-10 실측: 24시간에 65건인데 20건만 수집). 문서상 최대인 100으로 올린다.
+HACKERNEWS_FEED_COUNT = 100
+HACKERNEWS_MIN_POINTS = 30
+HACKERNEWS_RSS = (
+    f"https://hnrss.org/newest?points={HACKERNEWS_MIN_POINTS}"
+    f"&count={HACKERNEWS_FEED_COUNT}"
+)
 
 # Show/Ask HN은 점수 문턱을 두지 않는다. 링크가 아니라 본문이 알맹이인 글이라
 # 30점 필터에 걸리면 대부분 사라진다. 크롤러는 이미 Ask/Show 본문 처리를 갖췄다.
+#
+# 대신 개수는 newest보다 낮게 잡는다. 문턱이 없어 하루치를 다 받으면 저품질까지
+# 통째로 들어오고, 그 전부가 원문 추출과 댓글 조회를 돈다 (실측: 셋 다 100으로
+# 두면 한 회차 239건, 종전 60건의 4배).
+HACKERNEWS_SHOW_ASK_COUNT = 30
 HACKERNEWS_FEEDS = {
     "hackernews": HACKERNEWS_RSS,
-    "hackernews/show": "https://hnrss.org/show",
-    "hackernews/ask": "https://hnrss.org/ask",
+    "hackernews/show": f"https://hnrss.org/show?count={HACKERNEWS_SHOW_ASK_COUNT}",
+    "hackernews/ask": f"https://hnrss.org/ask?count={HACKERNEWS_SHOW_ASK_COUNT}",
 }
+# 피드별 상한 (창을 다 못 덮었는지 판정할 때 쓴다)
+HACKERNEWS_FEED_LIMITS = {
+    "hackernews": HACKERNEWS_FEED_COUNT,
+    "hackernews/show": HACKERNEWS_SHOW_ASK_COUNT,
+    "hackernews/ask": HACKERNEWS_SHOW_ASK_COUNT,
+}
+
+# hnrss.org가 죽은 회차용 폴백. 위 세 피드와 같은 범위를 Algolia로 재현한다.
+# hnrss는 단일 호스트라 502가 나면 세 피드가 동시에 0건이 되고, 데일리는 고정
+# 창으로 돌아 그날 HN이 통째로 유실된다 (2026-08-10 실측).
+# tags의 콤마는 AND다. `(story,show_hn)`처럼 괄호로 싸면 OR이 돼 전체 글이 온다.
+HACKERNEWS_ALGOLIA_FALLBACK = (
+    ("hackernews", "story", f"points>={HACKERNEWS_MIN_POINTS}", HACKERNEWS_FEED_COUNT),
+    ("hackernews/show", "story,show_hn", "", HACKERNEWS_SHOW_ASK_COUNT),
+    ("hackernews/ask", "story,ask_hn", "", HACKERNEWS_SHOW_ASK_COUNT),
+)
 
 # GeekNews (news.hada.io) - Atom 1.0 피드
 GEEKNEWS_RSS = "https://news.hada.io/rss/news"
@@ -154,18 +182,25 @@ ARXIV_MAX_RESULTS_PER_CATEGORY = 50
 
 
 def arxiv_api_url(
-    category: str, max_results: int = ARXIV_MAX_RESULTS_PER_CATEGORY
+    category: str,
+    max_results: int = ARXIV_MAX_RESULTS_PER_CATEGORY,
+    start: int = 0,
 ) -> str:
     """카테고리별 arXiv Atom API URL.
 
     http가 아니라 https를 쓴다. export.arxiv.org는 http를 리다이렉트하는데,
     feedparser가 리다이렉트를 따라가며 조용히 빈 피드를 돌려주는 경우가 있다.
+
+    start는 arXiv API가 공식 지원하는 오프셋이다. 한 장이 50건인데 그게 실측
+    4시간25분치라(2026-08-10, cs.AI), count를 그보다 크게 잡으면 페이징 없이는
+    채울 수가 없다.
     """
     return (
         "https://export.arxiv.org/api/query"
         f"?search_query=cat:{category}"
         "&sortBy=submittedDate&sortOrder=descending"
         f"&max_results={max_results}"
+        f"&start={start}"
     )
 
 

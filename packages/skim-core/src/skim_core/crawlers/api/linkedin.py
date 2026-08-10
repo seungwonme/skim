@@ -356,9 +356,20 @@ class LinkedInAPICrawler:
 
     def _extract_post(self, item: dict, urn_index: dict) -> Optional[Post]:
         """단일 아이템에서 Post 객체 생성."""
-        content = self._extract_text(item.get("commentary"))
-        if len(content) < 10:
-            return None
+        content = self._extract_text(item.get("commentary")).strip()
+        # actor(프로필 사진)를 피하기 위해 게시글 content 서브트리에서만 이미지를 찾는다
+        image_urls = self._extract_image_urls(item.get("content"))
+
+        # 이미지만 올린 게시물은 commentary가 비지만, 버리면 행 자체가 안 생겨
+        # 그날 그 계정이 무엇을 올렸는지가 통째로 사라진다. x가 이미 쓰는
+        # 사다리(본문 -> 미디어 링크 -> 버림)를 따른다.
+        # 임계를 10자로 두면 "명문이 아닐 수 없다." 같은 짧고 유효한 글도 잘린다.
+        content_status = None
+        if not content:
+            if not image_urls:
+                return None
+            content = "\n".join(image_urls)
+            content_status = "media_link"
 
         actor = item.get("actor", {})
         if not isinstance(actor, dict):
@@ -383,8 +394,6 @@ class LinkedInAPICrawler:
             url = f"{LINKEDIN_BASE_URL}/feed/update/{activity_urn}/"
 
         likes, comments, shares, views = self._resolve_engagement(item, urn_index)
-        # actor(프로필 사진)를 피하기 위해 게시글 content 서브트리에서만 이미지를 찾는다
-        image_urls = self._extract_image_urls(item.get("content"))
 
         return Post(
             platform="linkedin",
@@ -399,6 +408,7 @@ class LinkedInAPICrawler:
             source="unofficial",
             external_id=activity_id,
             **({"images": image_urls} if image_urls else {}),
+            **({"content_status": content_status} if content_status else {}),
         )
 
     @staticmethod
@@ -617,6 +627,11 @@ class LinkedInAPICrawler:
                 for part in (self._extract_text(item) for item in raw_value)
                 if part
             ).strip()
+        # dict/list에서 텍스트를 못 찾았으면 없는 것이다. str()로 떨어뜨리면
+        # `{'text': ''}` 같은 repr이 본문이 된다. 문자 길이 임계(<10)가 이걸
+        # 우연히 막고 있었어서, 임계를 낮추는 순간 표면화된다.
+        if isinstance(raw_value, (dict, list)):
+            return ""
         return str(raw_value).strip()
 
     @staticmethod
