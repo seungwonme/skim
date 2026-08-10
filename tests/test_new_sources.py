@@ -135,7 +135,15 @@ class HackerNewsMultiFeedTests(unittest.TestCase):
             # 점수가 오른 Show HN은 newest에도 올라온다.
             return [common] if "show" in url or "newest" in url else []
 
-        with patch("skim_core.crawlers.feed.hackernews.fetch_feed", fake_fetch):
+        # 0건인 피드는 Algolia 폴백을 부른다. 여기서 보려는 건 중복 제거뿐이라
+        # 폴백까지 막지 않으면 테스트가 실제 네트워크를 탄다.
+        with (
+            patch("skim_core.crawlers.feed.hackernews.fetch_feed", fake_fetch),
+            patch(
+                "skim_core.crawlers.feed.hackernews.fetch_algolia_fallback",
+                return_value=[],
+            ),
+        ):
             posts = asyncio.run(
                 HackerNewsCrawler().crawl(
                     since=now - timedelta(days=1), no_content=True
@@ -152,7 +160,13 @@ class HackerNewsMultiFeedTests(unittest.TestCase):
             seen.append(url)
             return []
 
-        with patch("skim_core.crawlers.feed.hackernews.fetch_feed", fake_fetch):
+        with (
+            patch("skim_core.crawlers.feed.hackernews.fetch_feed", fake_fetch),
+            patch(
+                "skim_core.crawlers.feed.hackernews.fetch_algolia_fallback",
+                return_value=[],
+            ),
+        ):
             asyncio.run(
                 HackerNewsCrawler().crawl(
                     since=now - timedelta(days=1), no_content=True
