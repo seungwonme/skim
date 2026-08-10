@@ -591,6 +591,16 @@ struct ContentView: View {
                         .buttonStyle(.bordered)
                         .disabled(transcribingPostID != nil)
                     }
+                    Button {
+                        toggleRead(post)
+                    } label: {
+                        Label(
+                            post.isRead ? "읽음" : "안 읽음",
+                            systemImage: post.isRead ? "checkmark.circle.fill" : "circle"
+                        )
+                    }
+                    .buttonStyle(.bordered)
+                    .help("CLI의 `skim mark`와 같은 상태를 씁니다")
                     readerModeToggle
                     if let url = post.url {
                         Button {
@@ -1585,6 +1595,22 @@ struct ContentView: View {
                 if source == sourceFilter {
                     loadError = localizedError(error)
                 }
+            }
+        }
+    }
+
+    /// 읽음 상태를 토글한다. CLI의 `skim mark`와 같은 `feedback` 행을 쓴다.
+    ///
+    /// DB에 직접 쓰고 목록만 다시 읽는다. `uv run skim`을 띄우면 토글 한 번에
+    /// 수백 밀리초가 걸려 체크박스로 쓸 수 없다.
+    private func toggleRead(_ post: DashboardPost) {
+        Task { @MainActor in
+            do {
+                let database = try SkimDatabase(path: WorkspaceLocator.defaultDatabasePath())
+                try database.setPostState(id: post.id, state: post.isRead ? nil : "read")
+                reloadSourcePosts()
+            } catch {
+                transcribeError = localizedError(error)
             }
         }
     }

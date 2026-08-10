@@ -13,10 +13,12 @@ from .base import Crawler
 from .feed.ailabs import AILabsCrawler
 from .feed.arxiv import ArxivCrawler
 from .feed.blogs import BlogsCrawler
+from .feed.bluesky import BlueskyCrawler
 from .feed.everyto import EveryToCrawler
 from .feed.geeknews import GeekNewsCrawler
 from .feed.hackernews import HackerNewsCrawler
 from .feed.huggingface import HuggingFaceCrawler
+from .feed.lobsters import LobstersCrawler
 from .feed.producthunt import ProductHuntCrawler
 from .feed.youtube import YouTubeCrawler
 
@@ -26,7 +28,9 @@ REGISTRY: dict[str, type] = {
     "x": XAPICrawler,
     "reddit": RedditAPICrawler,
     "hackernews": HackerNewsCrawler,
+    "lobsters": LobstersCrawler,
     "geeknews": GeekNewsCrawler,
+    "bluesky": BlueskyCrawler,
     "youtube": YouTubeCrawler,
     "producthunt": ProductHuntCrawler,
     "arxiv": ArxivCrawler,

@@ -73,6 +73,46 @@ def _serialize_post(row: dict, warnings: list[str]) -> dict:
     return out
 
 
+BODY_FIELDS = ("content", "content_markdown", "summary")
+
+
+def shape_posts(
+    response: dict,
+    *,
+    fields: Any = None,
+    max_chars: Any = None,
+) -> dict:
+    """응답의 posts를 필요한 필드와 길이로 줄인다.
+
+    `--emit json`이 항상 content_markdown 전문을 실어서 실측 16.6MB가 나왔다
+    (`--limit 5`로도 1.4MB). 이 응답을 그대로 읽는 AI는 컨텍스트가 터진다.
+    중간 단계가 없어서 대안은 3줄짜리 summary뿐이었다.
+
+    자른 사실은 `truncated`와 `content_markdown_chars`로 남긴다. 조용히 자르면
+    받는 쪽이 "본문이 원래 이만큼"이라고 믿는다.
+    """
+    posts = response.get("posts") or []
+    if max_chars is not None and max_chars >= 0:
+        for post in posts:
+            original = len(post.get("content_markdown") or "")
+            truncated = False
+            for name in BODY_FIELDS:
+                value = post.get(name)
+                if isinstance(value, str) and len(value) > max_chars:
+                    post[name] = value[:max_chars]
+                    truncated = True
+            if truncated:
+                post["truncated"] = True
+                post["content_markdown_chars"] = original
+
+    if fields:
+        keep = list(fields)
+        response["posts"] = [
+            {name: post[name] for name in keep if name in post} for post in posts
+        ]
+    return response
+
+
 def build_response(
     *,
     topic: str,

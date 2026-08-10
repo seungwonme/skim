@@ -6,12 +6,13 @@ Candidate sources and promotion checklist for Skim. Keep implementation plans un
 
 ## Already Covered
 
-- Communities: Hacker News, GeekNews, Product Hunt
+- Communities: Hacker News (newest + Show + Ask), Lobsters, GeekNews, Product Hunt
 - Social/API: Threads, X, LinkedIn, Reddit
-- Articles: Every.to, personal blogs in `PERSONAL_BLOGS`
+- Social/public: Bluesky (`BLUESKY_ACCOUNTS`, no login required)
+- Articles: Every.to, blogs and newsletters in `PERSONAL_BLOGS`
 - Video: YouTube channels in `YOUTUBE_CHANNELS`
-- Papers: Hugging Face Daily Papers, arXiv cs.AI
-- AI labs: OpenAI, Anthropic, LangChain
+- Papers: Hugging Face Daily Papers, arXiv (cs.AI, cs.CL, cs.LG, cs.CV)
+- AI labs: OpenAI, Anthropic, LangChain, Google DeepMind, Google Research, Hugging Face, Mistral
 
 ## Candidate Accounts
 
@@ -42,6 +43,16 @@ Candidate sources and promotion checklist for Skim. Keep implementation plans un
 ## Candidate Sources
 
 - Google AI blogs and research updates
+
+## Rejected Sources
+
+Probed and failed, so nobody re-checks them by hand (2026-08-10):
+
+- Meta AI `https://ai.meta.com/blog/rss/` — HTTP 400.
+- DeepSeek `https://api.deepseek.com/rss` — HTTP 401.
+- 요즘IT `https://yozm.wishket.com/magazine/feed/` — HTTP 200 with 30 entries, but no
+  date field on any entry. `fetch_feed` drops undated entries, so registering it collects
+  nothing while looking healthy. Needs a custom parser that reads dates off the article page.
 
 ## Retired Sources
 

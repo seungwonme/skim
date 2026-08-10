@@ -28,7 +28,12 @@ except ImportError:  # pragma: no cover — optional dependency
     fitz = None  # type: ignore[assignment]
 
 from .comments import Comment, append_comment_section, render_comment_section
+from .feed_utils import USER_AGENT, make_retrying_session
 from .paths import workspace_root
+
+# 렌더 스레드를 기다릴 때 playwright 자체 타임아웃 위에 얹는 여유. 브라우저 launch와
+# 종료가 이 안에 들어간다.
+RENDER_JOIN_GRACE_SECONDS = 60
 
 SRT_TO_TXT = str(workspace_root() / "scripts" / "srt_to_txt.sh")
 YOUTUBE_MAX_COMMENTS = 15
@@ -108,13 +113,7 @@ def _fetch_rendered_html_sync(url: str, timeout_ms: int = 30000) -> Optional[str
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             try:
-                context = browser.new_context(
-                    user_agent=(
-                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/124.0.0.0 Safari/537.36"
-                    )
-                )
+                context = browser.new_context(user_agent=USER_AGENT)
                 page = context.new_page()
                 page.goto(url, wait_until="load", timeout=timeout_ms)
                 page.wait_for_timeout(1500)
@@ -138,19 +137,23 @@ def _fetch_rendered_html(url: str, timeout_ms: int = 30000) -> Optional[str]:
     def _run() -> None:
         result["html"] = _fetch_rendered_html_sync(url, timeout_ms)
 
-    thread = threading.Thread(target=_run)
+    # join에 상한이 없으면 playwright launch나 page.content()가 멈출 때 크롤 프로세스가
+    # 무기한 정지한다. daemon으로 두고 상한을 걸면 그 항목만 포기하고 다음으로 넘어간다.
+    thread = threading.Thread(target=_run, daemon=True)
     thread.start()
-    thread.join()
+    thread.join(timeout=timeout_ms / 1000 + RENDER_JOIN_GRACE_SECONDS)
+    if thread.is_alive():
+        print(f"    [!] playwright 렌더링 시간 초과 ({url[:50]}...)")
+        return None
     return result["html"]
 
 
 _UA_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    ),
+    "User-Agent": USER_AGENT,
     "Accept": "text/html,application/xhtml+xml,*/*",
 }
+# 본문 추출은 소스당 여러 건을 연달아 때린다. 503 하나로 그 항목을 통째로 버리지 않는다.
+_HTTP_SESSION = make_retrying_session(_UA_HEADERS)
 
 _PLACEHOLDER_EXACT = {
     "00:00",
@@ -229,7 +232,7 @@ def _trafilatura_extract(html: str, url: str) -> Optional[dict]:
 
 def _http_fetch_html(url: str, timeout: int = 20) -> Optional[str]:
     try:
-        resp = requests.get(url, headers=_UA_HEADERS, timeout=timeout)
+        resp = _HTTP_SESSION.get(url, timeout=timeout)
     except requests.RequestException as e:
         print(f"    [!] HTTP fetch 실패 ({url[:60]}...): {e}")
         return None
@@ -609,7 +612,7 @@ def _geeknews_topic_body_from_html(html: str) -> Optional[str]:
 def fetch_geeknews_topic_body(topic_url: str) -> Optional[str]:
     """긱뉴스 토픽 페이지에서 한국어 요약 본문을 가져온다"""
     try:
-        r = requests.get(topic_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        r = _HTTP_SESSION.get(topic_url, timeout=10)
         return _geeknews_topic_body_from_html(r.text)
     except Exception:
         return None
@@ -618,7 +621,7 @@ def fetch_geeknews_topic_body(topic_url: str) -> Optional[str]:
 def resolve_geeknews_original_url(topic_url: str) -> Optional[str]:
     """긱뉴스 토픽 페이지에서 원문 URL을 추출"""
     try:
-        r = requests.get(topic_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        r = _HTTP_SESSION.get(topic_url, timeout=10)
         soup = BeautifulSoup(r.text, "html.parser")
         title_a = soup.select_one(".topictitle a")
         if title_a:

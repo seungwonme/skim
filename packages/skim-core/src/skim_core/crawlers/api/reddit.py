@@ -154,10 +154,23 @@ class RedditAPICrawler:
                     f"(연속 {consecutive}건 실패, 남은 {len(posts) - index}건은 본문만 저장)"
                 )
                 break
+            # 댓글이 0건인 글은 조회해봐야 None이 돌아온다. 그 None이 HTTP 실패와
+            # 구분되지 않아서, 조용한 서브레딧에서 0건 글 3개가 연속되면 남은
+            # 게시글 전체의 댓글 수집이 중단됐다. 링크 게시물은 댓글이 사실상 본문이다.
+            if (post.comments or 0) < 1:
+                continue
             if index:
                 time.sleep(COMMENT_REQUEST_INTERVAL_SECONDS)
 
-            section = self.fetch_comment_section(post.url)
+            # HTTP 실패는 fetch_comment_section 안에서 None이 된다. 여기서 잡는 건
+            # 응답 구조가 바뀌었을 때의 파싱 실패다.
+            try:
+                section = self.fetch_comment_section(post.url)
+            except Exception as exc:  # noqa: BLE001 - 댓글 실패가 게시글 저장을 막지 않는다
+                typer.echo(f"   [!] Reddit 댓글 파싱 실패: {exc}")
+                failures += 1
+                consecutive += 1
+                continue
             if section is None and post.url:
                 failures += 1
                 consecutive += 1

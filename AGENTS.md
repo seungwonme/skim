@@ -51,6 +51,19 @@ uv run skim source list --platform blogs
 uv run skim source sync                             # feed_config -> tracked_sources (멱등)
 uv run skim source refresh --all                    # tier 재관측, 죽은 피드 탐지
 uv run skim source list --emit markdown > docs/SOURCES.md   # 인벤토리 갱신
+uv run skim source export --out sources.opml                # 소스 목록 백업
+uv run skim source import sources.opml --platform blogs     # 되읽기 (멱등)
+
+# 데이터 꺼내기 (AI에 넘기기 전에 반드시 줄인다)
+uv run skim research "topic" --fields platform,title,url    # 전문 없이 목록만
+uv run skim research "topic" --max-chars 2000               # 본문 절단 + truncated 표시
+uv run skim bundle --days 1 --group-by platform             # topic 없이 최근 글 본문까지
+uv run skim export ./out --days 7 --unread                  # 마크다운 파일로
+uv run skim mark 12 34 --state read                         # 소비 상태
+
+# 운영
+uv run skim backup --keep 3     # 온라인 백업 + quick_check
+uv run skim doctor --strict     # warning 있으면 exit 1
 
 # 기타
 uv run skim platforms           # 지원 플랫폼 목록
@@ -113,6 +126,16 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
 | youtube | `## YouTube Comments` | 영상당 yt-dlp 1회 |
 | producthunt | `## Product Hunt Comments` | 제품당 1건 (PH 제품 페이지) |
 | threads | `## Threads Replies` | 답글 1개 이상인 게시물 전부, 게시물당 1건 |
+| lobsters | `## Lobsters Comments` | 게시물당 1건 (초당 1요청). 같은 응답의 `description_plain`이 본문 폴백 |
+| bluesky | `## Bluesky Replies` | 답글 1개 이상인 게시물, 게시물당 1건 (무인증 postThread) |
+
+- **댓글 조회는 `comments`가 0보다 클 때만 한다.** 0건인 글을 조회하면 "유효 댓글 없음"과
+  "HTTP 실패"가 둘 다 `None`이라 구분되지 않는다. reddit은 그 때문에 조용한 서브레딧에서
+  0건 글 3개가 연속되면 서킷브레이커가 남은 게시글 전체의 댓글 수집을 끊었다.
+- **파싱까지 `try` 안에 넣는다.** HTTP 호출만 감싸면 상류 응답 구조가 바뀔 때 파싱 예외가
+  크롤 루프까지 올라가 그 회차의 게시글이 통째로 저장 0건이 된다. "댓글 실패가 게시글
+  저장을 막지 않는다"는 계약이 실제로 깨져 있던 자리다. 회귀는
+  `tests/test_comment_failure_isolation.py`가 잡는다.
 
 - threads 답글은 타임라인 GraphQL이 주지 않는다. 대신 게시물 문서의 SSR 페이로드가
   답글까지 담고 있고 로그인도 필요 없어서, persisted query 좌표(`doc_id`)를 새로 들지 않는다.
@@ -139,8 +162,25 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
 
 | 유형 | 위치 | 옵션 기준 | 플랫폼 |
 |------|------|-----------|--------|
-| Feed | `packages/skim-core/src/skim_core/crawlers/feed/` | `since` | hackernews, geeknews, youtube, producthunt, arxiv, huggingface, everyto, blogs, ailabs |
+| Feed | `packages/skim-core/src/skim_core/crawlers/feed/` | `since` | hackernews, lobsters, geeknews, youtube, producthunt, arxiv, huggingface, everyto, blogs, ailabs, bluesky |
 | API | `packages/skim-core/src/skim_core/crawlers/api/` | `count` | threads, x, linkedin, reddit |
+
+#### 좁은 창에서 0건이 나오는 소스
+
+발행일이 실제 게시 시점보다 밀리는 소스가 있다. 데일리 배치는 `crawl all --days 1`로
+돌기 때문에, 기본값에만 보정을 넣으면 정작 운영 경로에서는 매번 0건이 된다.
+보정은 `skim_cli.cli.min_lookback_days()`에 **바닥값으로** 넣는다. `days is None`일 때만
+적용되는 분기에 넣으면 `--days 1`이 그걸 덮어쓴다 (arxiv가 그래서 이틀간 멈춰 있었다).
+
+거르는 기준 필드도 확인한다. 큐레이션 목록은 원문 발행일이 아니라 목록에 올린 날짜로
+걸러야 한다 (huggingface는 `paper.submittedOnDailyAt`, `publishedAt`은 arXiv 발행일이라
+며칠에서 몇 주 밀려 있다).
+
+#### 새 소스를 넣기 전에
+
+`fetch_feed`는 발행일이 없는 엔트리를 버린다. 200에 엔트리가 오더라도 날짜 필드가
+없으면 등록해도 매번 0건인데 겉보기엔 멀쩡하다. 실측하지 않은 URL은 넣지 않는다.
+떨어진 후보는 `docs/TODO.md`의 "Rejected Sources"에 이유와 함께 남긴다.
 
 - Feed 크롤러: `since` 유무에 따라 RSS/API 모드 자동 전환
 - API 크롤러: `data/sessions/{platform}_session.json` 세션 쿠키 재사용
@@ -150,7 +190,13 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
 
 - `packages/skim-cli/src/skim_cli/cli.py`: Typer CLI 엔트리포인트
 - `packages/skim-core/src/skim_core/models.py`: `Post` Pydantic 모델
-- `packages/skim-core/src/skim_core/db.py`: SQLite WAL 모드, `UNIQUE(platform, external_id)` 중복 제거
+- `packages/skim-core/src/skim_core/db.py`: SQLite WAL 모드, `UNIQUE(platform, external_id)` 중복 제거.
+  **연결을 여는 함수는 `try/finally`로 닫는다** — `commit()`/`close()`를 try 밖에 두면
+  `sqlite3.Error`가 아닌 예외에서 RESERVED 락이 남아, 뒤따르는 쓰기가 60초를 기다리다
+  `database is locked`로 죽으며 원래 오류를 덮는다.
+  `canonical_body()`는 정본 본문 판정의 단일 소스다. 저장과 결손 집계가 함께 써야 한다
+  (따로 판정하던 때 API형 4종이 정상 저장돼도 매일 "전량 실패"로 찍혔다).
+  소비 상태(읽음/보관)는 `feedback` 테이블을 쓴다. `posts`에 컬럼을 더하지 않는다.
 - `packages/skim-core/src/skim_core/enrichment.py`: `bunx defuddle`, `yt-dlp`, transcript 정리
 - `packages/skim-core/src/skim_core/comments.py`: 플랫폼 중립 `Comment`와 본문 댓글 섹션 합성
 - `packages/skim-core/src/skim_core/feed_utils.py`: RSS/Atom 파싱, KST 변환. `FEED_HEADERS`의 Chrome 버전은 news.hada.io 차단선에 걸리므로 함부로 낮추지 않는다

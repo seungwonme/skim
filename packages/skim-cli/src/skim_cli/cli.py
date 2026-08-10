@@ -4,6 +4,7 @@ import asyncio
 import csv
 import json
 import re
+import shutil
 import sys
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
@@ -17,14 +18,20 @@ from skim_core.crawlers import REGISTRY
 from skim_core.crawlers.auth.cdp import login as cdp_login
 from skim_core.db import (
     DB_PATH,
+    backfill_canonical_urls,
+    backup_db,
+    canonical_body,
+    check_integrity,
     finish_run,
     get_connection,
     init_db,
     list_tracked_sources,
     migrate_canonical_body,
+    POST_STATES,
     platforms_with_recent_posts,
     save_posts,
     save_run,
+    set_post_state,
     update_run_progress,
     upsert_tracked_source,
 )
@@ -32,7 +39,12 @@ from skim_core.models import Post
 from skim_core.paths import DATA_DIR
 from skim_core.research.refresh import run_research
 from skim_core.research.search import search_posts
-from skim_core.research.serializer import build_response, utc_now_iso
+from skim_core.research.serializer import (
+    ALLOWED_POST_FIELDS,
+    build_response,
+    shape_posts,
+    utc_now_iso,
+)
 from skim_core.research.types import SearchStats
 from skim_core.source_health import scan_source_health
 from skim_core.source_probe import format_probe_result, probe_source
@@ -50,11 +62,22 @@ SNS_DEFAULT_COUNT = 50
 FEED_PLATFORMS = set(REGISTRY.keys()) - SNS_PLATFORMS
 
 # 소스가 노출하는 발행일이 실제 게시 시점보다 뒤처지면 좁은 창에서는 전량 걸러진다.
-# huggingface daily papers는 arXiv 발행일을 그대로 싣기 때문에 2일 이상 밀려 있다.
 # --days를 명시해도 이 값이 바닥으로 깔린다. 일일 배치가 `crawl all --days 1`로
 # 돌기 때문에, 기본값에만 반영하면 정작 배치에서는 계속 0건이 된다.
-# arxiv는 요일 기반 규칙을 따로 쓰므로 여기 넣지 않는다.
+# huggingface: 주말에 큐레이션을 쉬어서 월요일에는 금요일 목록이 최신이다.
 MIN_LOOKBACK_DAYS = {"huggingface": 3}
+
+
+def min_lookback_days(platform: str, now: datetime) -> int:
+    """플랫폼이 최소로 필요한 조회 창(일). --days로 더 좁혀도 이 밑으로 안 내려간다.
+
+    좁은 창에서 항상 0건이 나오는 소스는 회귀 경고를 매일 울려, 진짜 고장 신호를
+    덮는다. arXiv는 주말에 announce하지 않으므로 월/토/일은 금요일 몫까지 거슬러 본다.
+    """
+    if platform == "arxiv":
+        return 4 if now.weekday() in (0, 5, 6) else 2
+    return MIN_LOOKBACK_DAYS.get(platform, 0)
+
 
 # 이 기간 안에 유입 이력이 있던 플랫폼이 0건이면 회귀로 본다.
 REGRESSION_LOOKBACK_DAYS = 14
@@ -208,16 +231,9 @@ def crawl(  # noqa: C901 — CLI 진입점으로 플랫폼별 분기가 불가�
                 options["count"] = count if count is not None else SNS_DEFAULT_COUNT
             else:
                 # Feed: since 기반 (기본 전날 0시부터)
-                if days is not None:
-                    d = days
-                elif platform == "arxiv":
-                    # arXiv는 주말에 새 논문을 게시하지 않으므로 월/토/일은 4일 전까지 확인
-                    weekday = now.weekday()  # 0=Mon ... 6=Sun
-                    d = 4 if weekday in (0, 5, 6) else 2
-                else:
-                    d = 1
+                d = days if days is not None else 1
                 # 발행일이 밀린 소스는 사용자가 창을 좁혀도 최소 폭을 보장한다.
-                d = max(d, MIN_LOOKBACK_DAYS.get(platform, 0))
+                d = max(d, min_lookback_days(platform, now))
                 since = (now - timedelta(days=d)).replace(
                     hour=0, minute=0, second=0, microsecond=0
                 )
@@ -259,7 +275,10 @@ def crawl(  # noqa: C901 — CLI 진입점으로 플랫폼별 분기가 불가�
             # 개별 항목의 enrichment 실패는 로그 한 줄로 흘러가고 크롤은 성공으로
             # 끝난다. playwright 미설치처럼 전 항목에 영향을 주는 고장도 그래서
             # 며칠씩 묻힌다. 플랫폼별로 세어 마지막에 한 번에 보여준다.
-            thin = sum(1 for p in posts if not (p.content_markdown or "").strip())
+            # save_posts와 같은 판정 함수를 써야 한다. API형 4종은 본문이 content로
+            # 와서 저장 직전에 승격되므로, 승격 전 content_markdown만 보면 정상
+            # 저장된 회차가 전량 실패로 잡힌다.
+            thin = sum(1 for p in posts if not canonical_body(p, platform))
             if thin:
                 thin_platforms[platform] = (thin, len(posts))
 
@@ -310,7 +329,8 @@ def crawl(  # noqa: C901 — CLI 진입점으로 플랫폼별 분기가 불가�
 
     if thin_platforms:
         detail = ", ".join(
-            f"{name} {miss}/{total}" for name, (miss, total) in sorted(thin_platforms.items())
+            f"{name} {miss}/{total}"
+            for name, (miss, total) in sorted(thin_platforms.items())
         )
         typer.echo(f"\n[!] 본문 추출 실패: {detail}")
         typer.echo("    반복되면 `uv run skim doctor`로 추출 환경을 점검하세요.")
@@ -427,11 +447,53 @@ def youtube_transcribe(video: str = typer.Argument(..., help="영상 URL 또는 
 @app.command()
 def migrate(db: Optional[Path] = typer.Option(None, "--db", help="SQLite DB 경로")):
     """기존 데이터를 정본 본문 모델로 이행합니다 (content_markdown 통일). 멱등."""
+    init_db(db)
     result = migrate_canonical_body(db)
     typer.echo(
         f"API 본문 승격: {result['api_promoted']}건, "
         f"Feed content 정리: {result['feed_content_cleared']}건"
     )
+    filled = backfill_canonical_urls(db)
+    typer.echo(f"canonical_url 채움: {filled}건")
+
+
+@app.command()
+def backup(
+    db: Optional[Path] = typer.Option(None, "--db", help="SQLite DB 경로"),
+    dest_dir: Optional[Path] = typer.Option(
+        None, "--dest", help="백업 디렉터리 (기본 data/backups)"
+    ),
+    keep: int = typer.Option(3, "--keep", help="보관할 백업 개수"),
+):
+    """DB를 온라인 백업하고 오래된 백업을 정리합니다.
+
+    649MB 단일 파일에 3년치가 사본 없이 들어 있었다. 파일 복사와 달리 WAL이
+    진행 중이어도 일관된 스냅샷이 나오므로 크롤과 겹쳐도 안전하다.
+    """
+    db_path = _db_or_default(db)
+    if not db_path.exists():
+        typer.echo(f"[skim] DB가 없습니다: {db_path}", err=True)
+        raise typer.Exit(1)
+
+    target_dir = dest_dir or (db_path.parent / "backups")
+    stamp = datetime.now(KST).strftime("%Y%m%d_%H%M%S")
+    dest = target_dir / f"{db_path.stem}.{stamp}.db"
+    backup_db(dest, db_path)
+    size_mb = dest.stat().st_size / (1024 * 1024)
+    typer.echo(f"백업: {dest} ({size_mb:.1f}MB)")
+
+    if keep > 0:
+        existing = sorted(
+            target_dir.glob(f"{db_path.stem}.*.db"), key=lambda p: p.name, reverse=True
+        )
+        for stale in existing[keep:]:
+            stale.unlink()
+            typer.echo(f"오래된 백업 삭제: {stale.name}")
+
+    integrity = check_integrity(db_path)
+    typer.echo(f"integrity: {integrity}")
+    if integrity != "ok":
+        raise typer.Exit(1)
 
 
 @app.command()
@@ -441,6 +503,9 @@ def doctor(
     ),
     db: Optional[Path] = typer.Option(None, "--db", help="SQLite DB 경로"),
     emit: str = typer.Option("summary", "--emit", help="summary|json"),
+    strict: bool = typer.Option(
+        False, "--strict", help="warning이 하나라도 있으면 exit 1 (cron 연동용)"
+    ),
 ):
     """DB, 수집 run, session 상태를 점검합니다."""
     _validate_platform(platform)
@@ -509,7 +574,8 @@ def doctor(
                 FROM runs
                 ORDER BY id DESC
                 LIMIT 10
-                """).fetchall()]
+                """).fetchall()
+        ]
         # 본문 정본(content_markdown)이 빈 최근 유입분. summary 폴백까지 세는
         # 위 missing_text와 달리 데이터 계약을 그대로 본다. youtube 목록 행은
         # 본문 없이 저장되는 것이 계약이라 뺀다.
@@ -536,7 +602,9 @@ def doctor(
 
     report["extractor"] = _playwright_status()
     if not report["extractor"]["ok"]:
-        report["warnings"].append(f"playwright unavailable: {report['extractor']['detail']}")
+        report["warnings"].append(
+            f"playwright unavailable: {report['extractor']['detail']}"
+        )
     try:
         health = scan_source_health(db_path)
     except Exception as exc:  # pragma: no cover - defensive report path
@@ -548,6 +616,21 @@ def doctor(
     for issue in health:
         report["warnings"].append(f"{issue['source']}: {issue['detail']}")
 
+    # 외부 CLI 의존: 없으면 본문/자막 추출이 통째로 죽는데 크롤은 성공으로 끝난다.
+    # launchd는 셸 프로필을 안 읽어 PATH가 달라지므로 크론에서 특히 잘 사라진다.
+    report["tools"] = {
+        name: shutil.which(name) or "" for name in ("yt-dlp", "bunx", "uv")
+    }
+    for name, found in report["tools"].items():
+        if not found:
+            report["warnings"].append(f"{name} not on PATH")
+
+    if report["db_exists"]:
+        integrity = check_integrity(db_path)
+        report["integrity"] = integrity
+        if integrity != "ok":
+            report["warnings"].append(f"database integrity: {integrity}")
+
     if platform and not report["platforms"]:
         report["warnings"].append(f"no posts found for {platform}")
     if any(
@@ -556,6 +639,8 @@ def doctor(
     ):
         report["warnings"].append("recent runs need attention")
     _emit_doctor(report, emit)
+    if strict and report["warnings"]:
+        raise typer.Exit(1)
 
 
 def _playwright_status() -> dict:
@@ -578,7 +663,9 @@ def _playwright_status() -> dict:
             browser = play.chromium.launch(headless=True)
             browser.close()
     except Exception as exc:  # pragma: no cover - 환경 의존
-        first_line = str(exc).strip().splitlines()[0] if str(exc).strip() else type(exc).__name__
+        first_line = (
+            str(exc).strip().splitlines()[0] if str(exc).strip() else type(exc).__name__
+        )
         return {
             "ok": False,
             "detail": f"{first_line[:150]} (uv run playwright install)",
@@ -608,6 +695,11 @@ def _emit_doctor(report: dict, emit: str) -> None:
     if report.get("extractor"):
         state = "ok" if report["extractor"]["ok"] else "unavailable"
         typer.echo(f"extractor: playwright {state} - {report['extractor']['detail']}")
+    if report.get("tools"):
+        missing = [name for name, found in report["tools"].items() if not found]
+        typer.echo(f"tools: {'ok' if not missing else 'missing ' + ', '.join(missing)}")
+    if report.get("integrity"):
+        typer.echo(f"integrity: {report['integrity']}")
     if report["sessions"]:
         present = [s["platform"] for s in report["sessions"] if s["exists"]]
         typer.echo(f"sessions: {', '.join(present) if present else 'none'}")
@@ -779,8 +871,29 @@ def bundle(
     output_dir: Optional[Path] = typer.Option(
         None, "--output-dir", "-o", help="bundle 디렉터리"
     ),
+    fields: Optional[str] = typer.Option(
+        None, "--fields", help="쉼표 구분 출력 필드 (기본 전체)"
+    ),
+    max_chars: Optional[int] = typer.Option(
+        None, "--max-chars", help="본문 필드 최대 길이"
+    ),
+    group_by: Optional[str] = typer.Option(
+        None, "--group-by", help="summary.md 묶음 기준: platform|source|date"
+    ),
 ):
-    """research/source-inventory handoff bundle을 생성합니다."""
+    """research/source-inventory handoff bundle을 생성합니다.
+
+    topic 없이 부르면 최근 N일 게시글을 본문까지 담아 떨군다. 예전에는 posts가 빈
+    배열이라, 다이제스트 같은 소비자가 CLI를 우회해 sqlite3로 DB를 직접 열어야 했다.
+    """
+    if group_by and group_by not in _BUNDLE_GROUP_KEYS:
+        typer.echo(
+            f"[skim] invalid --group-by: {group_by!r}. "
+            f"choose from {sorted(_BUNDLE_GROUP_KEYS)}",
+            err=True,
+        )
+        raise typer.Exit(2)
+    field_list = _parse_fields(fields)
     db_path = _db_or_default(db)
     if not db_path.exists():
         typer.echo(f"missing database: {db_path}", err=True)
@@ -825,18 +938,26 @@ def bundle(
             warnings=warnings,
         )
     else:
-        response = {
-            "topic": None,
-            "days": days,
-            "sources_requested": source_list,
-            "posts": [],
-            "stats": {"total": len(inventory)},
-            "warnings": [],
-        }
+        since_utc_iso = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        rows = _recent_posts(db_path, days, platforms, limit)
+        response = build_response(
+            topic=None,
+            tokens=[],
+            date_range={"from": since_utc_iso, "to": utc_now_iso()},
+            sources_requested=source_list,
+            posts=rows,
+            search_stats=SearchStats(rows_scanned=len(rows), rows_returned=len(rows)),
+            days_requested=days,
+            warnings=[],
+        )
+
+    shape_posts(response, fields=field_list, max_chars=max_chars)
     results_path.write_text(
         json.dumps(response, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    summary_path.write_text(_bundle_summary(response, inventory_path), encoding="utf-8")
+    summary_path.write_text(
+        _bundle_summary(response, inventory_path, group_by), encoding="utf-8"
+    )
     proof_path.write_text(
         "\n".join(
             [
@@ -919,18 +1040,113 @@ def _write_tsv(path: Path, rows: list[dict]) -> None:
         writer.writerows(rows)
 
 
-def _bundle_summary(response: dict, inventory_path: Path) -> str:
+_BUNDLE_GROUP_KEYS = {"platform", "source", "date"}
+
+
+def _group_key(post: dict, group_by: str) -> str:
+    if group_by == "date":
+        return (post.get("timestamp") or "")[:10] or "(no date)"
+    return post.get(group_by) or f"(no {group_by})"
+
+
+def _bundle_summary(
+    response: dict, inventory_path: Path, group_by: Optional[str] = None
+) -> str:
     stats = response.get("stats", {})
     lines = [
         "# Skim Bundle",
         "",
-        f"- topic: {response.get('topic') or '(inventory)'}",
+        f"- topic: {response.get('topic') or '(recent)'}",
         f"- total results: {stats.get('total', 0)}",
         f"- source inventory: {inventory_path}",
     ]
     if response.get("warnings"):
         lines.append(f"- warnings: {', '.join(response['warnings'])}")
+
+    if group_by:
+        grouped: dict[str, list[dict]] = {}
+        for post in response.get("posts") or []:
+            grouped.setdefault(_group_key(post, group_by), []).append(post)
+        lines.append("")
+        lines.append(f"## Grouped by {group_by}")
+        for key in sorted(grouped):
+            lines.append("")
+            lines.append(f"### {key} ({len(grouped[key])})")
+            for post in grouped[key]:
+                title = (post.get("title") or post.get("content") or "").strip()
+                title = re.sub(r"\s+", " ", title)[:100] or "(untitled)"
+                url = post.get("url") or ""
+                lines.append(f"- [{title}]({url})" if url else f"- {title}")
     return "\n".join(lines) + "\n"
+
+
+def _recent_posts(
+    db_path: Path,
+    days: int,
+    platforms: Optional[list[str]],
+    limit: int,
+    unread_only: bool = False,
+) -> list[dict]:
+    """topic 없이 최근 게시글을 본문까지 읽는다.
+
+    `_recent_inventory`는 목록용이라 본문을 안 싣는다. 이 함수가 없어서 소비자가
+    CLI를 우회해 sqlite3로 DB를 직접 열고 있었다.
+    """
+    where = ["crawled_at >= ?"]
+    params: list = [_cutoff(days)]
+    if platforms:
+        where.append(f"platform IN ({','.join('?' * len(platforms))})")
+        params.extend(platforms)
+    if unread_only:
+        where.append(
+            "posts.id NOT IN (SELECT post_id FROM feedback "
+            f"WHERE action IN ({','.join('?' * len(POST_STATES))}))"
+        )
+        params.extend(POST_STATES)
+    params.append(limit)
+
+    conn = get_connection(db_path)
+    try:
+        rows = conn.execute(
+            f"""SELECT posts.id, {", ".join(ALLOWED_POST_FIELDS[:-2])}
+                FROM posts
+                WHERE {" AND ".join(where)}
+                ORDER BY COALESCE(NULLIF(timestamp, ''), crawled_at) DESC
+                LIMIT ?""",
+            params,
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(row) for row in rows]
+
+
+@app.command("mark")
+def mark_posts(
+    post_ids: List[int] = typer.Argument(..., help="posts.id (공백 구분)"),
+    state: str = typer.Option(
+        "read", "--state", help="read | archived | unread (unread는 상태를 지운다)"
+    ),
+    db: Optional[Path] = typer.Option(None, "--db", help="SQLite DB 경로"),
+) -> None:
+    """게시글의 소비 상태를 기록합니다.
+
+    하루 200건대가 들어오는데 어디까지 봤는지 표시할 데가 없었다. `feedback`
+    테이블이 스키마만 있고 행이 0개였어서 새 컬럼 대신 그걸 쓴다.
+    """
+    if state not in (*POST_STATES, "unread"):
+        typer.echo(
+            f"[skim] invalid --state: {state!r}. "
+            f"choose from {[*POST_STATES, 'unread']}",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    db_path = _db_or_default(db)
+    init_db(db_path)
+    target = None if state == "unread" else state
+    for post_id in post_ids:
+        set_post_state(post_id, target, db_path)
+    typer.echo(f"{len(post_ids)}건 -> {state}")
 
 
 VALID_REFRESH_MODES = {"auto", "never", "force"}
@@ -951,11 +1167,26 @@ def research(
         "--refresh",
         help="auto|never|force (Phase 1 에서는 never 고정)",
     ),
+    fields: Optional[str] = typer.Option(
+        None, "--fields", help="쉼표 구분 출력 필드 (기본 전체)"
+    ),
+    max_chars: Optional[int] = typer.Option(
+        None,
+        "--max-chars",
+        help="본문 필드 최대 길이. 자르면 truncated 플래그가 붙는다",
+    ),
 ):
     """topic 으로 posts 를 필터링해 구조화 JSON 으로 반환.
 
     Phase 1 단독 실행: `--refresh never`. auto/force 는 Phase 2 에서 활성화.
+
+    본문 전문이 필요 없으면 출력을 줄인다. 기본 `--emit json`은 content_markdown을
+    통째로 실어서 실측 16.6MB가 나온다:
+
+        skim research "agent" --fields platform,title,url,timestamp
+        skim research "agent" --max-chars 2000
     """
+    field_list = _parse_fields(fields)
     if not topic.strip():
         typer.echo("Usage: skim research TOPIC [OPTIONS]", err=True)
         raise typer.Exit(code=2)
@@ -1008,7 +1239,7 @@ def research(
                 days_requested=days,
                 warnings=["no searchable tokens in topic"],
             )
-            _emit_response(response, emit)
+            _emit_response(response, emit, field_list, max_chars)
             return
 
         sources_for_search_resolved = sources_for_search or list(REGISTRY.keys())
@@ -1041,7 +1272,7 @@ def research(
                 )
                 if msg not in response["warnings"]:
                     response["warnings"].append(msg)
-        _emit_response(response, emit)
+        _emit_response(response, emit, field_list, max_chars)
         return
 
     # refresh == 'never' 경로 (Phase 1 동작)
@@ -1083,10 +1314,30 @@ def research(
         days_requested=days,
         warnings=warnings,
     )
-    _emit_response(response, emit)
+    _emit_response(response, emit, field_list, max_chars)
 
 
-def _emit_response(response: dict, emit: str) -> None:
+def _parse_fields(raw: Optional[str]) -> Optional[List[str]]:
+    """`--fields` 값을 검증해 리스트로. 없으면 None (전체 필드)."""
+    if not raw:
+        return None
+    names = [name.strip() for name in raw.split(",") if name.strip()]
+    extra_ok = {"truncated", "content_markdown_chars"}
+    unknown = [n for n in names if n not in ALLOWED_POST_FIELDS and n not in extra_ok]
+    if unknown:
+        typer.echo(f"[skim] unknown fields: {unknown}", err=True)
+        typer.echo(f"supported: {', '.join(ALLOWED_POST_FIELDS)}", err=True)
+        raise typer.Exit(code=2)
+    return names
+
+
+def _emit_response(
+    response: dict,
+    emit: str,
+    fields: Optional[List[str]] = None,
+    max_chars: Optional[int] = None,
+) -> None:
+    shape_posts(response, fields=fields, max_chars=max_chars)
     if emit == "json":
         typer.echo(json.dumps(response, ensure_ascii=False, indent=2))
     elif emit == "jsonl":
@@ -1096,6 +1347,91 @@ def _emit_response(response: dict, emit: str) -> None:
             f"topic={response.get('topic')!r} total={response['stats']['total']} "
             f"by_platform={response['stats']['by_platform']}"
         )
+
+
+def _md_filename(post: dict, index: int) -> str:
+    """게시글 하나의 파일명. 같은 날 같은 제목이 겹쳐도 안 덮어쓰게 번호를 붙인다."""
+    stamp = (post.get("timestamp") or "")[:10] or "undated"
+    title = _slug(post.get("title") or post.get("content") or "")[:60] or "post"
+    return f"{stamp}-{post.get('platform') or 'skim'}-{title}-{index:03d}.md"
+
+
+def _post_to_markdown(post: dict) -> str:
+    """YAML frontmatter + 정본 본문. Obsidian이 그대로 읽는 형식."""
+
+    def esc(value) -> str:
+        return json.dumps(value if value is not None else "", ensure_ascii=False)
+
+    front = [
+        "---",
+        f"title: {esc(post.get('title') or '')}",
+        f"platform: {esc(post.get('platform') or '')}",
+        f"source: {esc(post.get('source') or '')}",
+        f"author: {esc(post.get('author') or '')}",
+        f"url: {esc(post.get('url') or '')}",
+        f"timestamp: {esc(post.get('timestamp') or '')}",
+        f"word_count: {post.get('word_count') or 0}",
+        "---",
+        "",
+    ]
+    body = (post.get("content_markdown") or post.get("content") or "").strip()
+    title = (post.get("title") or "").strip()
+    if title:
+        front.append(f"# {title}")
+        front.append("")
+    return "\n".join(front) + body + "\n"
+
+
+@app.command("export")
+def export_posts(
+    out_dir: Path = typer.Argument(..., help="출력 디렉터리"),
+    days: int = typer.Option(7, "--days", help="최근 N일"),
+    platform: Optional[str] = typer.Option(
+        None, "--platform", "-p", help="플랫폼으로 좁힌다"
+    ),
+    limit: int = typer.Option(200, "--limit", help="최대 건수"),
+    db: Optional[Path] = typer.Option(None, "--db", help="SQLite DB 경로"),
+    fmt: str = typer.Option("md", "--format", help="md 또는 json"),
+    unread: bool = typer.Option(False, "--unread", help="아직 안 읽은 글만"),
+) -> None:
+    """정본 본문을 파일로 꺼낸다. 본문이 DB에만 있어 손으로 복사하던 자리다."""
+    _validate_platform(platform)
+    if fmt not in {"md", "json"}:
+        typer.echo("[skim] --format 은 md 또는 json", err=True)
+        raise typer.Exit(2)
+
+    db_path = _db_or_default(db)
+    if not db_path.exists():
+        typer.echo(f"missing database: {db_path}", err=True)
+        raise typer.Exit(1)
+
+    rows = _recent_posts(
+        db_path, days, [platform] if platform else None, limit, unread_only=unread
+    )
+    if not rows:
+        typer.echo("내보낼 게시글이 없습니다.")
+        return
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if fmt == "json":
+        target = out_dir / f"skim-export-{datetime.now(KST):%Y%m%d_%H%M%S}.json"
+        target.write_text(
+            json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        typer.echo(f"{len(rows)}건 -> {target}")
+        return
+
+    written = 0
+    for index, post in enumerate(rows):
+        body = (post.get("content_markdown") or post.get("content") or "").strip()
+        if not body:
+            # 본문 없는 행까지 파일로 만들면 vault가 빈 노트로 오염된다.
+            continue
+        (out_dir / _md_filename(post, index)).write_text(
+            _post_to_markdown(post), encoding="utf-8"
+        )
+        written += 1
+    typer.echo(f"{written}건 -> {out_dir} (본문 없는 {len(rows) - written}건 제외)")
 
 
 @source_app.command()
@@ -1229,6 +1565,146 @@ def _sources_markdown(rows: List[dict]) -> str:
         "",
     ]
     return "\n".join(lines)
+
+
+def _sources_opml(rows: List[dict]) -> str:
+    """tracked_sources를 OPML로. 다른 리더가 그대로 읽는 교환 포맷이다."""
+    from xml.sax.saxutils import quoteattr  # pylint: disable=import-outside-toplevel
+
+    lines = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<opml version="2.0">',
+        "  <head>",
+        "    <title>Skim sources</title>",
+        f"    <dateCreated>{utc_now_iso()}</dateCreated>",
+        "  </head>",
+        "  <body>",
+    ]
+    by_platform: dict[str, List[dict]] = {}
+    for row in rows:
+        by_platform.setdefault(row["platform"], []).append(row)
+
+    for platform in sorted(by_platform):
+        lines.append(f"    <outline text={quoteattr(platform)}>")
+        for row in by_platform[platform]:
+            feed = row.get("feed_url") or row.get("handle_or_url") or ""
+            if not feed:
+                continue
+            lines.append(
+                '      <outline type="rss" '
+                f"text={quoteattr(row['display_name'])} "
+                f"title={quoteattr(row['display_name'])} "
+                f"xmlUrl={quoteattr(feed)} "
+                f"htmlUrl={quoteattr(row.get('canonical_id') or feed)} />"
+            )
+        lines.append("    </outline>")
+    lines += ["  </body>", "</opml>", ""]
+    return "\n".join(lines)
+
+
+@source_app.command("export")
+def source_export(
+    out: Optional[Path] = typer.Option(None, "--out", help="파일 경로 (기본 stdout)"),
+    platform: Optional[str] = typer.Option(
+        None, "--platform", help="플랫폼으로 좁힌다"
+    ),
+) -> None:
+    """등록된 소스를 OPML로 내보낸다."""
+    _validate_platform(platform)
+    init_db()
+    platforms = [platform] if platform else sorted(REGISTRY.keys())
+    rows: List[dict] = []
+    for name in platforms:
+        for row in list_tracked_sources(name, enabled_only=False):
+            rows.append({"platform": name, **row})
+
+    opml = _sources_opml(rows)
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(opml, encoding="utf-8")
+        typer.echo(f"{len(rows)}개 소스 -> {out}")
+    else:
+        typer.echo(opml)
+
+
+def parse_opml(text: str) -> List[dict]:
+    """OPML에서 (name, feed_url, site_url)을 뽑는다. 중첩 outline도 훑는다.
+
+    DOCTYPE이 있으면 파싱 전에 거절한다. 사용자가 준 파일이라 신뢰 경계이고,
+    expat은 내부 엔티티를 그대로 펼쳐 billion-laughs로 메모리를 태울 수 있다.
+    OPML 스펙에는 DTD가 필요 없으므로 이 거절이 정상 파일을 막지 않는다.
+    (외부 엔티티는 stdlib ElementTree가 애초에 해석하지 않는다.)
+    """
+    # pylint: disable=import-outside-toplevel
+    from xml.etree import ElementTree
+
+    if re.search(r"<!DOCTYPE", text[:4096], re.IGNORECASE):
+        raise ValueError("DOCTYPE이 있는 OPML은 받지 않는다 (엔티티 확장 위험)")
+
+    root = ElementTree.fromstring(text)
+    found: List[dict] = []
+    for node in root.iter("outline"):
+        feed = (node.get("xmlUrl") or "").strip()
+        if not feed:
+            continue
+        name = (node.get("title") or node.get("text") or "").strip()
+        found.append(
+            {
+                "name": name or urlparse(feed).netloc,
+                "feed_url": feed,
+                "site_url": (node.get("htmlUrl") or "").strip() or feed,
+            }
+        )
+    return found
+
+
+@source_app.command("import")
+def source_import(
+    path: Path = typer.Argument(..., help="OPML 파일"),
+    platform: str = typer.Option("blogs", "--platform", help="소속 플랫폼 라벨"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="등록하지 않고 대상만 보여준다"
+    ),
+) -> None:
+    """OPML을 tracked_sources로 가져온다 (멱등).
+
+    내보내기만 있고 되읽는 경로가 없어서, DB가 깨지면 등록 소스를 손으로 다시
+    넣어야 했다. probe는 돌리지 않는다 (파일이 이미 피드 주소를 갖고 있다).
+    tier는 비워두므로 등록 후 `skim source refresh --all`로 관측한다.
+    """
+    if not path.exists():
+        typer.echo(f"파일이 없습니다: {path}", err=True)
+        raise typer.Exit(1)
+    try:
+        entries = parse_opml(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 - 사용자 파일이라 어떤 형식이든 올 수 있다
+        typer.echo(f"OPML 파싱 실패: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+    if not entries:
+        typer.echo("가져올 피드가 없습니다 (xmlUrl 속성이 있는 outline이 없음).")
+        return
+
+    typer.echo(f"[{platform}] 가져올 소스 {len(entries)}개:")
+    for row in entries:
+        typer.echo(f"  {row['name']}  {row['feed_url']}")
+    if dry_run:
+        return
+
+    init_db()
+    created = 0
+    for row in entries:
+        if upsert_tracked_source(
+            platform=platform,
+            canonical_id=row["site_url"],
+            display_name=row["name"],
+            source_type="feed",
+            handle_or_url=row["site_url"],
+            feed_url=row["feed_url"],
+        ):
+            created += 1
+    typer.echo(f"신규 {created}개, 갱신 {len(entries) - created}개")
+    typer.echo("tier 관측: uv run skim source refresh --all")
 
 
 @source_app.command("sync")

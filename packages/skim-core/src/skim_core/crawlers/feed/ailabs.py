@@ -16,43 +16,22 @@ from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 from ...enrichment import enrich_with_content
 from ...feed_config import AI_LABS_SOURCES
-from ...feed_utils import fetch_feed, is_within_range
+from ...feed_utils import (
+    USER_AGENT,
+    fetch_feed,
+    is_within_range,
+    make_retrying_session,
+)
 from ...models import Post
 
-USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-)
 REQUEST_TIMEOUT = 20
 
 _DATE_ANTHROPIC = re.compile(r"\b([A-Z][a-z]{2,9}) (\d{1,2}), (20\d\d)\b")
 
-
-def _make_session() -> requests.Session:
-    """재사용 가능한 retry 붙은 HTTP 세션."""
-    session = requests.Session()
-    session.headers.update({"User-Agent": USER_AGENT, "Accept": "text/html,*/*"})
-    retry = Retry(
-        total=3,
-        connect=3,
-        read=3,
-        backoff_factor=0.8,
-        status_forcelist=(429, 500, 502, 503, 504),
-        allowed_methods=frozenset(["GET", "HEAD"]),
-        raise_on_status=False,
-    )
-    adapter = HTTPAdapter(max_retries=retry)
-    session.mount("http://", adapter)
-    session.mount("https://", adapter)
-    return session
-
-
-_SESSION = _make_session()
+_SESSION = make_retrying_session({"Accept": "text/html,*/*"})
 
 
 def _fetch_html(url: str) -> Optional[str]:

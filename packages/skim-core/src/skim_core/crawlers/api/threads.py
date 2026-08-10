@@ -189,14 +189,26 @@ class ThreadsAPICrawler:
         답글이 있다고 보고된 게시물은 전부 조회한다(게시물당 요청 1건, 실측 1~4초).
         `--count`를 크게 주면 그만큼 크롤이 길어진다.
         """
+        failures = 0
         for post in posts:
             if (post.comments or 0) < MIN_REPLIES_FOR_FETCH:
                 continue
-            section = self.fetch_reply_section(post.url)
+            # HTTP 실패는 fetch_reply_section 안에서 조용히 None이 된다. 여기서 잡는 건
+            # 상류 SSR 페이로드 구조가 바뀌었을 때의 파싱 실패다. 그게 크롤 루프까지
+            # 올라가면 이 회차의 게시물 전량이 저장 0건이 된다.
+            try:
+                section = self.fetch_reply_section(post.url)
+            except Exception as exc:  # noqa: BLE001 - 답글 실패가 게시물 저장을 막지 않는다
+                failures += 1
+                typer.echo(f"   [!] Threads 답글 파싱 실패: {exc}")
+                continue
             if section:
                 post.content_markdown = append_comment_section(
                     post.content_markdown or post.content, section
                 )
+
+        if failures:
+            typer.echo(f"   [!] Threads 답글 파싱 실패 {failures}건 (본문만 저장)")
 
     def fetch_reply_section(self, url: Optional[str]) -> Optional[str]:
         """게시물 페이지의 SSR 페이로드에서 답글을 뽑아 마크다운 섹션으로 만든다.

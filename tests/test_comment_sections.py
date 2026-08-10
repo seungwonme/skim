@@ -182,6 +182,8 @@ class RedditCommentTests(unittest.TestCase):
                 url=f"https://www.reddit.com/r/a/comments/{i}/x/",
                 content="b",
                 content_markdown=None,
+                # 댓글이 있다고 보고된 글이어야 조회 대상이다. 0건 글은 애초에 건너뛴다.
+                comments=5,
             )
             for i in range(10)
         ]

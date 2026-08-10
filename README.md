@@ -34,15 +34,17 @@ Skim collects posts from multiple public feeds and session-based social sources,
 
 | Type | Platform | Source |
 |---|---|---|
-| Feed | Hacker News | hnrss.org |
+| Feed | Hacker News | hnrss.org newest + Show + Ask |
+| Feed | Lobsters | RSS + per-story JSON (comments) |
 | Feed | GeekNews | news.hada.io Atom |
 | Feed | YouTube | RSS + `yt-dlp` |
 | Feed | Product Hunt | RSS |
-| Feed | arXiv | Atom API |
+| Feed | arXiv | Atom API (cs.AI, cs.CL, cs.LG, cs.CV) |
 | Feed | Hugging Face | Daily Papers JSON API |
 | Feed | Every.to | RSS feeds |
 | Feed | Blogs | RSS feeds in `PERSONAL_BLOGS` |
-| Feed | AI Labs | OpenAI RSS, Anthropic pages, LangChain blog |
+| Feed | AI Labs | OpenAI, Anthropic, LangChain, DeepMind, Google Research, Hugging Face, Mistral |
+| Feed | Bluesky | Public XRPC (no login) |
 | API | Threads | Instagram Private API |
 | API | X | GraphQL via `twitter-api-client` |
 | API | LinkedIn | Voyager GraphQL |
@@ -80,6 +82,10 @@ Search the local post store:
 ```bash
 uv run skim research "AI video" --days 7 --emit summary
 uv run skim research "vector database" --sources hackernews,arxiv --emit json
+
+# `--emit json` carries every body in full. Trim it before handing it to an agent.
+uv run skim research "agents" --fields platform,title,url,timestamp
+uv run skim research "agents" --max-chars 2000    # sets `truncated` on shortened posts
 ```
 
 Inspect and package local data:
@@ -87,9 +93,21 @@ Inspect and package local data:
 ```bash
 uv run skim doctor
 uv run skim doctor --platform reddit
+uv run skim doctor --strict            # exit 1 on any warning (for cron)
+uv run skim backup --keep 3            # online backup + quick_check
 uv run skim refresh-plan --days 1
 uv run skim coverage --days 7 --emit json
 uv run skim bundle "AI video" --days 7
+uv run skim bundle --days 1 --group-by platform    # no topic: recent posts with bodies
+```
+
+Get posts out of SQLite:
+
+```bash
+uv run skim export ./exported --days 7                 # one Markdown file per post
+uv run skim export ./exported --days 7 --format json
+uv run skim source export --out sources.opml           # share or back up the source list
+uv run skim source import sources.opml --platform blogs
 ```
 
 ## Agent Skill
