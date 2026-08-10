@@ -87,37 +87,39 @@ def _html_to_text(html: str) -> str:
 
 def fetch_hn_discussion(story_id: str) -> Optional[dict]:
     """Algolia item API로 스토리 텍스트와 상위 댓글(1단계 대댓글 포함)을 가져온다."""
+    # 파싱까지 try 안에 둔다. HTTP만 감싸면 Algolia 응답 구조가 바뀔 때 walk()의
+    # 예외가 crawl 루프로 올라가 그 회차 HN이 통째로 저장 0건이 된다.
     try:
         resp = requests.get(HN_ALGOLIA_ITEM.format(story_id), timeout=15)
         resp.raise_for_status()
         data = resp.json()
+
+        comments: List[str] = []
+
+        def walk(children: list, depth: int) -> None:
+            for child in children or []:
+                if len(comments) >= MAX_COMMENTS:
+                    return
+                text = _html_to_text(child.get("text") or "")[:MAX_COMMENT_CHARS]
+                if text:
+                    indent = "  " * depth
+                    author = child.get("author") or "unknown"
+                    # HN은 댓글 점수를 공개하지 않으므로 작성시각까지가 가용 메타데이터다.
+                    created = (child.get("created_at") or "")[:16].replace("T", " ")
+                    meta = f" ({created} UTC)" if created else ""
+                    comments.append(f"{indent}- **{author}**{meta}: {text}")
+                    if depth < 1:
+                        walk(child.get("children") or [], depth + 1)
+
+        walk(data.get("children") or [], 0)
+        return {
+            "story_text": _html_to_text(data.get("text") or ""),
+            "comments": comments,
+            "points": data.get("points"),
+        }
     except Exception as e:
         typer.echo(f"   [!] HN 댓글 수집 실패(id={story_id}): {e}")
         return None
-
-    comments: List[str] = []
-
-    def walk(children: list, depth: int) -> None:
-        for child in children or []:
-            if len(comments) >= MAX_COMMENTS:
-                return
-            text = _html_to_text(child.get("text") or "")[:MAX_COMMENT_CHARS]
-            if text:
-                indent = "  " * depth
-                author = child.get("author") or "unknown"
-                # HN은 댓글 점수를 공개하지 않으므로 작성시각까지가 가용 메타데이터다.
-                created = (child.get("created_at") or "")[:16].replace("T", " ")
-                meta = f" ({created} UTC)" if created else ""
-                comments.append(f"{indent}- **{author}**{meta}: {text}")
-                if depth < 1:
-                    walk(child.get("children") or [], depth + 1)
-
-    walk(data.get("children") or [], 0)
-    return {
-        "story_text": _html_to_text(data.get("text") or ""),
-        "comments": comments,
-        "points": data.get("points"),
-    }
 
 
 _FEED_POINTS = re.compile(r"Points:\s*(\d+)")

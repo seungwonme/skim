@@ -77,6 +77,9 @@ def fetch_geeknews_metrics(topic_id: str) -> Optional[dict]:
     홈페이지 스크래핑 경로만 지표를 채우던 비대칭을 없앤다.
     같은 응답에 댓글 본문도 들어 있으므로 `comment_section`으로 함께 돌려준다.
     """
+    # 파싱까지 try 안에 둔다. HTTP만 감싸면 news.hada.io의 마크업이 바뀔 때
+    # 셀렉터 예외가 crawl 루프로 올라가 그 회차 GeekNews가 통째로 저장 0건이 된다.
+    # 지표까지 함께 잃지만 HTTP 실패 경로와 동작이 같고, 플랫폼 전량 유실보다 낫다.
     try:
         resp = requests.get(
             f"{GEEKNEWS_URL}topic?id={topic_id}",
@@ -84,25 +87,25 @@ def fetch_geeknews_metrics(topic_id: str) -> Optional[dict]:
             timeout=10,
         )
         resp.raise_for_status()
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        # 포인트는 `<span id='tp{id}'>3</span>P` 형태로만 노출된다.
+        point_el = soup.select_one(f"#tp{topic_id}")
+        likes = _digits_to_int(point_el.get_text(strip=True)) if point_el else None
+
+        # 댓글 수는 링크 텍스트("댓글 3개")보다 data 속성이 안정적이다.
+        comment_el = soup.select_one("[data-topic-comment-count]")
+        comments = (
+            _digits_to_int(comment_el.get("data-topic-comment-count"))
+            if comment_el
+            else None
+        )
+
+        comment_section = _parse_comment_section(soup)
     except Exception as e:  # pylint: disable=broad-except
         typer.echo(f"   [!] GeekNews 지표 수집 실패(id={topic_id}): {e}")
         return None
-
-    soup = BeautifulSoup(resp.text, "html.parser")
-
-    # 포인트는 `<span id='tp{id}'>3</span>P` 형태로만 노출된다.
-    point_el = soup.select_one(f"#tp{topic_id}")
-    likes = _digits_to_int(point_el.get_text(strip=True)) if point_el else None
-
-    # 댓글 수는 링크 텍스트("댓글 3개")보다 data 속성이 안정적이다.
-    comment_el = soup.select_one("[data-topic-comment-count]")
-    comments = (
-        _digits_to_int(comment_el.get("data-topic-comment-count"))
-        if comment_el
-        else None
-    )
-
-    comment_section = _parse_comment_section(soup)
 
     if likes is None and comments is None and comment_section is None:
         return None

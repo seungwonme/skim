@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, List, Optional
 
 import requests
+import typer
 from bs4 import BeautifulSoup
 
 from ...comments import Comment, append_comment_section, render_comment_section
@@ -35,13 +36,20 @@ def fetch_comment_section(product_url: str) -> Optional[str]:
     """
     if not product_url or "producthunt.com/products/" not in product_url:
         return None
+    # 파싱까지 try 안에 둔다. HTTP만 감싸면 PH의 DOM이 바뀔 때 셀렉터 예외가
+    # crawl 루프로 올라가 그 회차 Product Hunt가 통째로 저장 0건이 된다.
     try:
         response = requests.get(product_url, headers=FEED_HEADERS, timeout=20)
         response.raise_for_status()
-    except Exception:  # pylint: disable=broad-except
+        return _parse_comment_section(response.text)
+    except Exception as e:  # pylint: disable=broad-except
+        typer.echo(f"   [!] Product Hunt 댓글 수집 실패({product_url}): {e}")
         return None
 
-    soup = BeautifulSoup(response.text, "html.parser")
+
+def _parse_comment_section(html: str) -> Optional[str]:
+    """제품 페이지 HTML에서 댓글 섹션을 만든다."""
+    soup = BeautifulSoup(html, "html.parser")
     collected: List[Comment] = []
     for node in soup.select("[data-test]"):
         if not _COMMENT_ID.match(node.get("data-test") or ""):
