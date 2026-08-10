@@ -148,6 +148,11 @@ def _fetch_rendered_html(url: str, timeout_ms: int = 30000) -> Optional[str]:
     return result["html"]
 
 
+# 남의 글을 링크하는 소스. 원문 추출 품질이 곧 본문 품질이라 3단 사다리를 태운다.
+_AGGREGATOR_PLATFORMS = frozenset({"hackernews", "lobsters", "everyto", "reddit"})
+# 릴리스 노트나 짧은 공지도 정당한 본문이라 기사용 60단어 게이트를 낮춘다.
+_AGGREGATOR_MIN_WORDS = 20
+
 _UA_HEADERS = {
     "User-Agent": USER_AGENT,
     "Accept": "text/html,application/xhtml+xml,*/*",
@@ -633,22 +638,39 @@ def resolve_geeknews_original_url(topic_url: str) -> Optional[str]:
     return None
 
 
-def _enrich_article_item(item: dict, url: str) -> Optional[dict]:
-    """ailabs/blogs/producthunt 공통 본문 추출 (trafilatura 기반, defuddle hang 회피).
+def _pdf_fallback(url: str, min_words: int = 60) -> Optional[dict]:
+    """링크가 PDF면 PDF 추출을 시도한다. HTML 추출기는 PDF에서 늘 실패한다."""
+    if not url or ".pdf" not in url.lower():
+        return None
+    data = extract_pdf_text(url, min_words=min_words)
+    return data or None
+
+
+def _enrich_article_item(item: dict, url: str, min_words: int = 60) -> Optional[dict]:
+    """기사형 소스 공통 본문 추출 (trafilatura 기반, defuddle hang 회피).
 
     producthunt는 /products SPA(403) 대신 제품 외부 사이트 리다이렉트를 추출 대상으로 쓴다.
     품질 게이트를 통과 못하면 enrichment_method="failed"로 표시한다 (DB upsert는 이 마커를
     "재시도 가능"으로 해석해 다음 크롤링에서 더 좋은 본문이 오면 덮어쓴다). 단 producthunt는
     외부 사이트 추출이 실패해도 제품 태그라인을 본문 최저선으로 남긴다 - 없으면 digest에서
     항목이 조용히 사라진다.
+
+    min_words는 링크 애그리게이터(hackernews/lobsters)를 위해 뚫어 뒀다. 그쪽은
+    짧은 릴리스 노트나 공지도 정당한 본문이라 60단어 게이트에 걸리면 멀쩡한 글이
+    failed로 떨어진다.
     """
     target_url = item.get("enrich_url") or url
     data, method, error = _extract_article_or_feed_content(item, target_url)
     if error:
         item["enrichment_error"] = error
         print(f"    [!] enrichment 경고: {error}")
-    if not _is_content_usable(data, item.get("title", "")):
+    if not _is_content_usable(data, item.get("title", ""), min_words=min_words):
         tagline = (item.get("tagline") or "").strip()
+        pdf = _pdf_fallback(target_url, min_words=min_words)
+        if pdf:
+            item["enrichment_method"] = "pdf"
+            print("    -> method=pdf")
+            return pdf
         if tagline:
             data = {"content_markdown": tagline, "word_count": len(tagline.split())}
         else:
@@ -673,6 +695,70 @@ def _apply_youtube_comments(item: dict, url: str) -> None:
         item.get("content_markdown"), section
     )
     print(f"    -> 댓글 {section.count(chr(10) + '- ') + 1}건")
+
+
+def _enrich_geeknews_item(item: dict, url: str) -> Optional[dict]:
+    """GeekNews: 토픽 페이지의 한국어 요약을 1차 본문으로 삼고 원문을 뒤에 붙인다.
+
+    원문이 랜딩/디렉터리 페이지라 내비게이션 잡문이 추출돼도 본문이 무너지지 않는다.
+    """
+    topic_body = fetch_geeknews_topic_body(url)
+    original_url = resolve_geeknews_original_url(url)
+    data = None
+    if original_url:
+        item["original_url"] = original_url
+        print(f"    -> 원문: {original_url[:60]}")
+        data = defuddle(original_url)
+        if not _is_content_usable(data, item.get("title", ""), min_words=3):
+            data, method, error = extract_article_content(
+                original_url, item.get("title", "")
+            )
+            item["enrichment_method"] = method
+            if error:
+                item["enrichment_error"] = error
+    elif not topic_body:
+        data = defuddle(url)
+
+    if topic_body:
+        original_md = (data or {}).get("content_markdown", "").strip()
+        merged = topic_body
+        if original_md:
+            merged += "\n\n---\n\n## Original Article\n\n" + original_md
+        data = dict(data or {})
+        data["content_markdown"] = merged
+        data["word_count"] = len(merged.split())
+    elif not _is_content_usable(data, item.get("title", ""), min_words=3):
+        # GN⁺ 요약이 아직 안 붙었는데 원문 추출까지 못 쓰게 나오면 본문이 통째로
+        # 빈다. producthunt 태그라인과 같은 처리로 피드 요약을 최저선으로 남긴다.
+        # method=failed라 다음 크롤에서 요약이 붙으면 덮어쓴다. 공통 게이트를 한 번
+        # 더 지나므로, 요약이 제목과 같거나 3단어 미만이면 그대로 빈 본문이 된다.
+        fallback = (item.get("summary") or "").strip()
+        if fallback:
+            data = {
+                "content_markdown": fallback,
+                "word_count": len(fallback.split()),
+            }
+            item["enrichment_method"] = "failed"
+    return data
+
+
+def _extract_for_platform(item: dict, url: str) -> Optional[dict]:
+    """플랫폼에 맞는 본문 추출 경로를 고른다."""
+    platform = item["platform"]
+    if platform == "geeknews" and "news.hada.io/topic" in url:
+        return _enrich_geeknews_item(item, url)
+    if (
+        platform.startswith("ailabs")
+        or platform.startswith("blogs")
+        or platform == "producthunt"
+    ):
+        return _enrich_article_item(item, url)
+    if platform in _AGGREGATOR_PLATFORMS:
+        # 링크 애그리게이터는 defuddle 단발만 타고 있었다. 3단 사다리
+        # (HTTP+trafilatura -> playwright 렌더 -> defuddle)를 못 받아 파이프라인에서
+        # 가장 약한 추출 경로였다. 짧은 릴리스 노트도 정당한 본문이라 게이트는 낮춘다.
+        return _enrich_article_item(item, url, min_words=_AGGREGATOR_MIN_WORDS)
+    return defuddle(url)
 
 
 def enrich_with_content(items: List[dict]) -> List[dict]:
@@ -717,55 +803,7 @@ def enrich_with_content(items: List[dict]) -> List[dict]:
             _apply_youtube_comments(item, url)
             continue
 
-        # GeekNews: 토픽 페이지의 한국어 요약을 1차 본문으로 삼고, 원문 추출은 뒤에 붙인다.
-        # 원문이 랜딩/디렉터리 페이지라 내비게이션 잡문이 추출돼도 본문이 무너지지 않는다.
-        if item["platform"] == "geeknews" and "news.hada.io/topic" in url:
-            topic_body = fetch_geeknews_topic_body(url)
-            original_url = resolve_geeknews_original_url(url)
-            data = None
-            if original_url:
-                item["original_url"] = original_url
-                print(f"    -> 원문: {original_url[:60]}")
-                data = defuddle(original_url)
-                if not _is_content_usable(data, item.get("title", ""), min_words=3):
-                    data, method, error = extract_article_content(
-                        original_url, item.get("title", "")
-                    )
-                    item["enrichment_method"] = method
-                    if error:
-                        item["enrichment_error"] = error
-            elif not topic_body:
-                data = defuddle(url)
-
-            if topic_body:
-                original_md = (data or {}).get("content_markdown", "").strip()
-                merged = topic_body
-                if original_md:
-                    merged += "\n\n---\n\n## Original Article\n\n" + original_md
-                data = dict(data or {})
-                data["content_markdown"] = merged
-                data["word_count"] = len(merged.split())
-            elif not _is_content_usable(data, item.get("title", ""), min_words=3):
-                # GN⁺ 요약이 아직 안 붙었는데 원문 추출까지 못 쓰게 나오면 본문이
-                # 통째로 빈다. producthunt 태그라인과 같은 처리로 피드 요약을
-                # 최저선으로 남긴다. method=failed라 다음 크롤에서 요약이 붙으면
-                # 덮어쓴다. 아래 공통 게이트를 한 번 더 지나므로, 요약이 제목과
-                # 같거나 3단어 미만이면 그대로 빈 본문이 된다.
-                fallback = (item.get("summary") or "").strip()
-                if fallback:
-                    data = {
-                        "content_markdown": fallback,
-                        "word_count": len(fallback.split()),
-                    }
-                    item["enrichment_method"] = "failed"
-        elif (
-            item["platform"].startswith("ailabs")
-            or item["platform"].startswith("blogs")
-            or item["platform"] == "producthunt"
-        ):
-            data = _enrich_article_item(item, url)
-        else:
-            data = defuddle(url)
+        data = _extract_for_platform(item, url)
 
         if data and _is_content_usable(data, item.get("title", ""), min_words=3):
             item["content_markdown"] = data.get("content_markdown", "")

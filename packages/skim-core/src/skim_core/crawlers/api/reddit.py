@@ -21,6 +21,7 @@ import requests
 import typer
 
 from ...comments import Comment, append_comment_section, render_comment_section
+from ...enrichment import enrich_with_content
 from ...models import Post
 from ...paths import SESSIONS_DIR
 
@@ -80,6 +81,7 @@ class RedditAPICrawler:
         try:
             posts = self.fetch_listing(count=count, subreddit=subreddit, sort=sort)
             if not no_content:
+                self.attach_articles(posts)
                 self.attach_comments(posts)
             return posts
         finally:
@@ -139,6 +141,39 @@ class RedditAPICrawler:
                 break
 
         return posts[:count]
+
+    def attach_articles(self, posts: List[Post]) -> None:
+        """링크 게시물의 원문 본문을 추출해 앞에 붙인다.
+
+        hackernews가 쓰는 것과 같은 패턴이다. Post를 이미 만든 뒤라 enrichment가
+        기대하는 dict 중간층을 만들어 넘기고 결과만 되돌려 받는다.
+        """
+        targets = [
+            (post, getattr(post, "original_url", ""))
+            for post in posts
+            if getattr(post, "original_url", "")
+        ]
+        if not targets:
+            return
+
+        items = [
+            {"platform": "reddit", "url": url, "title": post.title or ""}
+            for post, url in targets
+        ]
+        try:
+            enrich_with_content(items)
+        except Exception as e:  # pylint: disable=broad-except
+            typer.echo(f"   [!] Reddit 원문 추출 실패: {e}")
+            return
+
+        for (post, _), item in zip(targets, items):
+            body = (item.get("content_markdown") or "").strip()
+            if not body:
+                continue
+            existing = (post.content_markdown or post.content or "").strip()
+            merged = f"{existing}\n\n---\n\n## Original Article\n\n{body}"
+            post.content_markdown = merged if existing else body
+            post.word_count = len(post.content_markdown.split())
 
     def attach_comments(self, posts: List[Post]) -> None:
         """각 게시글의 상위 댓글을 정본 본문(content_markdown) 뒤에 잇는다.
@@ -363,6 +398,37 @@ class RedditAPICrawler:
 
         return posts, data.get("after")
 
+    # 링크 게시물의 원문이 아닌 것들. 이미지는 _extract_image_urls가 이미 담는다.
+    _NON_ARTICLE_HOSTS = (
+        "reddit.com",
+        "redd.it",
+        "i.redd.it",
+        "v.redd.it",
+        "imgur.com",
+        "gfycat.com",
+    )
+    _IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".mp4", ".gifv")
+
+    @classmethod
+    def _external_link(cls, post_data: dict) -> Optional[str]:
+        """링크 게시물의 원문 URL. 셀프 포스트나 이미지/영상이면 None.
+
+        지금까지 이 값은 이미지 판별에만 쓰이고 버려졌다. 그래서 링크 게시물은
+        제목 한 줄만 남고 원문 URL조차 소비자에게 닿지 않았다.
+        """
+        if post_data.get("is_self"):
+            return None
+        dest = (post_data.get("url_overridden_by_dest") or "").strip()
+        if not dest.startswith("http"):
+            return None
+        bare = dest.split("?")[0].lower()
+        if bare.endswith(cls._IMAGE_SUFFIXES):
+            return None
+        host = urlparse(dest).netloc.lower().removeprefix("www.")
+        if any(host == h or host.endswith("." + h) for h in cls._NON_ARTICLE_HOSTS):
+            return None
+        return dest
+
     @staticmethod
     def _extract_image_urls(post_data: dict) -> List[str]:
         """직접 이미지 링크, preview 원본, 갤러리에서 이미지 CDN URL을 수집합니다."""
@@ -403,6 +469,7 @@ class RedditAPICrawler:
             timestamp = datetime.fromtimestamp(created_utc, tz=timezone.utc).isoformat()
 
         image_urls = self._extract_image_urls(post_data)
+        external_link = self._external_link(post_data)
 
         return Post(
             platform="reddit",
@@ -421,7 +488,13 @@ class RedditAPICrawler:
             is_self=post_data.get("is_self"),
             over_18=post_data.get("over_18"),
             **({"images": image_urls} if image_urls else {}),
+            **({"original_url": external_link} if external_link else {}),
         )
+
+    # Atom 요약의 링크 게시물 껍데기. strip_html이 앵커를 텍스트로 만들면
+    # "submitted by /u/x [link] [comments]"만 남고 원문 href는 사라진다.
+    _RSS_LINK_HREF = re.compile(r'<a href="([^"]+)">\[link\]</a>')
+    _RSS_SHELL = re.compile(r"^submitted by\s+/u/\S+\s*(\[link\]\s*)?(\[comments\]\s*)?$")
 
     def parse_rss_entry(self, entry: dict, subreddit: str) -> Optional[Post]:
         """Reddit Atom entry를 Post로 변환합니다."""
@@ -433,6 +506,19 @@ class RedditAPICrawler:
         )
         content = self.strip_html(content_html) or title
         link = entry.get("link") or ""
+
+        # 링크 게시물이면 원문 href를 살려 둔다. 이게 없으면 소비자는 제목 한 줄만
+        # 받고 원문으로 갈 방법조차 없다.
+        external_link = None
+        href_match = self._RSS_LINK_HREF.search(content_html or "")
+        if href_match:
+            candidate = unescape(href_match.group(1)).strip()
+            if candidate and candidate.rstrip("/") != link.rstrip("/"):
+                external_link = candidate
+
+        # 껍데기 본문은 제목으로 바꾼다. 원문은 attach_articles가 채운다.
+        if self._RSS_SHELL.match(content.strip()):
+            content = title
 
         if not external_id or not content:
             return None
@@ -455,6 +541,7 @@ class RedditAPICrawler:
             external_id=external_id,
             subreddit=subreddit,
             subreddit_name_prefixed=f"r/{subreddit}",
+            **({"original_url": external_link} if external_link else {}),
         )
 
     @staticmethod
