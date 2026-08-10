@@ -6,12 +6,23 @@ Skim에 넣을 source 후보와 promotion checklist입니다. 구현 계획은 `
 
 ## 이미 포함됨
 
-- Communities: Hacker News, GeekNews, Product Hunt
+- Communities: Hacker News (newest + Show + Ask), Lobsters, GeekNews, Product Hunt
 - Social/API: Threads, X, LinkedIn, Reddit
-- Articles: Every.to, `PERSONAL_BLOGS`의 personal blogs
+- Social/공개: Bluesky (`BLUESKY_ACCOUNTS`, 로그인 불필요)
+- Articles: Every.to, `PERSONAL_BLOGS`의 블로그와 뉴스레터
 - Video: `YOUTUBE_CHANNELS`의 YouTube channels
-- Papers: Hugging Face Daily Papers, arXiv cs.AI
-- AI labs: OpenAI, Anthropic, LangChain
+- Papers: Hugging Face Daily Papers, arXiv (cs.AI, cs.CL, cs.LG, cs.CV)
+- AI labs: OpenAI, Anthropic, LangChain, Google DeepMind, Google Research, Hugging Face, Mistral
+
+## 등록하지 않은 소스
+
+실측해서 떨어진 것들. 손으로 다시 확인하지 않도록 남긴다 (2026-08-10):
+
+- Meta AI `https://ai.meta.com/blog/rss/` — HTTP 400.
+- DeepSeek `https://api.deepseek.com/rss` — HTTP 401.
+- 요즘IT `https://yozm.wishket.com/magazine/feed/` — 200에 엔트리 30건이 오는데
+  발행일 필드가 하나도 없다. `fetch_feed`가 날짜 없는 엔트리를 버리므로 등록해도
+  매번 0건인데 겉보기엔 멀쩡하다. 글 페이지에서 날짜를 읽는 전용 파서가 필요하다.
 
 ## 후보 계정
 

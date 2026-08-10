@@ -34,15 +34,17 @@ Skim collects posts from multiple public feeds and session-based social sources,
 
 | Type | Platform | Source |
 |---|---|---|
-| Feed | Hacker News | hnrss.org |
+| Feed | Hacker News | hnrss.org newest + Show + Ask |
+| Feed | Lobsters | RSS + per-story JSON (comments) |
 | Feed | GeekNews | news.hada.io Atom |
 | Feed | YouTube | RSS + `yt-dlp` |
 | Feed | Product Hunt | RSS |
-| Feed | arXiv | Atom API |
+| Feed | arXiv | Atom API (cs.AI, cs.CL, cs.LG, cs.CV) |
 | Feed | Hugging Face | Daily Papers JSON API |
 | Feed | Every.to | RSS feeds |
 | Feed | Blogs | RSS feeds in `PERSONAL_BLOGS` |
-| Feed | AI Labs | OpenAI RSS, Anthropic pages, LangChain blog |
+| Feed | AI Labs | OpenAI, Anthropic, LangChain, DeepMind, Google Research, Hugging Face, Mistral |
+| Feed | Bluesky | Public XRPC (no login) |
 | API | Threads | Instagram Private API |
 | API | X | GraphQL via `twitter-api-client` |
 | API | LinkedIn | Voyager GraphQL |

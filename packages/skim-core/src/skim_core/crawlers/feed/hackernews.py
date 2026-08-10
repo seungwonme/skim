@@ -14,7 +14,7 @@ import typer
 from bs4 import BeautifulSoup
 
 from ...enrichment import enrich_with_content
-from ...feed_config import HACKERNEWS_RSS
+from ...feed_config import HACKERNEWS_FEEDS
 from ...feed_utils import fetch_feed
 from ...models import Post
 from ...timestamp import epoch_to_iso
@@ -182,7 +182,18 @@ class HackerNewsCrawler:
         no_content = options.get("no_content", False)
 
         if since:
-            items = fetch_feed(HACKERNEWS_RSS, "hackernews", since)
+            # newest는 30점 문턱이 걸려 있고 show/ask는 없다. Ask/Show HN은 링크가 아니라
+            # 본문이 알맹이라 점수 문턱에 걸리면 대부분 사라진다.
+            items = []
+            seen_links: set[str] = set()
+            for name, feed_url in HACKERNEWS_FEEDS.items():
+                for item in fetch_feed(feed_url, name, since):
+                    link = item.get("url") or ""
+                    # 점수가 오른 Show HN은 newest에도 올라와 같은 글이 두 번 온다.
+                    if link and link in seen_links:
+                        continue
+                    seen_links.add(link)
+                    items.append(item)
             items.sort(key=lambda x: x.get("published", ""), reverse=True)
             # CLI가 마지막에 posts[:count]로 자르므로, 버려질 항목을 enrichment하지 않는다.
             if options.get("count") is not None:
@@ -194,7 +205,9 @@ class HackerNewsCrawler:
             # 링크 원문 추출. HN item 페이지가 URL인 항목(Ask/Show HN)은
             # 추출할 원문이 없으므로 건너뛰고 Algolia 스토리 텍스트로 채운다.
             external = [
-                item for item in items if "news.ycombinator.com" not in (item.get("url") or "")
+                item
+                for item in items
+                if "news.ycombinator.com" not in (item.get("url") or "")
             ]
             if external:
                 enrich_with_content(external)
@@ -212,9 +225,9 @@ class HackerNewsCrawler:
                 # 거기서 못 뽑을 때만 item API로 폴백한다.
                 # Top Stories 경로가 Firebase에서 이미 채운 값은 덮지 않는다.
                 if item.get("likes") is None:
-                    metrics = metrics_from_feed(item.get("content_html", "")) or fetch_hn_metrics(
-                        story_id
-                    )
+                    metrics = metrics_from_feed(
+                        item.get("content_html", "")
+                    ) or fetch_hn_metrics(story_id)
                     if metrics:
                         item["likes"] = metrics["likes"]
                         item["num_comments"] = metrics["comments"]
@@ -232,7 +245,9 @@ class HackerNewsCrawler:
         items: List[dict] = []
         for i, story_id in enumerate(story_ids):
             try:
-                item_resp = requests.get(f"{HN_API_BASE}/item/{story_id}.json", timeout=10)
+                item_resp = requests.get(
+                    f"{HN_API_BASE}/item/{story_id}.json", timeout=10
+                )
                 item_resp.raise_for_status()
                 item = item_resp.json()
 
@@ -246,7 +261,8 @@ class HackerNewsCrawler:
                         "author": item.get("by", "unknown"),
                         "title": item.get("title", ""),
                         "url": (
-                            item.get("url") or f"https://news.ycombinator.com/item?id={story_id}"
+                            item.get("url")
+                            or f"https://news.ycombinator.com/item?id={story_id}"
                         ),
                         "published": epoch_to_iso(time_value) if time_value else "",
                         "likes": item.get("score", 0),

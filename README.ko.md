@@ -34,15 +34,17 @@ Skim은 여러 public feed와 세션 기반 social source에서 post를 수집�
 
 | 유형 | 플랫폼 | 소스 |
 |---|---|---|
-| Feed | Hacker News | hnrss.org |
+| Feed | Hacker News | hnrss.org newest + Show + Ask |
+| Feed | Lobsters | RSS + 게시물별 JSON (댓글) |
 | Feed | GeekNews | news.hada.io Atom |
 | Feed | YouTube | RSS + `yt-dlp` |
 | Feed | Product Hunt | RSS |
-| Feed | arXiv | Atom API |
+| Feed | arXiv | Atom API (cs.AI, cs.CL, cs.LG, cs.CV) |
 | Feed | Hugging Face | Daily Papers JSON API |
 | Feed | Every.to | RSS feeds |
 | Feed | Blogs | `PERSONAL_BLOGS`의 RSS feeds |
-| Feed | AI Labs | OpenAI RSS, Anthropic pages, LangChain blog |
+| Feed | AI Labs | OpenAI, Anthropic, LangChain, DeepMind, Google Research, Hugging Face, Mistral |
+| Feed | Bluesky | 공개 XRPC (로그인 불필요) |
 | API | Threads | Instagram Private API |
 | API | X | `twitter-api-client` 기반 GraphQL |
 | API | LinkedIn | Voyager GraphQL |
