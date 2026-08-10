@@ -11,11 +11,21 @@ The registry (`tracked_sources`) owns this list. `fetch_tier` is observed by
 | Platform | Source | Tier | Feed |
 |---|---|---|---|
 | blogs | Addy Osmani | rss+enrich | https://addyosmani.com/rss.xml |
+| blogs | Claude Code Releases | rss | https://github.com/anthropics/claude-code/releases.atom |
+| blogs | Import AI | rss | https://importai.substack.com/feed |
 | blogs | Kakao Tech | rss+render | https://tech.kakao.com/blog/feed |
 | blogs | Kakao Ventures | rss+enrich | https://www.kakao.vc/blog/rss |
+| blogs | LangChain Releases | rss+enrich | https://github.com/langchain-ai/langchain/releases.atom |
+| blogs | Latent Space | rss | https://www.latent.space/feed |
+| blogs | NAVER D2 | rss | https://d2.naver.com/d2.atom |
 | blogs | Phil Schmid | rss+enrich | https://www.philschmid.de/rss |
 | blogs | PyTorchKR News | rss | https://discuss.pytorch.kr/c/news/14.rss |
+| blogs | Simon Willison | rss | https://simonwillison.net/atom/everything/ |
 | blogs | Tidy First (Kent Beck) | rss | https://newsletter.kentbeck.com/feed |
+| blogs | TLDR AI | rss+enrich | https://tldr.tech/api/rss/ai |
+| blogs | Toss Tech | rss | https://toss.tech/rss.xml |
+| blogs | 당근 | rss | https://medium.com/feed/daangn |
+| blogs | 우아한형제들 | rss | https://techblog.woowahan.com/feed/ |
 | everyto | AI & I Podcast | rss+enrich | https://every.to/podcast/feed |
 | everyto | Chain of Thought | rss | https://every.to/chain-of-thought/feed |
 | everyto | Context Window | rss | https://every.to/context-window/feed |
@@ -23,11 +33,13 @@ The registry (`tracked_sources`) owns this list. `fetch_tier` is observed by
 | everyto | Source Code | rss | https://every.to/source-code/feed |
 | youtube | @aiDotEngineer | - | https://www.youtube.com/@aiDotEngineer |
 | youtube | @DwarkeshPatel | - | https://www.youtube.com/@DwarkeshPatel |
+| youtube | @googlecloudtech | - | https://www.youtube.com/@googlecloudtech |
 | youtube | @hamelhusain7140 | - | https://www.youtube.com/@hamelhusain7140 |
 | youtube | @kkachilhan-ai | - | https://www.youtube.com/@kkachilhan-ai |
 | youtube | @LennysPodcast | - | https://www.youtube.com/@LennysPodcast |
 | youtube | @mattpocockuk | - | https://www.youtube.com/@mattpocockuk |
 | youtube | @mreflow | - | https://www.youtube.com/@mreflow |
+| youtube | @nomadcoders | - | https://www.youtube.com/@nomadcoders |
 | youtube | @rileybrownai | - | https://www.youtube.com/@rileybrownai |
 | youtube | @TwoMinutePapers | - | https://www.youtube.com/@TwoMinutePapers |
 | youtube | @ycombinator | - | https://www.youtube.com/@ycombinator |
