@@ -15,7 +15,8 @@ import socket
 import sqlite3
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
+from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 from .paths import DATA_DIR
 
@@ -23,6 +24,19 @@ DB_PATH = DATA_DIR / "skim.db"
 
 # API형 플랫폼은 본문이 content_markdown이 아니라 content에 담긴다 (word_count 정규화용).
 _API_BODY_PLATFORMS = {"linkedin", "threads", "x", "reddit"}
+
+# 클러스터 키를 만들 때 떼는 추적 파라미터. 같은 글을 여러 소스가 다르게 링크해도
+# 한 키로 묶으려는 목적이라, 의미를 바꿀 수 있는 파라미터는 일부러 남긴다.
+_TRACKING_PARAM_PREFIXES = ("utm_",)
+_TRACKING_PARAMS = {
+    "fbclid",
+    "gclid",
+    "igshid",
+    "mc_cid",
+    "mc_eid",
+    "ref_src",
+    "si",
+}
 
 SCHEMA = """\
 CREATE TABLE IF NOT EXISTS posts (
@@ -43,6 +57,7 @@ CREATE TABLE IF NOT EXISTS posts (
     content_markdown TEXT,
     word_count  INTEGER,
     extra       TEXT,
+    canonical_url TEXT,
     crawled_at  TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(platform, external_id)
 );
@@ -169,14 +184,114 @@ def get_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
     return conn
 
 
+def _field(post: Any, name: str) -> Any:
+    """Post 객체와 dict 양쪽에서 필드를 읽는다."""
+    if isinstance(post, dict):
+        return post.get(name)
+    return getattr(post, name, None)
+
+
+def canonical_body(post: Any, platform: Optional[str] = None) -> str:
+    """정본 본문을 반환한다. 없으면 빈 문자열.
+
+    API형 플랫폼은 크롤러가 본문을 `content`에 담아 오고 `save_posts`가 저장 직전에
+    `content_markdown`으로 승격한다. 결손 판정이 승격 전 값을 보면 API형 4종이
+    정상 저장돼도 전량 실패로 잡히므로, 판정과 저장이 이 함수를 함께 써야 한다.
+    """
+    body = (_field(post, "content_markdown") or "").strip()
+    if body:
+        return body
+    row_platform = _field(post, "platform") or platform or ""
+    if row_platform in _API_BODY_PLATFORMS:
+        return (_field(post, "content") or "").strip()
+    return ""
+
+
+def canonical_url_for(url: Optional[str]) -> Optional[str]:
+    """크로스소스 중복을 묶는 클러스터 키를 만든다. 행을 병합하지는 않는다.
+
+    한 발표를 ailabs/hackernews/reddit/x가 각자 링크하면 지금은 별개 행 4개다.
+    스킴, www/m 서브도메인, 추적 파라미터, fragment, 끝 슬래시만 정규화해서
+    "같은 원문"을 알아볼 수 있게 한다.
+    """
+    raw = (url or "").strip()
+    if not raw:
+        return None
+    try:
+        parts = urlsplit(raw)
+    except ValueError:
+        return None
+    if not parts.netloc:
+        return None
+
+    host = parts.netloc.lower()
+    if "@" not in host:
+        for prefix in ("www.", "m."):
+            if host.startswith(prefix):
+                host = host[len(prefix) :]
+                break
+
+    kept = [
+        (key, value)
+        for key, value in parse_qsl(parts.query, keep_blank_values=True)
+        if key.lower() not in _TRACKING_PARAMS
+        and not key.lower().startswith(_TRACKING_PARAM_PREFIXES)
+    ]
+    query = "&".join(f"{key}={value}" for key, value in sorted(kept))
+
+    path = parts.path
+    if len(path) > 1 and path.endswith("/"):
+        path = path.rstrip("/")
+
+    return urlunsplit(("https", host, path, query, ""))
+
+
+def backup_db(dest: Path, db_path: Optional[Path] = None) -> Path:
+    """DB를 dest로 온라인 백업한다. 크롤 중에 돌려도 안전하다.
+
+    stdlib `sqlite3.Connection.backup()`이라 새 의존성이 없고, 파일 복사와 달리
+    WAL이 진행 중이어도 일관된 스냅샷이 나온다.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    source = get_connection(db_path)
+    try:
+        target = sqlite3.connect(str(dest))
+        try:
+            source.backup(target)
+        finally:
+            target.close()
+    finally:
+        source.close()
+    return dest
+
+
+def check_integrity(db_path: Optional[Path] = None) -> str:
+    """`PRAGMA quick_check` 결과를 반환한다. 정상이면 'ok'.
+
+    integrity_check는 649MB에서 분 단위로 걸려 데일리에 못 넣는다. quick_check는
+    인덱스 대조를 생략해 훨씬 빠르고 페이지 손상은 그대로 잡는다.
+    """
+    conn = get_connection(db_path)
+    try:
+        row = conn.execute("PRAGMA quick_check(1)").fetchone()
+    except sqlite3.DatabaseError as exc:
+        return f"error: {exc}"
+    finally:
+        conn.close()
+    return row[0] if row else "unknown"
+
+
 def init_db(db_path: Optional[Path] = None) -> None:
     """스키마를 초기화합니다. 이미 존재하면 무시."""
     conn = get_connection(db_path)
-    conn.executescript(SCHEMA)
-    _ensure_runs_columns(conn)
-    _migrate_research_runs(conn)
-    _migrate_tracked_sources(conn)
-    conn.close()
+    try:
+        conn.executescript(SCHEMA)
+        _ensure_runs_columns(conn)
+        _migrate_research_runs(conn)
+        _migrate_tracked_sources(conn)
+        _migrate_posts_columns(conn)
+    finally:
+        conn.close()
 
 
 def migrate_canonical_body(db_path: Optional[Path] = None) -> dict:
@@ -256,6 +371,49 @@ def _migrate_tracked_sources(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_posts_columns(conn: sqlite3.Connection) -> None:
+    """posts 멱등 migration.
+
+    인덱스를 SCHEMA가 아니라 여기서 만든다. 기존 DB는 `CREATE TABLE IF NOT EXISTS`가
+    컬럼을 추가해주지 않아, SCHEMA 안에 인덱스를 두면 컬럼이 생기기 전에 실행돼 죽는다.
+    """
+    _ensure_column(conn, "posts", "canonical_url", "TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_posts_canonical_url ON posts(canonical_url) "
+        "WHERE canonical_url IS NOT NULL AND TRIM(canonical_url) <> ''"
+    )
+    conn.commit()
+
+
+def backfill_canonical_urls(db_path: Optional[Path] = None, batch: int = 5000) -> int:
+    """canonical_url이 비어 있는 기존 행을 채운다 (멱등). 채운 건수 반환."""
+    conn = get_connection(db_path)
+    filled = 0
+    try:
+        _migrate_posts_columns(conn)
+        while True:
+            rows = conn.execute(
+                """SELECT id, url FROM posts
+                   WHERE canonical_url IS NULL
+                     AND url IS NOT NULL AND TRIM(url) != ''
+                   LIMIT ?""",
+                (batch,),
+            ).fetchall()
+            if not rows:
+                break
+            # 정규화에 실패한 행도 ''로 확정해 다음 배치에 다시 걸리지 않게 한다.
+            # NULL로 남기면 같은 행을 매 라운드 다시 읽어 루프가 안 끝난다.
+            updates = [(canonical_url_for(row["url"]) or "", row["id"]) for row in rows]
+            conn.executemany("UPDATE posts SET canonical_url = ? WHERE id = ?", updates)
+            conn.commit()
+            filled += sum(1 for value, _ in updates if value)
+            if len(rows) < batch:
+                break
+    finally:
+        conn.close()
+    return filled
+
+
 def _ensure_runs_columns(conn: sqlite3.Connection) -> None:
     """기존 DB의 runs 테이블에 누락된 컬럼을 추가합니다."""
     existing = {
@@ -288,42 +446,43 @@ def _pid_is_alive(pid: Optional[int]) -> bool:
 def cleanup_stale_runs(db_path: Optional[Path] = None) -> int:
     """비정상 종료로 남은 running run을 interrupted로 정리합니다."""
     conn = get_connection(db_path)
-    _ensure_runs_columns(conn)
     host = socket.gethostname()
     stale_ids: list[int] = []
+    try:
+        _ensure_runs_columns(conn)
+        rows = conn.execute("""
+            SELECT id, current_platform, runner_pid, runner_host
+            FROM runs
+            WHERE status = 'running' AND finished_at IS NULL
+            """).fetchall()
 
-    rows = conn.execute("""
-        SELECT id, current_platform, runner_pid, runner_host
-        FROM runs
-        WHERE status = 'running' AND finished_at IS NULL
-        """).fetchall()
+        for row in rows:
+            runner_host = row["runner_host"]
+            runner_pid = row["runner_pid"]
+            if runner_host and runner_host != host:
+                continue
+            if _pid_is_alive(runner_pid):
+                continue
+            stale_ids.append(row["id"])
+            current_platform = row["current_platform"]
+            detail = (
+                f"프로세스 비정상 종료로 stale run 정리"
+                f"{f' (중단 지점: {current_platform})' if current_platform else ''}"
+            )
+            conn.execute(
+                """
+                UPDATE runs
+                SET finished_at = datetime('now'),
+                    status = 'interrupted',
+                    summary = ?
+                WHERE id = ?
+                """,
+                (detail, row["id"]),
+            )
 
-    for row in rows:
-        runner_host = row["runner_host"]
-        runner_pid = row["runner_pid"]
-        if runner_host and runner_host != host:
-            continue
-        if _pid_is_alive(runner_pid):
-            continue
-        stale_ids.append(row["id"])
-        current_platform = row["current_platform"]
-        detail = (
-            f"프로세스 비정상 종료로 stale run 정리"
-            f"{f' (중단 지점: {current_platform})' if current_platform else ''}"
-        )
-        conn.execute(
-            """
-            UPDATE runs
-            SET finished_at = datetime('now'),
-                status = 'interrupted',
-                summary = ?
-            WHERE id = ?
-            """,
-            (detail, row["id"]),
-        )
-
-    conn.commit()
-    conn.close()
+        conn.commit()
+    finally:
+        conn.close()
     return len(stale_ids)
 
 
@@ -338,6 +497,32 @@ def save_posts(
     saved = 0
     errors = 0
     last_error: Optional[str] = None
+    try:
+        saved, errors, last_error = _save_posts_rows(conn, posts, platform, source)
+        conn.commit()
+    finally:
+        # 여기서 닫지 않으면 sqlite3.Error가 아닌 예외(예: extra에 직렬화 불가 값이
+        # 섞였을 때의 json.dumps TypeError)에서 RESERVED 락이 남는다. 그러면 뒤따르는
+        # finish_run이 60초를 기다리다 `database is locked`로 죽어 원래 오류를 덮는다.
+        conn.close()
+    if errors:
+        print(
+            f"[skim] save_posts: {errors}개 저장 실패 (마지막 오류: {last_error})",
+            file=sys.stderr,
+        )
+    return saved
+
+
+def _save_posts_rows(
+    conn: sqlite3.Connection,
+    posts: list,
+    platform: str,
+    source: Optional[str],
+) -> tuple[int, int, Optional[str]]:
+    """save_posts의 행 루프. (저장 건수, 실패 건수, 마지막 오류)를 반환한다."""
+    saved = 0
+    errors = 0
+    last_error: Optional[str] = None
     for post in posts:
         data = post.model_dump() if hasattr(post, "model_dump") else post
 
@@ -347,19 +532,13 @@ def save_posts(
         # 혼합 배치에서 인자 platform으로 저장하면 row가 오라벨링된다.
         row_platform = data.get("platform") or platform
 
-        if (
-            row_platform in _API_BODY_PLATFORMS
-            and not (data.get("content_markdown") or "").strip()
-        ):
-            body = (data.get("content") or "").strip()
-            if body:
-                data["content_markdown"] = body
+        body = canonical_body(data, platform)
+        if body and not (data.get("content_markdown") or "").strip():
+            data["content_markdown"] = body
 
         # word_count 정규화: 미계산이면 정본 본문(content_markdown)에서 센다.
-        if not data.get("word_count"):
-            body = (data.get("content_markdown") or "").strip()
-            if body:
-                data["word_count"] = len(body.split())
+        if not data.get("word_count") and body:
+            data["word_count"] = len(body.split())
 
         # extra 필드: Post 모델의 extra="allow"로 들어온 추가 필드
         known_fields = {
@@ -380,7 +559,13 @@ def save_posts(
             "word_count",
         }
         extra_data = {k: v for k, v in data.items() if k not in known_fields}
-        extra_json = json.dumps(extra_data, ensure_ascii=False) if extra_data else None
+        # `default=str`: Post는 extra="allow"라 크롤러가 datetime 같은 값을 실어 보낼 수
+        # 있다. 기본 인코더는 그걸 TypeError로 터뜨려 배치 전체를 롤백시킨다.
+        extra_json = (
+            json.dumps(extra_data, ensure_ascii=False, default=str)
+            if extra_data
+            else None
+        )
 
         url = (data.get("url") or "").strip()
 
@@ -418,9 +603,10 @@ def save_posts(
                 """INSERT INTO posts
                    (platform, source, external_id, author, title, content,
                     url, timestamp, likes, comments, reposts, views,
-                    summary, content_markdown, word_count, extra)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    summary, content_markdown, word_count, extra, canonical_url)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(platform, external_id) DO UPDATE SET
+                       canonical_url = COALESCE(posts.canonical_url, excluded.canonical_url),
                        title = CASE
                            WHEN posts.title IS NULL OR TRIM(posts.title) = '' THEN excluded.title
                            ELSE posts.title
@@ -495,23 +681,17 @@ def save_posts(
                     data.get("content_markdown"),
                     data.get("word_count"),
                     extra_json,
+                    canonical_url_for(url),
                 ),
             )
             if conn.execute("SELECT changes()").fetchone()[0] > 0:
                 saved += 1
-        except sqlite3.Error as e:
+        except (sqlite3.Error, TypeError, ValueError) as e:
             # 개별 row 실패는 배치를 살리되, 전량 실패가 성공처럼 보이지 않게 집계한다.
             errors += 1
             last_error = str(e)
             continue
-    conn.commit()
-    conn.close()
-    if errors:
-        print(
-            f"[skim] save_posts: {errors}개 저장 실패 (마지막 오류: {last_error})",
-            file=sys.stderr,
-        )
-    return saved
+    return saved, errors, last_error
 
 
 def list_tracked_sources(
@@ -524,6 +704,7 @@ def list_tracked_sources(
     where = "WHERE platform = ?"
     if enabled_only:
         where += " AND is_enabled = 1"
+    conn = None
     try:
         conn = get_connection(db_path)
         rows = conn.execute(
@@ -531,9 +712,11 @@ def list_tracked_sources(
             f"FROM tracked_sources {where} ORDER BY display_name COLLATE NOCASE",
             (platform,),
         ).fetchall()
-        conn.close()
     except sqlite3.Error:
         return []
+    finally:
+        if conn is not None:
+            conn.close()
     return [dict(row) for row in rows]
 
 
@@ -594,17 +777,19 @@ def save_run(status: str = "running", db_path: Optional[Path] = None) -> int:
     """실행 기록을 생성하고 run_id를 반환합니다."""
     cleanup_stale_runs(db_path)
     conn = get_connection(db_path)
-    _ensure_runs_columns(conn)
-    cursor = conn.execute(
-        """
-        INSERT INTO runs (status, runner_pid, runner_host)
-        VALUES (?, ?, ?)
-        """,
-        (status, os.getpid(), socket.gethostname()),
-    )
-    run_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
+    try:
+        _ensure_runs_columns(conn)
+        cursor = conn.execute(
+            """
+            INSERT INTO runs (status, runner_pid, runner_host)
+            VALUES (?, ?, ?)
+            """,
+            (status, os.getpid(), socket.gethostname()),
+        )
+        run_id = cursor.lastrowid
+        conn.commit()
+    finally:
+        conn.close()
     return run_id
 
 
@@ -616,17 +801,19 @@ def update_run_progress(
 ) -> None:
     """현재 처리 중인 플랫폼과 진행 상황을 기록합니다."""
     conn = get_connection(db_path)
-    _ensure_runs_columns(conn)
-    conn.execute(
-        """
-        UPDATE runs
-        SET current_platform = ?, summary = COALESCE(?, summary)
-        WHERE id = ?
-        """,
-        (current_platform, summary, run_id),
-    )
-    conn.commit()
-    conn.close()
+    try:
+        _ensure_runs_columns(conn)
+        conn.execute(
+            """
+            UPDATE runs
+            SET current_platform = ?, summary = COALESCE(?, summary)
+            WHERE id = ?
+            """,
+            (current_platform, summary, run_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def finish_run(
@@ -638,19 +825,21 @@ def finish_run(
 ) -> None:
     """실행 기록을 완료 상태로 업데이트합니다."""
     conn = get_connection(db_path)
-    _ensure_runs_columns(conn)
-    conn.execute(
-        """UPDATE runs
-           SET finished_at = datetime('now'),
-               status = ?,
-               posts_count = ?,
-               summary = COALESCE(?, summary),
-               current_platform = NULL
-           WHERE id = ?""",
-        (status, posts_count, summary, run_id),
-    )
-    conn.commit()
-    conn.close()
+    try:
+        _ensure_runs_columns(conn)
+        conn.execute(
+            """UPDATE runs
+               SET finished_at = datetime('now'),
+                   status = ?,
+                   posts_count = ?,
+                   summary = COALESCE(?, summary),
+                   current_platform = NULL
+               WHERE id = ?""",
+            (status, posts_count, summary, run_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def platforms_with_recent_posts(days: int, db_path: Optional[Path] = None) -> set[str]:
@@ -679,12 +868,14 @@ def platforms_with_recent_posts(days: int, db_path: Optional[Path] = None) -> se
     return {row[0] for row in rows}
 
 
-def add_feedback(post_id: int, action: str) -> None:
+def add_feedback(post_id: int, action: str, db_path: Optional[Path] = None) -> None:
     """사용자 피드백을 저장합니다."""
-    conn = get_connection()
-    conn.execute(
-        "INSERT INTO feedback (post_id, action) VALUES (?, ?)",
-        (post_id, action),
-    )
-    conn.commit()
-    conn.close()
+    conn = get_connection(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO feedback (post_id, action) VALUES (?, ?)",
+            (post_id, action),
+        )
+        conn.commit()
+    finally:
+        conn.close()

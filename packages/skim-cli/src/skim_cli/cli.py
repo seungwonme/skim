@@ -4,6 +4,7 @@ import asyncio
 import csv
 import json
 import re
+import shutil
 import sys
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
@@ -17,6 +18,10 @@ from skim_core.crawlers import REGISTRY
 from skim_core.crawlers.auth.cdp import login as cdp_login
 from skim_core.db import (
     DB_PATH,
+    backfill_canonical_urls,
+    backup_db,
+    canonical_body,
+    check_integrity,
     finish_run,
     get_connection,
     init_db,
@@ -50,11 +55,22 @@ SNS_DEFAULT_COUNT = 50
 FEED_PLATFORMS = set(REGISTRY.keys()) - SNS_PLATFORMS
 
 # 소스가 노출하는 발행일이 실제 게시 시점보다 뒤처지면 좁은 창에서는 전량 걸러진다.
-# huggingface daily papers는 arXiv 발행일을 그대로 싣기 때문에 2일 이상 밀려 있다.
 # --days를 명시해도 이 값이 바닥으로 깔린다. 일일 배치가 `crawl all --days 1`로
 # 돌기 때문에, 기본값에만 반영하면 정작 배치에서는 계속 0건이 된다.
-# arxiv는 요일 기반 규칙을 따로 쓰므로 여기 넣지 않는다.
+# huggingface: 주말에 큐레이션을 쉬어서 월요일에는 금요일 목록이 최신이다.
 MIN_LOOKBACK_DAYS = {"huggingface": 3}
+
+
+def min_lookback_days(platform: str, now: datetime) -> int:
+    """플랫폼이 최소로 필요한 조회 창(일). --days로 더 좁혀도 이 밑으로 안 내려간다.
+
+    좁은 창에서 항상 0건이 나오는 소스는 회귀 경고를 매일 울려, 진짜 고장 신호를
+    덮는다. arXiv는 주말에 announce하지 않으므로 월/토/일은 금요일 몫까지 거슬러 본다.
+    """
+    if platform == "arxiv":
+        return 4 if now.weekday() in (0, 5, 6) else 2
+    return MIN_LOOKBACK_DAYS.get(platform, 0)
+
 
 # 이 기간 안에 유입 이력이 있던 플랫폼이 0건이면 회귀로 본다.
 REGRESSION_LOOKBACK_DAYS = 14
@@ -208,16 +224,9 @@ def crawl(  # noqa: C901 — CLI 진입점으로 플랫폼별 분기가 불가�
                 options["count"] = count if count is not None else SNS_DEFAULT_COUNT
             else:
                 # Feed: since 기반 (기본 전날 0시부터)
-                if days is not None:
-                    d = days
-                elif platform == "arxiv":
-                    # arXiv는 주말에 새 논문을 게시하지 않으므로 월/토/일은 4일 전까지 확인
-                    weekday = now.weekday()  # 0=Mon ... 6=Sun
-                    d = 4 if weekday in (0, 5, 6) else 2
-                else:
-                    d = 1
+                d = days if days is not None else 1
                 # 발행일이 밀린 소스는 사용자가 창을 좁혀도 최소 폭을 보장한다.
-                d = max(d, MIN_LOOKBACK_DAYS.get(platform, 0))
+                d = max(d, min_lookback_days(platform, now))
                 since = (now - timedelta(days=d)).replace(
                     hour=0, minute=0, second=0, microsecond=0
                 )
@@ -259,7 +268,10 @@ def crawl(  # noqa: C901 — CLI 진입점으로 플랫폼별 분기가 불가�
             # 개별 항목의 enrichment 실패는 로그 한 줄로 흘러가고 크롤은 성공으로
             # 끝난다. playwright 미설치처럼 전 항목에 영향을 주는 고장도 그래서
             # 며칠씩 묻힌다. 플랫폼별로 세어 마지막에 한 번에 보여준다.
-            thin = sum(1 for p in posts if not (p.content_markdown or "").strip())
+            # save_posts와 같은 판정 함수를 써야 한다. API형 4종은 본문이 content로
+            # 와서 저장 직전에 승격되므로, 승격 전 content_markdown만 보면 정상
+            # 저장된 회차가 전량 실패로 잡힌다.
+            thin = sum(1 for p in posts if not canonical_body(p, platform))
             if thin:
                 thin_platforms[platform] = (thin, len(posts))
 
@@ -310,7 +322,8 @@ def crawl(  # noqa: C901 — CLI 진입점으로 플랫폼별 분기가 불가�
 
     if thin_platforms:
         detail = ", ".join(
-            f"{name} {miss}/{total}" for name, (miss, total) in sorted(thin_platforms.items())
+            f"{name} {miss}/{total}"
+            for name, (miss, total) in sorted(thin_platforms.items())
         )
         typer.echo(f"\n[!] 본문 추출 실패: {detail}")
         typer.echo("    반복되면 `uv run skim doctor`로 추출 환경을 점검하세요.")
@@ -427,11 +440,53 @@ def youtube_transcribe(video: str = typer.Argument(..., help="영상 URL 또는 
 @app.command()
 def migrate(db: Optional[Path] = typer.Option(None, "--db", help="SQLite DB 경로")):
     """기존 데이터를 정본 본문 모델로 이행합니다 (content_markdown 통일). 멱등."""
+    init_db(db)
     result = migrate_canonical_body(db)
     typer.echo(
         f"API 본문 승격: {result['api_promoted']}건, "
         f"Feed content 정리: {result['feed_content_cleared']}건"
     )
+    filled = backfill_canonical_urls(db)
+    typer.echo(f"canonical_url 채움: {filled}건")
+
+
+@app.command()
+def backup(
+    db: Optional[Path] = typer.Option(None, "--db", help="SQLite DB 경로"),
+    dest_dir: Optional[Path] = typer.Option(
+        None, "--dest", help="백업 디렉터리 (기본 data/backups)"
+    ),
+    keep: int = typer.Option(3, "--keep", help="보관할 백업 개수"),
+):
+    """DB를 온라인 백업하고 오래된 백업을 정리합니다.
+
+    649MB 단일 파일에 3년치가 사본 없이 들어 있었다. 파일 복사와 달리 WAL이
+    진행 중이어도 일관된 스냅샷이 나오므로 크롤과 겹쳐도 안전하다.
+    """
+    db_path = _db_or_default(db)
+    if not db_path.exists():
+        typer.echo(f"[skim] DB가 없습니다: {db_path}", err=True)
+        raise typer.Exit(1)
+
+    target_dir = dest_dir or (db_path.parent / "backups")
+    stamp = datetime.now(KST).strftime("%Y%m%d_%H%M%S")
+    dest = target_dir / f"{db_path.stem}.{stamp}.db"
+    backup_db(dest, db_path)
+    size_mb = dest.stat().st_size / (1024 * 1024)
+    typer.echo(f"백업: {dest} ({size_mb:.1f}MB)")
+
+    if keep > 0:
+        existing = sorted(
+            target_dir.glob(f"{db_path.stem}.*.db"), key=lambda p: p.name, reverse=True
+        )
+        for stale in existing[keep:]:
+            stale.unlink()
+            typer.echo(f"오래된 백업 삭제: {stale.name}")
+
+    integrity = check_integrity(db_path)
+    typer.echo(f"integrity: {integrity}")
+    if integrity != "ok":
+        raise typer.Exit(1)
 
 
 @app.command()
@@ -441,6 +496,9 @@ def doctor(
     ),
     db: Optional[Path] = typer.Option(None, "--db", help="SQLite DB 경로"),
     emit: str = typer.Option("summary", "--emit", help="summary|json"),
+    strict: bool = typer.Option(
+        False, "--strict", help="warning이 하나라도 있으면 exit 1 (cron 연동용)"
+    ),
 ):
     """DB, 수집 run, session 상태를 점검합니다."""
     _validate_platform(platform)
@@ -509,7 +567,8 @@ def doctor(
                 FROM runs
                 ORDER BY id DESC
                 LIMIT 10
-                """).fetchall()]
+                """).fetchall()
+        ]
         # 본문 정본(content_markdown)이 빈 최근 유입분. summary 폴백까지 세는
         # 위 missing_text와 달리 데이터 계약을 그대로 본다. youtube 목록 행은
         # 본문 없이 저장되는 것이 계약이라 뺀다.
@@ -536,7 +595,9 @@ def doctor(
 
     report["extractor"] = _playwright_status()
     if not report["extractor"]["ok"]:
-        report["warnings"].append(f"playwright unavailable: {report['extractor']['detail']}")
+        report["warnings"].append(
+            f"playwright unavailable: {report['extractor']['detail']}"
+        )
     try:
         health = scan_source_health(db_path)
     except Exception as exc:  # pragma: no cover - defensive report path
@@ -548,6 +609,21 @@ def doctor(
     for issue in health:
         report["warnings"].append(f"{issue['source']}: {issue['detail']}")
 
+    # 외부 CLI 의존: 없으면 본문/자막 추출이 통째로 죽는데 크롤은 성공으로 끝난다.
+    # launchd는 셸 프로필을 안 읽어 PATH가 달라지므로 크론에서 특히 잘 사라진다.
+    report["tools"] = {
+        name: shutil.which(name) or "" for name in ("yt-dlp", "bunx", "uv")
+    }
+    for name, found in report["tools"].items():
+        if not found:
+            report["warnings"].append(f"{name} not on PATH")
+
+    if report["db_exists"]:
+        integrity = check_integrity(db_path)
+        report["integrity"] = integrity
+        if integrity != "ok":
+            report["warnings"].append(f"database integrity: {integrity}")
+
     if platform and not report["platforms"]:
         report["warnings"].append(f"no posts found for {platform}")
     if any(
@@ -556,6 +632,8 @@ def doctor(
     ):
         report["warnings"].append("recent runs need attention")
     _emit_doctor(report, emit)
+    if strict and report["warnings"]:
+        raise typer.Exit(1)
 
 
 def _playwright_status() -> dict:
@@ -578,7 +656,9 @@ def _playwright_status() -> dict:
             browser = play.chromium.launch(headless=True)
             browser.close()
     except Exception as exc:  # pragma: no cover - 환경 의존
-        first_line = str(exc).strip().splitlines()[0] if str(exc).strip() else type(exc).__name__
+        first_line = (
+            str(exc).strip().splitlines()[0] if str(exc).strip() else type(exc).__name__
+        )
         return {
             "ok": False,
             "detail": f"{first_line[:150]} (uv run playwright install)",
@@ -608,6 +688,11 @@ def _emit_doctor(report: dict, emit: str) -> None:
     if report.get("extractor"):
         state = "ok" if report["extractor"]["ok"] else "unavailable"
         typer.echo(f"extractor: playwright {state} - {report['extractor']['detail']}")
+    if report.get("tools"):
+        missing = [name for name, found in report["tools"].items() if not found]
+        typer.echo(f"tools: {'ok' if not missing else 'missing ' + ', '.join(missing)}")
+    if report.get("integrity"):
+        typer.echo(f"integrity: {report['integrity']}")
     if report["sessions"]:
         present = [s["platform"] for s in report["sessions"] if s["exists"]]
         typer.echo(f"sessions: {', '.join(present) if present else 'none'}")

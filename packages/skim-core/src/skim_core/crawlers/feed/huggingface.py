@@ -14,6 +14,17 @@ from ...feed_config import HUGGINGFACE_PAPERS_URL
 from ...models import Post
 
 
+def _parse_iso(value: str) -> Any:
+    """HF API의 ISO8601(Z) 문자열을 aware datetime으로. 실패하면 None.
+
+    발행일 불명을 크롤 시각으로 채우면 시간축이 왜곡되므로 미상으로 남긴다.
+    """
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+
+
 class HuggingFaceCrawler:
     platform = "huggingface"
 
@@ -29,37 +40,45 @@ class HuggingFaceCrawler:
         items: List[dict] = []
 
         for p in papers:
-            paper_id = p.get("paper", {}).get("id", "")
-            authors = ", ".join(
-                a.get("name", "") for a in p.get("paper", {}).get("authors", [])[:5]
-            )
-            if len(p.get("paper", {}).get("authors", [])) > 5:
+            paper = p.get("paper") or {}
+            paper_id = paper.get("id", "")
+            authors_all = paper.get("authors") or []
+            authors = ", ".join(a.get("name", "") for a in authors_all[:5])
+            if len(authors_all) > 5:
                 authors += " et al."
 
-            pub = p.get("publishedAt", "")
-            try:
-                entry_dt = datetime.fromisoformat(pub.replace("Z", "+00:00"))
-                published = entry_dt.astimezone(timezone.utc).isoformat()
-            except (ValueError, AttributeError):
-                # 발행일 불명을 크롤 시각으로 채우면 시간축이 왜곡된다. 미상으로 남긴다.
-                entry_dt = None
-                published = ""
+            entry_dt = _parse_iso(p.get("publishedAt", ""))
+            published = (
+                entry_dt.astimezone(timezone.utc).isoformat() if entry_dt else ""
+            )
 
-            # CLI 계약(--days)대로 since 이전 논문은 제외. 발행일 미상은 보수적으로 포함.
-            if since and entry_dt and entry_dt < since:
+            # Daily Papers는 큐레이션 목록이라 publishedAt(=arXiv 발행일)이 며칠에서
+            # 몇 주 전이다. 그걸로 --days 창을 자르면 오늘 올라온 논문이 통째로
+            # 걸러진다 (2026-08-10 실측: 최신 목록의 publishedAt 최댓값이 5일 전이라
+            # 3일 창에서 0건). HF가 목록에 올린 날짜로 거른다.
+            daily_dt = _parse_iso(paper.get("submittedOnDailyAt", ""))
+            window_dt = daily_dt or entry_dt
+            if since and window_dt and window_dt < since:
                 continue
 
             items.append(
                 {
                     "platform": "huggingface",
                     "title": p.get("title", ""),
-                    "url": f"https://huggingface.co/papers/{paper_id}" if paper_id else "",
+                    "url": f"https://huggingface.co/papers/{paper_id}"
+                    if paper_id
+                    else "",
                     "author": authors,
                     "published": published,
                     "summary": re.sub(r"\s+", " ", p.get("summary", "")).strip()[:500],
                     "abstract": re.sub(r"\s+", " ", p.get("summary", "")).strip(),
                     "thumbnail": p.get("thumbnail", ""),
                     "num_comments": p.get("numComments", 0),
+                    "submitted_on_daily_at": daily_dt.astimezone(
+                        timezone.utc
+                    ).isoformat()
+                    if daily_dt
+                    else "",
                 }
             )
 
@@ -74,8 +93,8 @@ class HuggingFaceCrawler:
         extras = {
             key: value
             for key, value in item.items()
-            if key in ("enrichment_method", "enrichment_error")
-            and value is not None
+            if key in ("enrichment_method", "enrichment_error", "submitted_on_daily_at")
+            and value
         }
         return Post(
             platform=item.get("platform", self.platform),

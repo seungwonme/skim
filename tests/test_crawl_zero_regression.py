@@ -15,7 +15,9 @@ from skim_core.db import init_db, platforms_with_recent_posts
 
 def _stamp(days_ago: float) -> str:
     """`datetime('now', ...)`와 같은 UTC 축의 타임스탬프."""
-    return (datetime.now(timezone.utc) - timedelta(days=days_ago)).strftime("%Y-%m-%d %H:%M:%S")
+    return (datetime.now(timezone.utc) - timedelta(days=days_ago)).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
 
 
 class PlatformsWithRecentPostsTests(unittest.TestCase):
@@ -55,7 +57,9 @@ class PlatformsWithRecentPostsTests(unittest.TestCase):
 class ZeroResultRegressionTests(unittest.TestCase):
     """빈 리스트는 예외가 아니라서 크롤러가 깨져도 정상 종료처럼 보인다."""
 
-    def _run_crawl(self, recent_platforms, platforms=("threads",), crawler_results=None):
+    def _run_crawl(
+        self, recent_platforms, platforms=("threads",), crawler_results=None
+    ):
         with (
             patch("skim_cli.cli.run_single_crawler", new_callable=AsyncMock) as crawler,
             patch(
@@ -87,7 +91,9 @@ class ZeroResultRegressionTests(unittest.TestCase):
                 exited = False
             except typer.Exit:
                 exited = True
-        messages = " ".join(str(call.args[0]) for call in echo.call_args_list if call.args)
+        messages = " ".join(
+            str(call.args[0]) for call in echo.call_args_list if call.args
+        )
         return finish_run, messages, exited
 
     def test_warns_and_marks_run_degraded_when_active_platform_returns_nothing(self):
@@ -179,8 +185,17 @@ class LookbackWindowTests(unittest.TestCase):
         return (midnight - options["since"]).days
 
     def test_huggingface_looks_further_back_than_one_day(self):
-        # daily papers가 싣는 publishedAt은 arXiv 발행일이라 1일 창에서는 전량 걸러진다.
+        # HF는 주말에 daily papers를 큐레이션하지 않는다. 월요일 배치가 금요일 목록을
+        # 놓치지 않으려면 3일이 필요하다.
         self.assertEqual(self._forwarded_since_days("huggingface"), 3)
+
+    def test_arxiv_floor_survives_an_explicit_narrow_window(self):
+        # arXiv는 주말에 announce하지 않는다. 요일 규칙이 days=None일 때만 걸려 있어
+        # 일일 배치의 `--days 1`이 그걸 덮어썼고, 그래서 배치에서만 0건이 났다.
+        now = main.datetime.now(main.KST)
+        expected = 4 if now.weekday() in (0, 5, 6) else 2
+        self.assertEqual(self._forwarded_since_days("arxiv", days=1), expected)
+        self.assertEqual(self._forwarded_since_days("arxiv"), expected)
 
     def test_explicit_days_cannot_shrink_below_the_platform_floor(self):
         # 일일 배치가 `crawl all --days 1`로 돌기 때문에 이 경로가 실제 운영 경로다.
