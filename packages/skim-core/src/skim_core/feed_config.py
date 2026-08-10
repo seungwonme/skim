@@ -145,14 +145,6 @@ AI_LABS_SOURCES = [
 LOBSTERS_RSS = "https://lobste.rs/rss"
 LOBSTERS_ITEM_JSON = "https://lobste.rs/s/{short_id}.json"
 
-# Bluesky - 무인증 공개 XRPC. 계정 목록이 곧 소스 목록이라 여기서 관리한다
-# (searchPosts는 403이라 키워드 수집은 못 한다).
-BLUESKY_ACCOUNTS = [
-    "bsky.app",
-]
-BLUESKY_AUTHOR_FEED_URL = "https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed"
-BLUESKY_POST_THREAD_URL = "https://public.api.bsky.app/xrpc/app.bsky.feed.getPostThread"
-
 # arXiv - Atom API. 카테고리별로 따로 조회해 합친다.
 # 크롤러가 합친 뒤 --count로 자르므로 카테고리를 늘려도 수집량은 그대로다.
 # 넓어지는 건 커버리지지 볼륨이 아니다. cs.AI 단독이면 cs.CL/cs.LG에만 올라온

@@ -44,7 +44,6 @@ Skim collects posts from multiple public feeds and session-based social sources,
 | Feed | Every.to | RSS feeds |
 | Feed | Blogs | RSS feeds in `PERSONAL_BLOGS` |
 | Feed | AI Labs | OpenAI, Anthropic, LangChain, DeepMind, Google Research, Hugging Face, Mistral |
-| Feed | Bluesky | Public XRPC (no login) |
 | API | Threads | Instagram Private API |
 | API | X | GraphQL via `twitter-api-client` |
 | API | LinkedIn | Voyager GraphQL |

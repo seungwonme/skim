@@ -8,7 +8,6 @@ Skim에 넣을 source 후보와 promotion checklist입니다. 구현 계획은 `
 
 - Communities: Hacker News (newest + Show + Ask), Lobsters, GeekNews, Product Hunt
 - Social/API: Threads, X, LinkedIn, Reddit
-- Social/공개: Bluesky (`BLUESKY_ACCOUNTS`, 로그인 불필요)
 - Articles: Every.to, `PERSONAL_BLOGS`의 블로그와 뉴스레터
 - Video: `YOUTUBE_CHANNELS`의 YouTube channels
 - Papers: Hugging Face Daily Papers, arXiv (cs.AI, cs.CL, cs.LG, cs.CV)
@@ -56,6 +55,11 @@ Skim에 넣을 source 후보와 promotion checklist입니다. 구현 계획은 `
 
 ## 제외된 소스
 
+- `bluesky` - 2026-08-10에 추가했다가 같은 날 제거했다. 크롤러는 동작했지만
+  (프로덕션 실측 HTTP 200, 엔트리 20개) `BLUESKY_ACCOUNTS`에 게시 빈도가 낮은 계정
+  하나뿐이라 데일리 `--days 1` 창에서 매번 0건이었다. 실제 실행 조건에서 산출을
+  확인하지 않고 넣었고, 요청받은 플랫폼도 아니었다. 되살리려면 매일 올라오는 계정
+  목록이 필요한데 그건 큐레이션 결정이다.
 - `every.to/Guides` - `/guides/feed`가 HTTP 500이고 대체 피드도 sitemap도 없다 (2026-08-09 확인). `/guides` 페이지 자체는 살아 있어서, 전용 인덱스 파서를 만들 값어치가 생기면 `scrape` 소스로 복귀할 수 있다. 마지막 수집 2026-06-02.
 
 ## Promotion Checklist

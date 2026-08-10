@@ -44,7 +44,6 @@ Skim은 여러 public feed와 세션 기반 social source에서 post를 수집�
 | Feed | Every.to | RSS feeds |
 | Feed | Blogs | `PERSONAL_BLOGS`의 RSS feeds |
 | Feed | AI Labs | OpenAI, Anthropic, LangChain, DeepMind, Google Research, Hugging Face, Mistral |
-| Feed | Bluesky | 공개 XRPC (로그인 불필요) |
 | API | Threads | Instagram Private API |
 | API | X | `twitter-api-client` 기반 GraphQL |
 | API | LinkedIn | Voyager GraphQL |

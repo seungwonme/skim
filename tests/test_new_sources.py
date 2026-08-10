@@ -1,4 +1,4 @@
-"""소스 확장 회귀 테스트: arxiv 다중 카테고리, HN 다중 피드, lobsters, bluesky."""
+"""소스 확장 회귀 테스트: arxiv 다중 카테고리, HN 다중 피드, lobsters."""
 
 import asyncio
 import unittest
@@ -6,9 +6,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 from skim_core.crawlers import REGISTRY
-from skim_core.crawlers.feed import bluesky
 from skim_core.crawlers.feed.arxiv import ArxivCrawler
-from skim_core.crawlers.feed.bluesky import BlueskyCrawler, post_web_url
 from skim_core.crawlers.feed.hackernews import HackerNewsCrawler
 from skim_core.crawlers.feed.lobsters import (
     LobstersCrawler,
@@ -41,8 +39,7 @@ class FeedConfigTests(unittest.TestCase):
         self.assertNotIn("yozm.wishket.com", " ".join(PERSONAL_BLOGS.values()))
 
     def test_new_platforms_are_in_the_registry(self):
-        for name in ("lobsters", "bluesky"):
-            self.assertIn(name, REGISTRY)
+        self.assertIn("lobsters", REGISTRY)
 
 
 def _arxiv_entry(title, link, published):
@@ -234,65 +231,6 @@ class LobstersTests(unittest.TestCase):
             crawler.attach_details([post], items)
 
         self.assertEqual(post.content_markdown, "original")
-
-
-def _bsky_post(
-    text, handle="a.bsky.social", uri="at://did:plc:x/app.bsky.feed.post/abc"
-):
-    return {
-        "uri": uri,
-        "author": {"handle": handle, "displayName": "A"},
-        "record": {"text": text, "createdAt": "2026-08-09T10:00:00.000Z"},
-        "likeCount": 3,
-        "replyCount": 2,
-        "repostCount": 1,
-    }
-
-
-class BlueskyTests(unittest.TestCase):
-    def test_at_uri_becomes_a_web_url(self):
-        self.assertEqual(
-            post_web_url("at://did:plc:x/app.bsky.feed.post/3mse", "bsky.app"),
-            "https://bsky.app/profile/bsky.app/post/3mse",
-        )
-        self.assertEqual(post_web_url("", "bsky.app"), "")
-
-    def test_reposts_are_skipped(self):
-        crawler = BlueskyCrawler()
-        response = MagicMock(status_code=200)
-        response.json.return_value = {
-            "feed": [
-                {"post": _bsky_post("mine")},
-                {"post": _bsky_post("someone else"), "reason": {"$type": "repost"}},
-            ]
-        }
-        response.raise_for_status.return_value = None
-
-        with patch.object(bluesky._SESSION, "get", return_value=response):
-            posts = crawler.fetch_author_feed(
-                "a.bsky.social", datetime(2026, 1, 1, tzinfo=timezone.utc)
-            )
-
-        self.assertEqual([p.content for p in posts], ["mine"])
-
-    def test_author_self_replies_are_not_treated_as_discussion(self):
-        crawler = BlueskyCrawler()
-        response = MagicMock(status_code=200)
-        response.json.return_value = {
-            "thread": {
-                "post": _bsky_post("root", handle="me.bsky.social"),
-                "replies": [
-                    {"post": _bsky_post("my own follow-up", handle="me.bsky.social")},
-                    {"post": _bsky_post("someone replied", handle="other.bsky.social")},
-                ],
-            }
-        }
-
-        with patch.object(bluesky._SESSION, "get", return_value=response):
-            section = crawler.fetch_reply_section("at://x")
-
-        self.assertIn("someone replied", section)
-        self.assertNotIn("my own follow-up", section)
 
 
 if __name__ == "__main__":
