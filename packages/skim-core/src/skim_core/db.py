@@ -441,6 +441,45 @@ def backfill_blank_authors(db_path: Optional[Path] = None) -> int:
         conn.close()
 
 
+def dedupe_by_url(
+    platform: str, db_path: Optional[Path] = None, dry_run: bool = False
+) -> dict:
+    """같은 URL이 여러 행으로 갈라진 것을 하나로 접는다 (멱등).
+
+    id 체계가 도중에 바뀌면 같은 글이 두 번 저장된다. ailabs가 그랬다 - 피드
+    guid를 쓰던 행과 URL 기반 id를 쓰는 행이 공존해 182행이 중복됐다.
+
+    본문이 가장 긴 행을 남긴다. 짧은 쪽이 추출 실패본일 수 있어서다.
+    dry_run이면 세기만 하고 지우지 않는다.
+    """
+    conn = get_connection(db_path)
+    try:
+        rows = conn.execute(
+            """SELECT id, url, LENGTH(COALESCE(content_markdown, '')) AS body_len
+               FROM posts
+               WHERE platform = ? AND url IS NOT NULL AND TRIM(url) != ''
+               ORDER BY url, body_len DESC, id""",
+            (platform,),
+        ).fetchall()
+
+        keep: dict = {}
+        drop: list = []
+        for row in rows:
+            if row["url"] in keep:
+                drop.append(row["id"])
+            else:
+                keep[row["url"]] = row["id"]
+
+        if drop and not dry_run:
+            conn.executemany(
+                "DELETE FROM posts WHERE id = ?", [(row_id,) for row_id in drop]
+            )
+            conn.commit()
+        return {"groups": len(keep), "removed": len(drop)}
+    finally:
+        conn.close()
+
+
 def _ensure_runs_columns(conn: sqlite3.Connection) -> None:
     """기존 DB의 runs 테이블에 누락된 컬럼을 추가합니다."""
     existing = {

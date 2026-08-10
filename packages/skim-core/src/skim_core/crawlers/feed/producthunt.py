@@ -130,6 +130,10 @@ def _item_to_post(item: dict) -> Post:
         source=item.get("platform", ""),
         content_markdown=item.get("content_markdown", ""),
         word_count=item.get("word_count"),
+        # 피드가 런치별 고유 id(tag:...,2005:Post/1219088)를 주는데 버리고 있었다.
+        # 없으면 db가 URL로 병합해서, 같은 제품 페이지의 두 번째 이후 런치가
+        # 아예 저장되지 않는다.
+        external_id=item.get("external_id"),
         **extras,
     )
 

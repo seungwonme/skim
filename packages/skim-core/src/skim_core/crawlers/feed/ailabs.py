@@ -412,7 +412,9 @@ def _dispatch(
     if t == "rss":
         results = _collect_from_rss(source, since, limit=limit)
         for item in results:
-            if item.get("url") and not item.get("external_id"):
+            # 피드 guid가 아니라 URL로 고정한다. 소스가 RSS/HTML 경로를 오가면
+            # id 체계가 바뀌어 같은 글이 두 행으로 갈라진다 (실측 182행 중복).
+            if item.get("url"):
                 item["external_id"] = _external_id_from_url(item["url"])
         return results
     if t == "anthropic":
