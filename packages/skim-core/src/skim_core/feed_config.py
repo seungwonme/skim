@@ -7,7 +7,11 @@
 # count 기본값이 20이라 하루 창(--days 1)에 30점 넘긴 글의 일부만 들어왔다
 # (2026-08-10 실측: 24시간에 65건인데 20건만 수집). 문서상 최대인 100으로 올린다.
 HACKERNEWS_FEED_COUNT = 100
-HACKERNEWS_RSS = f"https://hnrss.org/newest?points=30&count={HACKERNEWS_FEED_COUNT}"
+HACKERNEWS_MIN_POINTS = 30
+HACKERNEWS_RSS = (
+    f"https://hnrss.org/newest?points={HACKERNEWS_MIN_POINTS}"
+    f"&count={HACKERNEWS_FEED_COUNT}"
+)
 
 # Show/Ask HN은 점수 문턱을 두지 않는다. 링크가 아니라 본문이 알맹이인 글이라
 # 30점 필터에 걸리면 대부분 사라진다. 크롤러는 이미 Ask/Show 본문 처리를 갖췄다.
@@ -27,6 +31,16 @@ HACKERNEWS_FEED_LIMITS = {
     "hackernews/show": HACKERNEWS_SHOW_ASK_COUNT,
     "hackernews/ask": HACKERNEWS_SHOW_ASK_COUNT,
 }
+
+# hnrss.org가 죽은 회차용 폴백. 위 세 피드와 같은 범위를 Algolia로 재현한다.
+# hnrss는 단일 호스트라 502가 나면 세 피드가 동시에 0건이 되고, 데일리는 고정
+# 창으로 돌아 그날 HN이 통째로 유실된다 (2026-08-10 실측).
+# tags의 콤마는 AND다. `(story,show_hn)`처럼 괄호로 싸면 OR이 돼 전체 글이 온다.
+HACKERNEWS_ALGOLIA_FALLBACK = (
+    ("hackernews", "story", f"points>={HACKERNEWS_MIN_POINTS}", HACKERNEWS_FEED_COUNT),
+    ("hackernews/show", "story,show_hn", "", HACKERNEWS_SHOW_ASK_COUNT),
+    ("hackernews/ask", "story,ask_hn", "", HACKERNEWS_SHOW_ASK_COUNT),
+)
 
 # GeekNews (news.hada.io) - Atom 1.0 피드
 GEEKNEWS_RSS = "https://news.hada.io/rss/news"

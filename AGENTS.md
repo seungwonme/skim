@@ -198,6 +198,13 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
   조용히 넘어가면 "그날 그만큼밖에 없었다"로 읽힌다.
 - **불완전한 본문은 표시한다.** everyto는 구독자 벽까지만 저장되므로
   `content_status="paywalled"`를 단다. 표시가 없으면 반쪽을 완결된 글로 요약한다.
+- **한 호스트에 물린 소스는 폴백 경로를 둔다.** 데일리는 고정 창으로 돌아 그 회차를
+  놓치면 다음 날 창에 다시 안 들어온다. 그대로 영구 유실이다. hackernews는 피드 세
+  장이 전부 hnrss.org라 502 한 번에 셋이 같이 0건이 됐고(2026-08-10 프로덕션),
+  전량 0건일 때만 Algolia `search_by_date`로 같은 창을 다시 채운다. 폴백 판정은
+  "전부 0건"이어야 한다. 한 장이라도 살아 있으면 중복 요청만 는다.
+  Algolia `tags`의 콤마는 AND다. `(story,show_hn)`처럼 괄호로 싸면 OR이 돼
+  필터가 통째로 풀리고 전체 글이 온다.
 
 #### 새 소스를 넣기 전에
 
