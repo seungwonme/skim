@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import requests
 
+from skim_core import feed_utils
 from skim_core.crawlers.feed.geeknews import GeekNewsCrawler
 from skim_core.crawlers.feed.hackernews import HackerNewsCrawler
 from skim_core.feed_utils import fetch_feed
@@ -146,7 +147,7 @@ class FeedUtilsTimestampTests(unittest.TestCase):
         response.raise_for_status = MagicMock()
         # feed entries는 dict 호환되도록
         with (
-            patch("skim_core.feed_utils.requests.get", return_value=response),
+            patch.object(feed_utils._FEED_SESSION, "get", return_value=response),
             patch("skim_core.feed_utils.feedparser.parse", return_value=feed),
         ):
             since = datetime(2026, 4, 1, tzinfo=timezone.utc)
@@ -173,7 +174,7 @@ class FeedUtilsTimestampTests(unittest.TestCase):
         response.content = b"<feed />"
         response.raise_for_status = MagicMock()
         with (
-            patch("skim_core.feed_utils.requests.get", return_value=response),
+            patch.object(feed_utils._FEED_SESSION, "get", return_value=response),
             patch("skim_core.feed_utils.feedparser.parse", return_value=feed),
         ):
             since = datetime(2026, 4, 1, tzinfo=timezone.utc)
@@ -181,7 +182,9 @@ class FeedUtilsTimestampTests(unittest.TestCase):
         self.assertEqual(results, [])
 
     def test_fetch_feed_request_failure_returns_empty(self):
-        with patch("skim_core.feed_utils.requests.get", side_effect=requests.Timeout("timeout")):
+        with patch.object(
+            feed_utils._FEED_SESSION, "get", side_effect=requests.Timeout("timeout")
+        ):
             since = datetime(2026, 4, 1, tzinfo=timezone.utc)
             results = fetch_feed("https://feed", "src", since)
 

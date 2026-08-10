@@ -35,12 +35,16 @@ class YouTubeFallbackTimestampTests(unittest.TestCase):
         return items, run
 
     def test_requests_approximate_date_so_flat_playlist_carries_timestamps(self):
-        _, run = self._run([{"id": "abc123XYZ09", "title": "T", "timestamp": 1754611200}])
+        _, run = self._run(
+            [{"id": "abc123XYZ09", "title": "T", "timestamp": 1754611200}]
+        )
         argv = run.call_args.args[0]
         self.assertIn("youtubetab:approximate_date", argv)
 
     def test_published_is_filled_from_timestamp(self):
-        items, _ = self._run([{"id": "abc123XYZ09", "title": "T", "timestamp": 1754611200}])
+        items, _ = self._run(
+            [{"id": "abc123XYZ09", "title": "T", "timestamp": 1754611200}]
+        )
         self.assertEqual(len(items), 1)
         self.assertTrue(items[0]["published"])
         self.assertEqual(
@@ -66,7 +70,7 @@ class FeedAuthorFallbackTests(unittest.TestCase):
     def _fetch(self, entry, source_name):
         parsed = type("Parsed", (), {"bozo": False, "entries": [entry]})()
         with (
-            patch.object(feed_utils.requests, "get", return_value=FakeResponse()),
+            patch.object(feed_utils._FEED_SESSION, "get", return_value=FakeResponse()),
             patch.object(feed_utils.feedparser, "parse", return_value=parsed),
         ):
             return feed_utils.fetch_feed(
