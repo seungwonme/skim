@@ -127,13 +127,16 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
 | producthunt | `## Product Hunt Comments` | 제품당 1건 (PH 제품 페이지) |
 | threads | `## Threads Replies` | 답글 1개 이상인 게시물 전부, 게시물당 1건 |
 | lobsters | `## Lobsters Comments` | 게시물당 1건 (초당 1요청). 같은 응답의 `description_plain`이 본문 폴백 |
+| huggingface | `## Hugging Face Comments` | 논문당 1건. 페이지 SSR 페이로드(`data-props`)라 로그인 불필요 |
 
 - **댓글 조회는 `comments`가 0보다 클 때만 한다.** 0건인 글을 조회하면 "유효 댓글 없음"과
   "HTTP 실패"가 둘 다 `None`이라 구분되지 않는다. reddit은 그 때문에 조용한 서브레딧에서
   0건 글 3개가 연속되면 서킷브레이커가 남은 게시글 전체의 댓글 수집을 끊었다.
 - **파싱까지 `try` 안에 넣는다.** HTTP 호출만 감싸면 상류 응답 구조가 바뀔 때 파싱 예외가
   크롤 루프까지 올라가 그 회차의 게시글이 통째로 저장 0건이 된다. "댓글 실패가 게시글
-  저장을 막지 않는다"는 계약이 실제로 깨져 있던 자리다. 회귀는
+  저장을 막지 않는다"는 계약이 실제로 깨져 있던 자리다. API형 4종을 먼저 고쳤는데
+  feed형(hackernews/geeknews/producthunt)에 같은 결함이 남아 있었다. 새 크롤러를
+  만들 때 HTTP만 감싸고 끝내지 않는다. 회귀는
   `tests/test_comment_failure_isolation.py`가 잡는다.
 
 - threads 답글은 타임라인 GraphQL이 주지 않는다. 대신 게시물 문서의 SSR 페이로드가
@@ -174,6 +177,27 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
 거르는 기준 필드도 확인한다. 큐레이션 목록은 원문 발행일이 아니라 목록에 올린 날짜로
 걸러야 한다 (huggingface는 `paper.submittedOnDailyAt`, `publishedAt`은 arXiv 발행일이라
 며칠에서 몇 주 밀려 있다).
+
+#### 크롤러 사이의 기능 편차
+
+새 크롤러를 만들거나 고칠 때, 다른 크롤러가 이미 하는 것을 안 하고 있지 않은지 본다.
+2026-08-10 전수 조사에서 나온 것들이다.
+
+- **본문이 비면 버리기 전에 폴백을 본다.** threads/linkedin은 이미지만 올린 글에서
+  `None`을 돌려 DB에 행 자체를 안 만들었다. 사다리는 본문 -> alt text -> 미디어 링크 ->
+  버림이고, 폴백으로 채웠으면 `content_status` extras로 표시한다.
+- **링크 게시물은 원문 URL을 보존하고 추출한다.** 제목만 남기면 소비자가 원문으로 갈
+  방법이 없다. 애그리게이터(hackernews/lobsters/everyto/reddit)는 `_enrich_article_item`의
+  3단 사다리를 타되 `min_words`를 낮춘다. 짧은 릴리스 노트도 정당한 본문이다.
+- **상류가 주는 고유 id를 버리지 않는다.** 없으면 `db.py`가 URL로 병합해서, 같은 URL의
+  서로 다른 글이 통째로 사라진다 (producthunt 재런치). 반대로 id 체계를 바꾸면 같은 글이
+  두 행으로 갈라지므로(ailabs 182행) 전환할 때는 백필이 함께 가야 한다.
+- **`count`는 enrichment 앞에서 자른다.** CLI가 마지막에 `posts[:count]`로 자르므로,
+  그 전에 안 자르면 버려질 항목까지 원문 추출과 댓글 조회를 돈다.
+- **창이 한 페이지보다 넓으면 페이징한다.** 상한에 닿아 창을 못 덮으면 경고를 남긴다.
+  조용히 넘어가면 "그날 그만큼밖에 없었다"로 읽힌다.
+- **불완전한 본문은 표시한다.** everyto는 구독자 벽까지만 저장되므로
+  `content_status="paywalled"`를 단다. 표시가 없으면 반쪽을 완결된 글로 요약한다.
 
 #### 새 소스를 넣기 전에
 
