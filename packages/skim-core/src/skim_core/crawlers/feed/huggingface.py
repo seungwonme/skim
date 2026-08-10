@@ -3,10 +3,16 @@
 @description HuggingFace Daily Papers 크롤러 (JSON API)
 """
 
+import html as html_lib
+import json
 import re
 from datetime import datetime, timezone
-from typing import Any, List
+from typing import Any, List, Optional
 
+import typer
+from requests import RequestException
+
+from ...comments import Comment, append_comment_section, render_comment_section
 from ...enrichment import enrich_papers_with_content
 from ...feed_config import HUGGINGFACE_PAPERS_URL
 from ...feed_utils import FEED_TIMEOUT_SECONDS, make_retrying_session
@@ -15,6 +21,8 @@ from ...models import Post
 # 단발 요청이면 503 한 번에 그 회차가 통째로 0건이 된다.
 # raise_for_status가 crawl 안에 있어 예외가 CLI까지 올라가기 때문이다.
 _SESSION = make_retrying_session()
+
+MAX_COMMENTS = 15
 
 
 def _parse_iso(value: str) -> Any:
@@ -25,6 +33,56 @@ def _parse_iso(value: str) -> Any:
     try:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except (ValueError, AttributeError):
+        return None
+
+
+# 논문 페이지는 SSR 페이로드(data-props)에 댓글을 통째로 담아 준다.
+# 로그인도 토큰도 필요 없고 논문당 요청 1건이다.
+_PAPER_PROPS = re.compile(r'data-target="PaperContent"[^>]*data-props="([^"]*)"')
+
+
+def fetch_comment_section(paper_url: str) -> Optional[str]:
+    """논문 페이지에서 댓글을 본문용 마크다운 섹션으로 만든다.
+
+    HF 행의 본문은 arXiv HTML/PDF에서 뽑아오므로 같은 논문의 arxiv 행과 거의
+    같다. HF만 갖는 것은 저자가 직접 단 코드/데모 링크, 평문 요약, 독자 반응이라
+    이걸 안 담으면 HF Daily Papers를 따로 읽을 이유가 남지 않는다.
+    """
+    if not paper_url:
+        return None
+    # HTTP와 파싱을 함께 감싼다. 댓글 실패가 논문 저장을 막지 않는다.
+    try:
+        resp = _SESSION.get(paper_url, timeout=FEED_TIMEOUT_SECONDS)
+        resp.raise_for_status()
+        match = _PAPER_PROPS.search(resp.text)
+        if not match:
+            return None
+        props = json.loads(html_lib.unescape(match.group(1)))
+
+        collected: List[Comment] = []
+        for node in props.get("comments") or []:
+            if node.get("type") != "comment":
+                continue
+            data = node.get("data") or {}
+            if data.get("hidden"):
+                continue
+            # latest.raw가 이미 마크다운 원문이라 HTML 파싱이 필요 없다.
+            body = ((data.get("latest") or {}).get("raw") or "").strip()
+            if not body:
+                continue
+            collected.append(
+                Comment(
+                    author=(node.get("author") or {}).get("name") or "unknown",
+                    text=body,
+                    created=(node.get("createdAt") or "")[:16].replace("T", " ")
+                    or None,
+                )
+            )
+        return render_comment_section(
+            "Hugging Face Comments", collected, max_comments=MAX_COMMENTS
+        )
+    except (RequestException, ValueError, KeyError, TypeError) as e:
+        typer.echo(f"   [!] HF 댓글 수집 실패({paper_url}): {e}")
         return None
 
 
@@ -89,8 +147,23 @@ class HuggingFaceCrawler:
 
         if not no_content and items:
             enrich_papers_with_content(items)
+            self._attach_comments(items)
 
         return [self._item_to_post(item) for item in items]
+
+    def _attach_comments(self, items: List[dict]) -> None:
+        """댓글을 본문 뒤에 잇는다. 0건인 논문은 조회하지 않는다.
+
+        numComments가 목록 응답에 이미 있어 판정 비용이 0이다.
+        """
+        for item in items:
+            if (item.get("num_comments") or 0) < 1:
+                continue
+            section = fetch_comment_section(item.get("url", ""))
+            if section:
+                item["content_markdown"] = append_comment_section(
+                    item.get("content_markdown") or "", section
+                )
 
     def _item_to_post(self, item: dict) -> Post:
         extras = {
@@ -110,6 +183,6 @@ class HuggingFaceCrawler:
             content_markdown=item.get("content_markdown"),
             word_count=item.get("word_count"),
             thumbnail=item.get("thumbnail", ""),
-            num_comments=item.get("num_comments", 0),
+            comments=item.get("num_comments", 0),
             **extras,
         )

@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 from skim_core.crawlers import REGISTRY
+from skim_core.crawlers.feed import arxiv
 from skim_core.crawlers.feed.arxiv import ArxivCrawler
 from skim_core.crawlers.feed.hackernews import HackerNewsCrawler
 from skim_core.crawlers.feed.lobsters import (
@@ -59,15 +60,15 @@ class ArxivMultiCategoryTests(unittest.TestCase):
         shared = _arxiv_entry("Shared", "https://arxiv.org/abs/1", stamp)
         unique = _arxiv_entry("Unique", "https://arxiv.org/abs/2", stamp)
 
-        def fake_parse(url):
+        def fake_fetch(category):
             feed = MagicMock()
             # cs.AI와 cs.LG 양쪽에 같은 논문이 올라온 상황
             feed.entries = (
-                [shared] if "cs.CL" in url or "cs.CV" in url else [shared, unique]
+                [shared] if category in ("cs.CL", "cs.CV") else [shared, unique]
             )
             return feed
 
-        with patch("skim_core.crawlers.feed.arxiv.feedparser.parse", fake_parse):
+        with patch.object(arxiv, "_fetch_category", fake_fetch):
             posts = asyncio.run(
                 ArxivCrawler().crawl(
                     since=now - timedelta(days=2), no_content=True, count=50
@@ -86,16 +87,16 @@ class ArxivMultiCategoryTests(unittest.TestCase):
         now = datetime.now(timezone.utc)
         stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        def fake_parse(url):
+        def fake_fetch(category):
             feed = MagicMock()
             feed.entries = (
                 [_arxiv_entry("Only CV", "https://arxiv.org/abs/9", stamp)]
-                if "cs.CV" in url
+                if category == "cs.CV"
                 else []
             )
             return feed
 
-        with patch("skim_core.crawlers.feed.arxiv.feedparser.parse", fake_parse):
+        with patch.object(arxiv, "_fetch_category", fake_fetch):
             posts = asyncio.run(
                 ArxivCrawler().crawl(
                     since=now - timedelta(days=2), no_content=True, count=50
