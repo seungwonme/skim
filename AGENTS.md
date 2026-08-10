@@ -127,7 +127,6 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
 | producthunt | `## Product Hunt Comments` | 제품당 1건 (PH 제품 페이지) |
 | threads | `## Threads Replies` | 답글 1개 이상인 게시물 전부, 게시물당 1건 |
 | lobsters | `## Lobsters Comments` | 게시물당 1건 (초당 1요청). 같은 응답의 `description_plain`이 본문 폴백 |
-| bluesky | `## Bluesky Replies` | 답글 1개 이상인 게시물, 게시물당 1건 (무인증 postThread) |
 
 - **댓글 조회는 `comments`가 0보다 클 때만 한다.** 0건인 글을 조회하면 "유효 댓글 없음"과
   "HTTP 실패"가 둘 다 `None`이라 구분되지 않는다. reddit은 그 때문에 조용한 서브레딧에서
@@ -162,7 +161,7 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
 
 | 유형 | 위치 | 옵션 기준 | 플랫폼 |
 |------|------|-----------|--------|
-| Feed | `packages/skim-core/src/skim_core/crawlers/feed/` | `since` | hackernews, lobsters, geeknews, youtube, producthunt, arxiv, huggingface, everyto, blogs, ailabs, bluesky |
+| Feed | `packages/skim-core/src/skim_core/crawlers/feed/` | `since` | hackernews, lobsters, geeknews, youtube, producthunt, arxiv, huggingface, everyto, blogs, ailabs |
 | API | `packages/skim-core/src/skim_core/crawlers/api/` | `count` | threads, x, linkedin, reddit |
 
 #### 좁은 창에서 0건이 나오는 소스

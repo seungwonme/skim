@@ -13,7 +13,6 @@ from .base import Crawler
 from .feed.ailabs import AILabsCrawler
 from .feed.arxiv import ArxivCrawler
 from .feed.blogs import BlogsCrawler
-from .feed.bluesky import BlueskyCrawler
 from .feed.everyto import EveryToCrawler
 from .feed.geeknews import GeekNewsCrawler
 from .feed.hackernews import HackerNewsCrawler
@@ -30,7 +29,6 @@ REGISTRY: dict[str, type] = {
     "hackernews": HackerNewsCrawler,
     "lobsters": LobstersCrawler,
     "geeknews": GeekNewsCrawler,
-    "bluesky": BlueskyCrawler,
     "youtube": YouTubeCrawler,
     "producthunt": ProductHuntCrawler,
     "arxiv": ArxivCrawler,

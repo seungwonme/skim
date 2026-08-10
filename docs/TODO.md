@@ -8,7 +8,6 @@ Candidate sources and promotion checklist for Skim. Keep implementation plans un
 
 - Communities: Hacker News (newest + Show + Ask), Lobsters, GeekNews, Product Hunt
 - Social/API: Threads, X, LinkedIn, Reddit
-- Social/public: Bluesky (`BLUESKY_ACCOUNTS`, no login required)
 - Articles: Every.to, blogs and newsletters in `PERSONAL_BLOGS`
 - Video: YouTube channels in `YOUTUBE_CHANNELS`
 - Papers: Hugging Face Daily Papers, arXiv (cs.AI, cs.CL, cs.LG, cs.CV)
@@ -54,20 +53,13 @@ Probed and failed, so nobody re-checks them by hand (2026-08-10):
   date field on any entry. `fetch_feed` drops undated entries, so registering it collects
   nothing while looking healthy. Needs a custom parser that reads dates off the article page.
 
-## Underfilled Sources
-
-Registered and working, but the daily `--days 1` window collects nothing from them.
-
-- `bluesky` — the crawler is fine (verified against production 2026-08-10: HTTP 200,
-  20 entries), but `BLUESKY_ACCOUNTS` holds one account, `bsky.app`, whose posting
-  interval runs days to a month. The newest post was 4 days old at check time, so a
-  daily run yields 0 almost every day. A wider lookback does not fix this — it would
-  just re-collect the same posts. The fix is a list of accounts that actually post
-  daily, which is a curation decision. Until then `doctor` will keep flagging bluesky
-  as a 0-count regression.
-
 ## Retired Sources
 
+- `bluesky` — added 2026-08-10 and removed the same day. The crawler worked (HTTP 200,
+  20 entries against production), but `BLUESKY_ACCOUNTS` held one low-traffic account,
+  so the daily `--days 1` window collected nothing. It was added without checking output
+  under the real run condition, and nobody had asked for the platform. Bringing it back
+  requires a list of accounts that actually post daily, which is a curation decision.
 - `every.to/Guides` — `/guides/feed` returns HTTP 500 with no alternate feed or sitemap (checked 2026-08-09). The `/guides` page itself is alive, so it can return as a `scrape` source if it becomes worth a custom index parser. Last collected 2026-06-02.
 
 ## Promotion Checklist
