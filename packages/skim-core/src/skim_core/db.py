@@ -414,6 +414,33 @@ def backfill_canonical_urls(db_path: Optional[Path] = None, batch: int = 5000) -
     return filled
 
 
+def backfill_blank_authors(db_path: Optional[Path] = None) -> int:
+    """비어 있는 author를 source 마지막 조각으로 채운다 (멱등). 채운 건수 반환.
+
+    upsert의 author 복구만으로는 부족하다. 대부분이 크롤 창보다 오래된 행이라
+    다시 수집될 일이 없어 영원히 빈 채로 남는다 (실측 456행 중 424행이
+    ailabs/OpenAI News). `fetch_feed`가 이미 쓰는 폴백과 같은 값을 만든다.
+    """
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.execute(
+            """UPDATE posts
+               SET author = TRIM(
+                   CASE
+                       WHEN INSTR(source, '/') > 0
+                       THEN SUBSTR(source, INSTR(source, '/') + 1)
+                       ELSE source
+                   END
+               )
+               WHERE (author IS NULL OR TRIM(author) = '')
+                 AND source IS NOT NULL AND TRIM(source) != ''"""
+        )
+        conn.commit()
+        return cursor.rowcount
+    finally:
+        conn.close()
+
+
 def _ensure_runs_columns(conn: sqlite3.Connection) -> None:
     """기존 DB의 runs 테이블에 누락된 컬럼을 추가합니다."""
     existing = {
@@ -611,6 +638,13 @@ def _save_posts_rows(
                            WHEN posts.title IS NULL OR TRIM(posts.title) = '' THEN excluded.title
                            ELSE posts.title
                        END,
+                       author = CASE
+                           WHEN (posts.author IS NULL OR TRIM(posts.author) = '')
+                                AND excluded.author IS NOT NULL
+                                AND TRIM(excluded.author) != ''
+                           THEN excluded.author
+                           ELSE posts.author
+                       END,
                        summary = CASE
                            WHEN posts.summary IS NULL OR TRIM(posts.summary) = '' THEN excluded.summary
                            ELSE posts.summary
@@ -651,6 +685,11 @@ def _save_posts_rows(
                        END
                    WHERE
                        (posts.title IS NULL OR TRIM(posts.title) = '')
+                       OR (
+                           (posts.author IS NULL OR TRIM(posts.author) = '')
+                           AND excluded.author IS NOT NULL
+                           AND TRIM(excluded.author) != ''
+                       )
                        OR (posts.summary IS NULL OR TRIM(posts.summary) = '')
                        OR (
                            (

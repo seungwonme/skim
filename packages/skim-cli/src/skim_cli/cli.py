@@ -18,6 +18,7 @@ from skim_core.crawlers import REGISTRY
 from skim_core.crawlers.auth.cdp import login as cdp_login
 from skim_core.db import (
     DB_PATH,
+    backfill_blank_authors,
     backfill_canonical_urls,
     backup_db,
     canonical_body,
@@ -455,6 +456,8 @@ def migrate(db: Optional[Path] = typer.Option(None, "--db", help="SQLite DB 경�
     )
     filled = backfill_canonical_urls(db)
     typer.echo(f"canonical_url 채움: {filled}건")
+    authors = backfill_blank_authors(db)
+    typer.echo(f"빈 작성자 채움: {authors}건")
 
 
 @app.command()
