@@ -2,7 +2,6 @@
 name = "skim-core"
 version = "0.2.0"
 description = "Skim crawler core package"
-readme = "../../README.md"
 requires-python = ">=3.12"
 dependencies = [
     "beautifulsoup4>=4.14.3",

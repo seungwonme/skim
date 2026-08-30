@@ -2,7 +2,6 @@
 name = "skim-cli"
 version = "0.2.0"
 description = "Skim Typer CLI package"
-readme = "../../README.md"
 requires-python = ">=3.12"
 dependencies = ["skim-core", "typer>=0.24.1"]
 
