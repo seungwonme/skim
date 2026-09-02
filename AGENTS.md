@@ -173,6 +173,8 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
 돌기 때문에, 기본값에만 보정을 넣으면 정작 운영 경로에서는 매번 0건이 된다.
 보정은 `skim_cli.cli.min_lookback_days()`에 **바닥값으로** 넣는다. `days is None`일 때만
 적용되는 분기에 넣으면 `--days 1`이 그걸 덮어쓴다 (arxiv가 그래서 이틀간 멈춰 있었다).
+arXiv 메일링은 09:00 KST라 00:02 배치보다 늦고 주말에는 없다. 화요일을 2일 창에
+두면 금요일분이 잘려 0건이 된다 (2026-09-01 00:06 회차). 월/화/토/일은 4일이다.
 
 거르는 기준 필드도 확인한다. 큐레이션 목록은 원문 발행일이 아니라 목록에 올린 날짜로
 걸러야 한다 (huggingface는 `paper.submittedOnDailyAt`, `publishedAt`은 arXiv 발행일이라
