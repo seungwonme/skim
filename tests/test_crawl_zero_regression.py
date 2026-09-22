@@ -159,7 +159,8 @@ class ZeroResultRegressionTests(unittest.TestCase):
 
 
 class LookbackWindowTests(unittest.TestCase):
-    def _forwarded_since_days(self, platform, days=None):
+    def _forwarded_since_days(self, platform, days=None, now=None):
+        frozen = now or main.datetime.now(main.KST)
         with (
             patch("skim_cli.cli.run_single_crawler", new_callable=AsyncMock) as crawler,
             patch("skim_cli.cli.platforms_with_recent_posts", return_value=set()),
@@ -168,7 +169,9 @@ class LookbackWindowTests(unittest.TestCase):
             patch("skim_cli.cli.update_run_progress"),
             patch("skim_cli.cli.finish_run"),
             patch("skim_cli.cli.typer.echo"),
+            patch("skim_cli.cli.datetime") as mock_datetime,
         ):
+            mock_datetime.now.return_value = frozen
             crawler.return_value = []
             main.crawl(
                 platforms=[platform],
@@ -180,8 +183,7 @@ class LookbackWindowTests(unittest.TestCase):
                 user_id=None,
             )
             options = crawler.await_args.args[1]
-        now = main.datetime.now(main.KST)
-        midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        midnight = frozen.replace(hour=0, minute=0, second=0, microsecond=0)
         return (midnight - options["since"]).days
 
     def test_huggingface_looks_further_back_than_one_day(self):
@@ -189,13 +191,25 @@ class LookbackWindowTests(unittest.TestCase):
         # 놓치지 않으려면 3일이 필요하다.
         self.assertEqual(self._forwarded_since_days("huggingface"), 3)
 
+    def test_arxiv_tuesday_morning_reaches_friday_mailing(self):
+        # 데일리는 00:02 KST다. 화 00:02는 월요일 메일링(화 09:00 KST) 전이고,
+        # 마지막 메일링은 금요일분이다. 2일 창은 그 발행일을 잘라 0건이 된다.
+        # 2026-09-01 00:06 회차가 그렇게 비었다.
+        tuesday = datetime(2026, 9, 1, 0, 30, tzinfo=main.KST)
+        self.assertEqual(tuesday.weekday(), 1)
+        self.assertEqual(main.min_lookback_days("arxiv", tuesday), 4)
+
+    def test_arxiv_wednesday_keeps_the_two_day_floor(self):
+        wednesday = datetime(2026, 9, 2, 0, 30, tzinfo=main.KST)
+        self.assertEqual(wednesday.weekday(), 2)
+        self.assertEqual(main.min_lookback_days("arxiv", wednesday), 2)
+
     def test_arxiv_floor_survives_an_explicit_narrow_window(self):
         # arXiv는 주말에 announce하지 않는다. 요일 규칙이 days=None일 때만 걸려 있어
         # 일일 배치의 `--days 1`이 그걸 덮어썼고, 그래서 배치에서만 0건이 났다.
-        now = main.datetime.now(main.KST)
-        expected = 4 if now.weekday() in (0, 5, 6) else 2
-        self.assertEqual(self._forwarded_since_days("arxiv", days=1), expected)
-        self.assertEqual(self._forwarded_since_days("arxiv"), expected)
+        tuesday = datetime(2026, 9, 1, 0, 30, tzinfo=main.KST)
+        self.assertEqual(self._forwarded_since_days("arxiv", days=1, now=tuesday), 4)
+        self.assertEqual(self._forwarded_since_days("arxiv", now=tuesday), 4)
 
     def test_explicit_days_cannot_shrink_below_the_platform_floor(self):
         # 일일 배치가 `crawl all --days 1`로 돌기 때문에 이 경로가 실제 운영 경로다.
