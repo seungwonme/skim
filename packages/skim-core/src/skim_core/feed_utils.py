@@ -17,14 +17,16 @@ from urllib3.util.retry import Retry
 KST = timezone(timedelta(hours=9))
 FEED_TIMEOUT_SECONDS = 15
 # news.hada.io는 브라우저 토큰뿐 아니라 Chrome 메이저 버전도 본다. 2026-08-09부터
-# Chrome/124가 403으로 막혀 그날 지표 수집이 절반 실패했다(128 이상은 통과).
-# 차단선이 다시 올라가면 이 버전을 올린다.
+# Chrome/124가 403으로 막혔고, 2026-08-29부터는 Chrome/139가 막혔다(3주간 댓글·지표
+# 전량 유실). 차단은 "이 버전 미만"이 아니라 특정 버전 목록이다(2026-09-22 실측:
+# 120·139는 403, 130~138·140 이상은 200). 스크레이퍼 기본값으로 흔한 버전이 오르는
+# 것으로 보이므로, 막히면 다음 버전으로 올린다. `skim doctor`가 매일 확인한다.
 #
 # 이 상수가 공개 소스 요청의 단일 UA다. 예전에는 enrichment, ailabs, playwright
 # 컨텍스트가 각자 Chrome/124를 들고 있어서, 여기 버전을 올려도 그쪽은 계속 막혔다.
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36"
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
 )
 FEED_HEADERS = {"User-Agent": USER_AGENT}
 
@@ -142,3 +144,18 @@ def fetch_feed(
         print(f"  [!] {source_name}: 날짜 없는 엔트리 {skipped_undated}개 제외")
 
     return results
+
+
+def probe_user_agent(url: str = "https://news.hada.io/topic?id=1") -> Optional[str]:
+    """`USER_AGENT`가 차단 목록에 올랐는지 본다. 문제 없으면 None, 있으면 사유.
+
+    차단은 토픽 페이지에서만 걸려서 RSS는 멀쩡히 오고 게시글도 저장된다. 댓글과
+    지표만 조용히 빠지고, 그 결손은 본문 길이 기준의 source_health가 못 본다.
+    """
+    try:
+        status = requests.get(url, headers=FEED_HEADERS, timeout=10).status_code
+    except requests.RequestException as exc:
+        return f"user-agent probe failed: {exc}"
+    if status == 403:
+        return f"user-agent blocked by {url} (403): bump Chrome version in feed_utils.USER_AGENT"
+    return None

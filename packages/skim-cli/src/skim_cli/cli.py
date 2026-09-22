@@ -16,6 +16,7 @@ import typer
 
 from skim_core.crawlers import REGISTRY
 from skim_core.crawlers.auth.cdp import login as cdp_login
+from skim_core.feed_utils import probe_user_agent
 from skim_core.db import (
     DB_PATH,
     backfill_blank_authors,
@@ -653,6 +654,12 @@ def doctor(
     for name, found in report["tools"].items():
         if not found:
             report["warnings"].append(f"{name} not on PATH")
+
+    # news.hada.io는 특정 Chrome 버전을 403으로 막는다. 게시글은 RSS로 들어와서
+    # 크롤은 성공으로 끝나고 댓글·지표만 3주씩 조용히 빠졌다 (2026-08-29~09-22).
+    ua_issue = probe_user_agent()
+    if ua_issue:
+        report["warnings"].append(ua_issue)
 
     if report["db_exists"]:
         integrity = check_integrity(db_path)

@@ -237,7 +237,7 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
   소비 상태(읽음/보관)는 `feedback` 테이블을 쓴다. `posts`에 컬럼을 더하지 않는다.
 - `packages/skim-core/src/skim_core/enrichment.py`: `bunx defuddle`, `yt-dlp`, transcript 정리
 - `packages/skim-core/src/skim_core/comments.py`: 플랫폼 중립 `Comment`와 본문 댓글 섹션 합성
-- `packages/skim-core/src/skim_core/feed_utils.py`: RSS/Atom 파싱, KST 변환. `FEED_HEADERS`의 Chrome 버전은 news.hada.io 차단선에 걸리므로 함부로 낮추지 않는다
+- `packages/skim-core/src/skim_core/feed_utils.py`: RSS/Atom 파싱, KST 변환. `FEED_HEADERS`의 Chrome 버전은 news.hada.io가 특정 버전 목록(124, 139 등)을 403으로 막으므로 막히면 올린다. 토픽 페이지만 막혀 게시글은 저장되고 댓글·지표만 빠지니 `skim doctor`의 user-agent 경고를 본다
 - `packages/skim-core/src/skim_core/feed_config.py`: RSS URL, YouTube 채널 ID, API endpoint 설정
 - `apps/desktop/`: SwiftUI desktop reader for local `data/skim.db`
 
