@@ -43,6 +43,24 @@ METRICS_BACKFILL_LIMIT=400
 
 echo "======= start $(date '+%Y-%m-%d %H:%M:%S') =======" >>"$LOG"
 
+# 맥북이 배터리로 잠들어 있으면 launchd가 00:02에 깨우긴 하는데(DarkWake) Wi-Fi가
+# 붙기 전에 요청이 나가 전 플랫폼이 DNS 실패로 끝난다. 2026-09-04 회차가 11개
+# 플랫폼 0건으로 그렇게 죽었고, 고정 창이라 그날 분은 다음 회차에도 안 들어온다.
+# 이름이 풀릴 때까지 기다리되, 영영 안 붙는 날은 실패를 기록하고 나간다.
+for _ in $(seq 1 60); do
+    nslookup -timeout=5 news.ycombinator.com >/dev/null 2>&1 && break
+    sleep 10
+done
+if ! nslookup -timeout=5 news.ycombinator.com >/dev/null 2>&1; then
+    echo "[!] 10분 동안 네트워크가 붙지 않아 건너뛴다" >>"$LOG"
+    echo "======= end $(date '+%Y-%m-%d %H:%M:%S') exit=1 =======" >>"$LOG"
+    exit 1
+fi
+
+# 이 스크립트가 도는 동안 유휴 절전을 막는다. 2026-09-05 회차는 15분마다 45초씩만
+# 깨는 틈에 진행돼 14시간이 걸렸다. 뚜껑을 닫은 배터리 상태까지는 못 막는다.
+caffeinate -i -w $$ &
+
 # 크롤 전에 백업한다. 스키마 변경이 전부 in-place라 되돌릴 수단이 이것뿐이다.
 # 실패해도 크롤은 계속한다 (백업이 수집을 막을 이유가 없다).
 uv run skim backup --keep 3 >>"$LOG" 2>&1 || echo "[!] 백업 실패" >>"$LOG"
