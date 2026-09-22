@@ -1,21 +1,24 @@
 """
 @file threads_api.py
-@description Threads API 기반 크롤러 (브라우저 없이 동작)
+@description Threads 크롤러
 
-Threads 웹앱이 쓰는 GraphQL persisted query를 그대로 호출합니다.
-CDP로 추출한 세션 쿠키를 재사용하여 인증합니다.
+For You 타임라인은 실제 브라우저로 받습니다. 2026-09-08부터 Meta가 클라이언트
+지문으로 걸러, requests로는 브라우저와 똑같은 요청을 보내도 빈 피드가 옵니다.
+나머지 경로(사용자 피드, 게시물 페이지)는 세션 쿠키를 얹은 requests를 씁니다.
 
 주요 기능:
-1. 브라우저 없이 HTTP 요청으로 Threads 피드 수집
-2. For You 타임라인 피드 + 사용자 프로필 피드 지원
+1. 브라우저로 For You 타임라인 수집 (로그인 세션 재사용)
+2. 사용자 프로필 피드는 GraphQL persisted query 호출
 3. 스레드(self-reply chain) 내용 합치기
 4. 페이지네이션을 통한 대량 수집
 
 @dependencies
+- playwright: 타임라인 수집용 브라우저
 - requests: HTTP 클라이언트
 - typer: CLI 출력
 """
 
+import asyncio
 import json
 import re
 from datetime import datetime, timezone
@@ -32,12 +35,13 @@ from ...paths import SESSIONS_DIR
 # Threads 웹 GraphQL 설정
 THREADS_BASE = "https://www.threads.com"
 GRAPHQL_URL = f"{THREADS_BASE}/graphql/query"
-IG_APP_ID = "238260118697367"
 WEB_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
 )
 
+# 타임라인 스크롤 상한. 한 회에 6~7건씩 오므로 50건이면 10회 안쪽에서 채워진다.
+MAX_TIMELINE_SCROLLS = 15
 # 답글은 문서가 실어 보내는 만큼 전부 담는다. 15개로 자르던 때는 문서에 24개가 와도
 # 9개를 버렸다. 상한이 없으므로 인기 게시물은 본문이 길어진다.
 MAX_REPLIES = None
@@ -112,6 +116,22 @@ RELAY_PROVIDERS.update(
 )
 
 
+def parse_meta_response(text: str) -> Optional[Dict[str, Any]]:
+    """Meta 응답을 JSON으로 읽는다. 거부 응답은 `for (;;);` 봉투로 온다.
+
+    봉투를 안 벗기면 거부 사유가 JSONDecodeError로 바뀌어, 어느 계층이 막혔는지
+    모르는 채 "API 요청 실패"만 남는다.
+    """
+    body = text.lstrip()
+    if body.startswith("for (;;);"):
+        body = body[len("for (;;);") :]
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 class ThreadsAPICrawler:
     """
     Threads API 기반 크롤러
@@ -142,10 +162,13 @@ class ThreadsAPICrawler:
         self._tokens: Optional[Dict[str, str]] = None
 
         self.session.cookies.update(cookies)
+        # X-IG-App-ID를 붙이지 않는다. Meta가 2026-09-08부터 이 헤더가 달린
+        # graphql/query 요청을 error 1357054로 거부한다. 브라우저 웹앱도 Threads
+        # 도메인에서는 이 헤더를 보내지 않는다. 세션 기본 헤더에 두면 토큰 추출용
+        # HTML GET은 통과하고 GraphQL만 죽어서, 세션 만료처럼 보인다.
         self.session.headers.update(
             {
                 "User-Agent": WEB_USER_AGENT,
-                "X-IG-App-ID": IG_APP_ID,
                 "Accept-Language": "en-US,en;q=0.9",
             }
         )
@@ -190,9 +213,12 @@ class ThreadsAPICrawler:
         `--count`를 크게 주면 그만큼 크롤이 길어진다.
         """
         failures = 0
+        attempted = 0
+        attached = 0
         for post in posts:
             if (post.comments or 0) < MIN_REPLIES_FOR_FETCH:
                 continue
+            attempted += 1
             # HTTP 실패는 fetch_reply_section 안에서 조용히 None이 된다. 여기서 잡는 건
             # 상류 SSR 페이로드 구조가 바뀌었을 때의 파싱 실패다. 그게 크롤 루프까지
             # 올라가면 이 회차의 게시물 전량이 저장 0건이 된다.
@@ -203,12 +229,21 @@ class ThreadsAPICrawler:
                 typer.echo(f"   [!] Threads 답글 파싱 실패: {exc}")
                 continue
             if section:
+                attached += 1
                 post.content_markdown = append_comment_section(
                     post.content_markdown or post.content, section
                 )
 
         if failures:
             typer.echo(f"   [!] Threads 답글 파싱 실패 {failures}건 (본문만 저장)")
+
+        # 개별 실패는 위에서 잡히지만, 상류가 페이로드를 통째로 빼면 예외 없이 전건
+        # None이 되어 조용히 넘어간다. 실제로 2026-09-08부터 2주간 그렇게 묻혔다.
+        if attempted and not attached:
+            typer.echo(
+                f"   [!] 답글이 있다고 표시된 {attempted}건에서 답글을 하나도 못 받았습니다."
+            )
+            typer.echo("       상류 답글 페이로드 구조가 바뀌었는지 확인하세요.")
 
     def fetch_reply_section(self, url: Optional[str]) -> Optional[str]:
         """게시물 페이지의 SSR 페이로드에서 답글을 뽑아 마크다운 섹션으로 만든다.
@@ -346,6 +381,12 @@ class ThreadsAPICrawler:
         posts: List[Post] = []
         max_id: Optional[str] = None
 
+        if not user_id:
+            # For You 타임라인은 requests로 받을 수 없다. 아래 메서드 주석 참고.
+            return self._parse_threads(
+                await self._collect_timeline_threads(count), count
+            )
+
         # 파싱 불가 스레드만 이어질 때 피드 끝까지 무한정 넘기지 않도록 페이지 상한을 둔다.
         max_pages = 10
         for _ in range(max_pages):
@@ -372,6 +413,97 @@ class ThreadsAPICrawler:
 
         typer.echo(f"총 {len(posts)}개의 게시글을 추출했습니다.")
         return posts
+
+    def _parse_threads(self, threads: List[Dict[str, Any]], count: int) -> List[Post]:
+        """스레드 노드를 Post로 바꾼다. 같은 게시물이 두 번 오면 한 번만 센다."""
+        posts: List[Post] = []
+        seen: set[str] = set()
+        for thread in threads:
+            post = self._parse_thread(thread)
+            if not post:
+                continue
+            key = post.external_id or post.url or ""
+            if key in seen:
+                continue
+            seen.add(key)
+            posts.append(post)
+            if self.debug_mode:
+                typer.echo(f"  @{post.author}: {post.content[:60]}...")
+            if len(posts) >= count:
+                break
+        typer.echo(f"총 {len(posts)}개의 게시글을 추출했습니다.")
+        return posts
+
+    async def _collect_timeline_threads(self, count: int) -> List[Dict[str, Any]]:
+        """실제 브라우저로 For You 타임라인을 받아 스레드 노드를 모은다.
+
+        requests로는 2026-09-08부터 빈 피드만 온다. 브라우저가 방금 7건을 받은
+        요청을 payload와 헤더까지 그대로 즉시 재전송해도 edges가 0으로 오고 오류도
+        없다(2026-09-22 실측). 클라이언트 지문 단계에서 걸러지는 것이라 요청을
+        흉내내는 방향으로는 못 고친다. 그래서 타임라인만 브라우저를 태운다.
+
+        게시물 페이지(답글)와 사용자 피드는 여전히 requests로 받는다.
+        """
+        # pylint: disable=import-outside-toplevel
+        # REGISTRY가 이 모듈을 항상 import하므로, playwright를 최상위에서 끌어오면
+        # 다른 플랫폼 크롤만 돌릴 때까지 브라우저 스택 로딩 비용을 물게 된다.
+        from playwright.async_api import async_playwright
+
+        collected: List[Dict[str, Any]] = []
+
+        def take(payload: Dict[str, Any]) -> None:
+            data = payload.get("data") or {}
+            connection = next(iter(data.values()), None) or {}
+            for edge in connection.get("edges") or []:
+                thread = (edge.get("node") or {}).get("text_post_app_thread")
+                if thread:
+                    collected.append(thread)
+
+        async with async_playwright() as pw:
+            # 번들 chromium 대신 시스템 Chrome을 쓴다. 로그인 경로와 같은 브라우저이고,
+            # `playwright install` 상태에 수집이 묶이지 않는다.
+            browser = await pw.chromium.launch(channel="chrome", headless=True)
+            try:
+                context = await browser.new_context(
+                    storage_state=str(self.session_path),
+                    user_agent=WEB_USER_AGENT,
+                )
+                page = await context.new_page()
+
+                async def on_response(response: Any) -> None:
+                    if "graphql/query" not in response.url:
+                        return
+                    if TIMELINE_QUERY["friendly_name"] not in (
+                        response.request.post_data or ""
+                    ):
+                        return
+                    try:
+                        body = parse_meta_response(await response.text())
+                    except Exception:  # noqa: BLE001 - 응답 본문을 못 읽어도 수집은 이어간다
+                        return
+                    if body:
+                        take(body)
+
+                page.on("response", lambda r: asyncio.create_task(on_response(r)))
+
+                await page.goto(
+                    THREADS_BASE + "/", wait_until="domcontentloaded", timeout=60000
+                )
+                await page.wait_for_timeout(5000)
+
+                # 첫 화면은 서버 렌더링이라 GraphQL을 타지 않는다. 스크롤해야 피드가 온다.
+                for _ in range(MAX_TIMELINE_SCROLLS):
+                    if len(collected) >= count:
+                        break
+                    await page.mouse.wheel(0, 6000)
+                    await page.wait_for_timeout(2500)
+            finally:
+                await browser.close()
+
+        if not collected:
+            typer.echo("  [!] 타임라인이 비어 있습니다. 세션이 만료됐는지 확인하세요:")
+            typer.echo("      uv run skim login threads")
+        return collected
 
     def _fetch_feed(
         self,
@@ -451,7 +583,21 @@ class ThreadsAPICrawler:
             typer.echo(f"  [!] {label} API 오류: HTTP {resp.status_code}")
             return [], None
 
-        body = resp.json()
+        body = parse_meta_response(resp.text)
+        if body is None:
+            typer.echo(f"  [!] {label} 응답을 해석하지 못했습니다 (HTTP 200, 비JSON).")
+            return [], None
+
+        if body.get("errorSummary") or body.get("error"):
+            # Meta는 거부 사유를 GraphQL errors가 아니라 이 봉투로 돌려준다.
+            # 2026-09-08~09-21 동안 error 1357054가 매일 여기로 왔는데, 봉투를
+            # 안 벗겨서 JSONDecodeError로만 보였다.
+            code = body.get("error", "unknown")
+            summary = body.get("errorSummary") or body.get("errorDescription", "")
+            typer.echo(f"  [!] {label} 요청 거부: error {code} {summary}")
+            typer.echo("      헤더/토큰이 최신 웹앱과 어긋났을 수 있습니다.")
+            return [], None
+
         if body.get("errors"):
             # 웹앱 재배포로 doc_id가 낡으면 200 + errors로 온다. 빈 피드로 숨기지 않는다.
             message = body["errors"][0].get("message", "unknown")
@@ -570,9 +716,7 @@ class ThreadsAPICrawler:
         content_status = None
         if contents:
             # 여러 self-reply를 구분자로 합침
-            content = (
-                "\n\n---\n\n".join(contents) if len(contents) > 1 else contents[0]
-            )
+            content = "\n\n---\n\n".join(contents) if len(contents) > 1 else contents[0]
         elif image_urls:
             content = "\n".join(dict.fromkeys(image_urls))
             content_status = "media_link"
