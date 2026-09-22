@@ -67,7 +67,10 @@ FEED_PLATFORMS = set(REGISTRY.keys()) - SNS_PLATFORMS
 # --days를 명시해도 이 값이 바닥으로 깔린다. 일일 배치가 `crawl all --days 1`로
 # 돌기 때문에, 기본값에만 반영하면 정작 배치에서는 계속 0건이 된다.
 # huggingface: 주말에 큐레이션을 쉬어서 월요일에는 금요일 목록이 최신이다.
-MIN_LOOKBACK_DAYS = {"huggingface": 3}
+# producthunt 피드는 갱신순이라 런칭 며칠 뒤에야 올라오는 항목이 많다. 1일 창은
+# 4회차 연속 0건이었고(2026-09-04~07) 9/3 이후 런칭 19건 중 3건만 남았다. 7일 창의
+# 재수집 비용은 크롤러가 저장된 id를 enrichment 전에 걸러 없앤다.
+MIN_LOOKBACK_DAYS = {"huggingface": 3, "producthunt": 7}
 
 
 def min_lookback_days(platform: str, now: datetime) -> int:

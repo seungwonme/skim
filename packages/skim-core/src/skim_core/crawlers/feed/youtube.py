@@ -11,31 +11,12 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, List, Optional, Tuple
 
-from ...db import get_connection
+from ...db import drop_known_items, get_connection
 from ...enrichment import enrich_with_content
 from ...feed_config import YOUTUBE_CHANNELS, youtube_videos_url
 from ...feed_utils import fetch_feed
 from ...models import Post
 from ...youtube_history import normalize_tracked_channels
-
-
-def _drop_known_urls(items: List[dict]) -> List[dict]:
-    """yt-dlp fallback은 날짜 필터가 불가능해 매번 같은 최신 영상을 되돌려준다.
-    이미 저장된 영상은 제외해 transcript 재추출 낭비를 막는다."""
-    if not items:
-        return items
-    try:
-        conn = get_connection()
-        placeholders = ",".join("?" for _ in items)
-        rows = conn.execute(
-            f"SELECT url FROM posts WHERE platform='youtube' AND url IN ({placeholders})",
-            [it.get("url", "") for it in items],
-        ).fetchall()
-        conn.close()
-    except sqlite3.Error:
-        return items
-    known = {r["url"] for r in rows}
-    return [it for it in items if it.get("url", "") not in known]
 
 
 def tracked_youtube_channels() -> List[Tuple[str, str]]:
@@ -99,7 +80,7 @@ def _fetch_via_ytdlp(  # pylint: disable=unused-argument
     published가 빈 문자열로 저장돼 읽기 쪽이 crawled_at으로 폴백한다. 핸들 구독은
     RSS가 없어 항상 이 경로라 timestamp 공백이 매일 쌓인다.
     since는 여기서 거르지 않는다. 수집이 며칠 밀렸을 때 그 구간을 통째로
-    놓치기 때문이고, 중복은 _drop_known_urls가 잡는다.
+    놓치기 때문이고, 중복은 drop_known_items가 잡는다.
     """
     try:
         result = subprocess.run(
@@ -205,7 +186,9 @@ class YouTubeCrawler:
                     rss_failed += 1
                     if rss_failed == 1 and debug:
                         print("  RSS 실패 - yt-dlp fallback 사용")
-                longform = _drop_known_urls(_fetch_via_ytdlp(name, channel_id, since))
+                longform = drop_known_items(
+                    "youtube", _fetch_via_ytdlp(name, channel_id, since)
+                )
 
             if longform:
                 print(f"  -> {name}: {len(longform)}개 새 영상")

@@ -191,6 +191,11 @@ class LookbackWindowTests(unittest.TestCase):
         # 놓치지 않으려면 3일이 필요하다.
         self.assertEqual(self._forwarded_since_days("huggingface"), 3)
 
+    def test_producthunt_window_covers_late_feed_arrivals(self):
+        # PH 피드는 갱신순 50건이라 런칭 며칠 뒤에야 올라오는 항목이 많다. 1일 창은
+        # 최근 7일 런칭 37건 중 3건만 받았다 (2026-09-22 실측).
+        self.assertEqual(self._forwarded_since_days("producthunt", days=1), 7)
+
     def test_arxiv_tuesday_morning_reaches_friday_mailing(self):
         # 데일리는 00:02 KST다. 화 00:02는 월요일 메일링(화 09:00 KST) 전이고,
         # 마지막 메일링은 금요일분이다. 2일 창은 그 발행일을 잘라 0건이 된다.

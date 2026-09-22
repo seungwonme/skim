@@ -184,6 +184,34 @@ def get_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
     return conn
 
 
+def drop_known_items(
+    platform: str, items: List[dict], key: str = "url", db_path: Optional[Path] = None
+) -> List[dict]:
+    """이미 저장된 항목을 enrichment 전에 걸러낸다.
+
+    창을 며칠로 넓힌 소스(producthunt)나 날짜 필터가 없는 경로(yt-dlp)는 매 회차
+    같은 항목을 되돌려준다. 저장은 UNIQUE가 걸러도 원문 추출과 댓글 조회는 그 전에
+    돌기 때문에, 여기서 안 자르면 그 비용을 매일 다시 낸다. DB를 못 읽으면 그대로 둔다.
+    """
+    if not items:
+        return items
+    keys = [it.get(key, "") for it in items]
+    try:
+        conn = get_connection(db_path)
+        try:
+            placeholders = ",".join("?" for _ in keys)
+            rows = conn.execute(
+                f"SELECT {key} FROM posts WHERE platform=? AND {key} IN ({placeholders})",
+                [platform, *keys],
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return items
+    known = {r[key] for r in rows}
+    return [it for it in items if it.get(key, "") not in known]
+
+
 def _field(post: Any, name: str) -> Any:
     """Post 객체와 dict 양쪽에서 필드를 읽는다."""
     if isinstance(post, dict):
