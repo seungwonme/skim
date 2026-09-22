@@ -1,15 +1,16 @@
 """GeekNews 403 회귀 테스트.
 
-news.hada.io는 OS 괄호만 있고 브라우저 토큰이 없는 User-Agent를 403으로 막는다
-("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"). 지표 백필이 연속 5건 실패로
-중단됐던 원인이고, 홈페이지 스크래핑(`--count` 경로)도 같은 문자열을 쓰고 있었다.
+news.hada.io는 토픽 페이지에서 특정 Chrome 버전(2026-08 기준 124, 139)을 403으로
+막는다. 게시글은 RSS로 들어오므로 크롤은 성공으로 끝나고 댓글·지표만 빠진다.
+2026-08-29~09-22에 3주간 그렇게 유실됐고, 지표 백필은 매일 연속 5건 실패로 멈췄다.
+`skim doctor`가 `probe_user_agent()`로 매일 확인한다.
 """
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from skim_core.crawlers.feed.geeknews import fetch_geeknews_metrics
-from skim_core.feed_utils import FEED_HEADERS
+from skim_core.feed_utils import FEED_HEADERS, probe_user_agent
 
 
 class GeekNewsUserAgentTests(unittest.TestCase):
@@ -22,6 +23,21 @@ class GeekNewsUserAgentTests(unittest.TestCase):
         with patch("skim_core.crawlers.feed.geeknews.requests.get") as get:
             get.return_value.text = "<html></html>"
             fetch_geeknews_metrics("32270")
+
+        self.assertEqual(get.call_args.kwargs["headers"], FEED_HEADERS)
+
+    def test_probe_reports_blocked_user_agent(self):
+        """403도, 200으로 위장해 오는 차단 페이지도 경고로 잡는다."""
+        with patch("skim_core.feed_utils.requests.get") as get:
+            get.return_value = Mock(status_code=403, text="Forbidden")
+            self.assertIn("blocked", probe_user_agent())
+
+            # 차단 페이지가 200으로 오기도 한다. 상태 코드만 보면 통과로 읽힌다.
+            get.return_value = Mock(status_code=200, text="Forbidden")
+            self.assertIn("blocked", probe_user_agent())
+
+            get.return_value = Mock(status_code=200, text="<html>topic</html>")
+            self.assertIsNone(probe_user_agent())
 
         self.assertEqual(get.call_args.kwargs["headers"], FEED_HEADERS)
 

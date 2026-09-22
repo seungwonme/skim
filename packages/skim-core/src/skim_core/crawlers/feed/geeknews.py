@@ -4,6 +4,7 @@
 """
 
 import re
+import time
 from typing import Any, List, Optional
 
 import requests
@@ -20,6 +21,51 @@ from ...timestamp import _REL_KO, relative_ko_to_iso
 GEEKNEWS_URL = "https://news.hada.io/"
 _TOPIC_ID = re.compile(r"topic\?id=(\d+)")
 MAX_COMMENTS = 15
+
+# news.hada.io는 토픽 페이지를 (IP, UA) 단위로 보고 요청이 몰리면 막는다. 다른
+# 크롤러(reddit, lobsters)는 이미 초당 1요청으로 걸어두는데 여기만 없어서, 회차마다
+# 50건을 간격 없이 몰아치고 있었다.
+TOPIC_REQUEST_INTERVAL_SECONDS = 1.0
+
+# 막힌 뒤에도 계속 두드리면 차단이 갱신돼 풀리지 않는다. 2026-08-29~09-22에 댓글과
+# 지표가 3주간 통째로 빈 게 그 상태다: 매 회차 50건을 전부 403으로 맞으면서 매일
+# 차단을 새로 걸었다. 반대로 쓰지 않으면 풀린다 (8-09에 막힌 UA가 9-22에 정상 응답).
+# 그래서 막히면 그 회차의 남은 요청을 포기한다. 게시글 저장은 영향받지 않는다.
+MAX_CONSECUTIVE_BLOCKS = 3
+
+# 목록 한 장이 20건. RSS가 주는 50건을 세 장이면 덮는다. 필요한 id를 다 찾으면
+# 남은 장은 받지 않으므로 이건 상한일 뿐이다.
+METRICS_INDEX_MAX_PAGES = 3
+
+# 홈(`/`)은 인기순이라 최근 글을 빠뜨린다(실측: RSS 50건 중 23건만 겹쳤다).
+# `/newest`는 시간순이라 RSS 창과 그대로 맞는다.
+GEEKNEWS_NEWEST_URL = f"{GEEKNEWS_URL}newest"
+
+_last_topic_request = 0.0
+_consecutive_blocks = 0
+
+
+def reset_topic_throttle() -> None:
+    """프로세스 안에서 차단 상태를 지운다 (테스트와 재시도용)."""
+    global _last_topic_request, _consecutive_blocks  # pylint: disable=global-statement
+    _last_topic_request = 0.0
+    _consecutive_blocks = 0
+
+
+# 토픽 페이지는 2026-09-22 확인 시점에 Cloudflare Turnstile "브라우저 확인"을 태운다.
+# 이 페이지는 200에 정상 HTML로 오기 때문에 상태 코드로는 성공과 구분되지 않고,
+# 셀렉터가 전부 None을 돌려줘 빈 지표가 조용히 저장된다. 사이트가 의도해서 건
+# 봇 차단이므로 풀지 않고, 차단으로 인식해 물러난다.
+_CHALLENGE_MARKER = "browser-check-turnstile"
+
+
+def _is_blocked(resp: requests.Response) -> bool:
+    """차단 응답인지 본다. 403, 200+"Forbidden", 200+브라우저 확인 세 가지다."""
+    if resp.status_code == 403:
+        return True
+    if resp.status_code != 200:
+        return False
+    return resp.text.strip().startswith("Forbidden") or _CHALLENGE_MARKER in resp.text
 
 
 def topic_id_from_url(url: str) -> Optional[str]:
@@ -70,6 +116,55 @@ def _parse_comment_section(soup: BeautifulSoup) -> Optional[str]:
     )
 
 
+def _row_metrics(soup: BeautifulSoup, topic_id: str) -> dict:
+    """목록/토픽 공통 마크업에서 포인트와 댓글 수를 읽는다."""
+    # 포인트는 `<span id='tp{id}'>3</span>P` 형태로만 노출된다.
+    point_el = soup.select_one(f"#tp{topic_id}")
+    comment_el = soup.select_one(f"[data-topic-comment-topic-id='{topic_id}']")
+    return {
+        "likes": _digits_to_int(point_el.get_text(strip=True)) if point_el else None,
+        "comments": (
+            _digits_to_int(comment_el.get("data-topic-comment-count"))
+            if comment_el
+            else None
+        ),
+    }
+
+
+def fetch_metrics_index(
+    topic_ids: Optional[List[str]] = None, max_pages: int = METRICS_INDEX_MAX_PAGES
+) -> dict:
+    """`/newest` 목록에서 `{topic_id: {"likes":, "comments":}}`를 모은다.
+
+    목록에는 토픽 페이지와 같은 마크업(`#tp{id}`, `data-topic-comment-count`)이 그대로
+    있고 브라우저 확인도 걸리지 않는다. 글마다 토픽 페이지를 열던 때는 같은 값을
+    받으려고 회차당 50건을 요청했고, 그 물량이 차단을 불렀다.
+    """
+    wanted = set(topic_ids or [])
+    index: dict = {}
+    for page in range(1, max_pages + 1):
+        url = GEEKNEWS_NEWEST_URL if page == 1 else f"{GEEKNEWS_NEWEST_URL}?page={page}"
+        try:
+            resp = requests.get(url, headers=FEED_HEADERS, timeout=10)
+            if _is_blocked(resp):
+                typer.echo(f"   [!] GeekNews 목록 {page}쪽이 막혔습니다.")
+                break
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "html.parser")
+            for row in soup.select(".topic_row"):
+                topic_id = row.get("data-topic-state-id")
+                if topic_id:
+                    index[topic_id] = _row_metrics(soup, topic_id)
+        except Exception as e:  # pylint: disable=broad-except
+            typer.echo(f"   [!] GeekNews 목록 {page}쪽 수집 실패: {e}")
+            break
+        # 필요한 글을 다 찾았으면 남은 장은 받지 않는다.
+        if wanted and wanted <= index.keys():
+            break
+        time.sleep(TOPIC_REQUEST_INTERVAL_SECONDS)
+    return index
+
+
 def fetch_geeknews_metrics(topic_id: str) -> Optional[dict]:
     """토픽 페이지에서 포인트, 댓글 수, 댓글 본문을 가져온다.
 
@@ -77,6 +172,15 @@ def fetch_geeknews_metrics(topic_id: str) -> Optional[dict]:
     홈페이지 스크래핑 경로만 지표를 채우던 비대칭을 없앤다.
     같은 응답에 댓글 본문도 들어 있으므로 `comment_section`으로 함께 돌려준다.
     """
+    global _last_topic_request, _consecutive_blocks  # pylint: disable=global-statement
+    if _consecutive_blocks >= MAX_CONSECUTIVE_BLOCKS:
+        return None
+
+    waited = time.monotonic() - _last_topic_request
+    if waited < TOPIC_REQUEST_INTERVAL_SECONDS:
+        time.sleep(TOPIC_REQUEST_INTERVAL_SECONDS - waited)
+    _last_topic_request = time.monotonic()
+
     # 파싱까지 try 안에 둔다. HTTP만 감싸면 news.hada.io의 마크업이 바뀔 때
     # 셀렉터 예외가 crawl 루프로 올라가 그 회차 GeekNews가 통째로 저장 0건이 된다.
     # 지표까지 함께 잃지만 HTTP 실패 경로와 동작이 같고, 플랫폼 전량 유실보다 낫다.
@@ -86,6 +190,14 @@ def fetch_geeknews_metrics(topic_id: str) -> Optional[dict]:
             headers=FEED_HEADERS,
             timeout=10,
         )
+        if _is_blocked(resp):
+            _consecutive_blocks += 1
+            if _consecutive_blocks >= MAX_CONSECUTIVE_BLOCKS:
+                typer.echo(
+                    "   [!] GeekNews가 요청을 막았습니다. 이 회차의 남은 지표·댓글 "
+                    "수집을 건너뜁니다 (계속 두드리면 차단이 길어집니다)."
+                )
+            return None
         resp.raise_for_status()
 
         soup = BeautifulSoup(resp.text, "html.parser")
@@ -107,6 +219,7 @@ def fetch_geeknews_metrics(topic_id: str) -> Optional[dict]:
         typer.echo(f"   [!] GeekNews 지표 수집 실패(id={topic_id}): {e}")
         return None
 
+    _consecutive_blocks = 0
     if likes is None and comments is None and comment_section is None:
         return None
     return {"likes": likes, "comments": comments, "comment_section": comment_section}
@@ -128,15 +241,33 @@ class GeekNewsCrawler:
                 items = items[: options["count"]]
             if not no_content:
                 enrich_with_content(items)
+                # 지표는 목록에서 20건씩 받는다. 예전에는 글마다 토픽 페이지를 열어
+                # 회차당 50건을 요청했고, 그 물량이 차단을 불렀다.
+                index = fetch_metrics_index(
+                    [topic_id_from_url(i.get("url", "")) for i in items]
+                )
                 for item in items:
-                    topic_id = topic_id_from_url(item.get("url", ""))
-                    metrics = fetch_geeknews_metrics(topic_id) if topic_id else None
+                    metrics = index.get(topic_id_from_url(item.get("url", "")))
                     if metrics:
                         item["likes"] = metrics["likes"]
                         item["comments"] = metrics["comments"]
-                        item["content_markdown"] = append_comment_section(
-                            item.get("content_markdown"), metrics.get("comment_section")
-                        )
+
+                # 댓글 본문만 토픽 페이지를 봐야 한다. 댓글이 없는 글까지 열면 얻는 것
+                # 없이 요청이 두 배가 된다. 신선한 UA도 33건쯤에서 브라우저 확인이
+                # 걸려(2026-09-22 실측) 회차 예산이 댓글 있는 글 수보다 적을 수 있으므로,
+                # 토론이 많은 글부터 받아 모자랄 때 덜 아쉬운 쪽을 잃게 한다.
+                for item in sorted(
+                    (i for i in items if i.get("comments")),
+                    key=lambda i: i["comments"],
+                    reverse=True,
+                ):
+                    detail = fetch_geeknews_metrics(
+                        topic_id_from_url(item.get("url", ""))
+                    )
+                    item["content_markdown"] = append_comment_section(
+                        item.get("content_markdown"),
+                        detail.get("comment_section") if detail else None,
+                    )
             return [self._item_to_post(item) for item in items]
         else:
             return self._scrape_homepage(count)

@@ -119,7 +119,7 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
 | 플랫폼 | 섹션 라벨 | 추가 요청 |
 |--------|-----------|-----------|
 | hackernews | `## Hacker News Comments` | Algolia item API 1건 |
-| geeknews | `## GeekNews Comments` | 없음 (지표 수집이 받는 토픽 HTML 재사용) |
+| geeknews | `## GeekNews Comments` | 댓글 있는 글만 1건. 지표는 `/newest` 목록에서 받는다 |
 | x | `## X Replies` | 스레드는 없음(TweetDetail 재사용). 단독 트윗은 답글 3개 이상인 것만, 회차당 20건까지 |
 | reddit | `## Reddit Comments` | 게시글당 1건 (초당 1요청 간격) |
 | linkedin | `## LinkedIn Comments` | 게시글당 1건 (Voyager `feed/comments`) |
@@ -249,7 +249,7 @@ arXiv 메일링은 09:00 KST라 00:02 배치보다 늦고 주말에는 없다. �
   소비 상태(읽음/보관)는 `feedback` 테이블을 쓴다. `posts`에 컬럼을 더하지 않는다.
 - `packages/skim-core/src/skim_core/enrichment.py`: `bunx defuddle`, `yt-dlp`, transcript 정리
 - `packages/skim-core/src/skim_core/comments.py`: 플랫폼 중립 `Comment`와 본문 댓글 섹션 합성
-- `packages/skim-core/src/skim_core/feed_utils.py`: RSS/Atom 파싱, KST 변환. `FEED_HEADERS`의 Chrome 버전은 news.hada.io 차단선에 걸리므로 함부로 낮추지 않는다
+- `packages/skim-core/src/skim_core/feed_utils.py`: RSS/Atom 파싱, KST 변환. `FEED_HEADERS`의 Chrome 버전은 news.hada.io가 UA 문자열 단위 요청량으로 토픽 페이지를 막을 때 걸린다. 버전을 올리는 건 임시방편이고, 차단은 쓰지 않으면 몇십 분에 풀리므로 물러나는 쪽이 정답이다 (geeknews 크롤러의 간격·서킷브레이커)
 - `packages/skim-core/src/skim_core/feed_config.py`: RSS URL, YouTube 채널 ID, API endpoint 설정
 - `apps/desktop/`: SwiftUI desktop reader for local `data/skim.db`
 

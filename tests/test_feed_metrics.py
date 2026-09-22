@@ -211,15 +211,24 @@ class GeekNewsMetricsTests(unittest.TestCase):
         with (
             patch("skim_core.crawlers.feed.geeknews.fetch_feed", return_value=items),
             patch("skim_core.crawlers.feed.geeknews.enrich_with_content"),
+            # 지표는 목록에서 온다. 글마다 토픽 페이지를 열면 회차당 50건이 되고
+            # 그 물량이 차단을 불렀다.
+            patch(
+                "skim_core.crawlers.feed.geeknews.fetch_metrics_index",
+                return_value={"32235": {"likes": 7, "comments": 3}},
+            ),
             patch(
                 "skim_core.crawlers.feed.geeknews.fetch_geeknews_metrics",
-                return_value={"likes": 7, "comments": 3},
-            ),
+                return_value={"comment_section": "## GeekNews Comments\n\n- **a**: b"},
+            ) as topic_page,
         ):
             posts = asyncio.run(crawler.crawl(since=SINCE))
 
         self.assertEqual(posts[0].likes, 7)
         self.assertEqual(posts[0].comments, 3)
+        # 댓글 본문은 목록에 없으므로 댓글이 있는 글만 토픽 페이지를 연다.
+        topic_page.assert_called_once_with("32235")
+        self.assertIn("## GeekNews Comments", posts[0].content_markdown)
 
     def test_no_content_skips_metric_requests(self):
         """`--no-content`는 추가 요청을 하지 않는다는 계약을 지킨다."""
@@ -243,6 +252,29 @@ class GeekNewsMetricsTests(unittest.TestCase):
             posts = asyncio.run(crawler.crawl(since=SINCE, no_content=True))
 
         fetch_metrics.assert_not_called()
+        self.assertIsNone(posts[0].likes)
+
+    def test_no_content_skips_the_metrics_listing_too(self):
+        """`--no-content`는 목록 요청도 하지 않는다."""
+        crawler = GeekNewsCrawler()
+        items = [
+            {
+                "platform": "geeknews",
+                "author": "xguru",
+                "title": "제목",
+                "url": "https://news.hada.io/topic?id=32235",
+                "published": "2026-08-01T09:00:00+09:00",
+            }
+        ]
+        with (
+            patch("skim_core.crawlers.feed.geeknews.fetch_feed", return_value=items),
+            patch(
+                "skim_core.crawlers.feed.geeknews.fetch_metrics_index"
+            ) as fetch_index,
+        ):
+            posts = asyncio.run(crawler.crawl(since=SINCE, no_content=True))
+
+        fetch_index.assert_not_called()
         self.assertIsNone(posts[0].likes)
 
 
