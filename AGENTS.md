@@ -139,8 +139,12 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
   만들 때 HTTP만 감싸고 끝내지 않는다. 회귀는
   `tests/test_comment_failure_isolation.py`가 잡는다.
 
-- threads 답글은 타임라인 GraphQL이 주지 않는다. 대신 게시물 문서의 SSR 페이로드가
-  답글까지 담고 있고 로그인도 필요 없어서, persisted query 좌표(`doc_id`)를 새로 들지 않는다.
+- **threads 답글은 2026-09-08부터 수집되지 않는다.** 게시물 문서의 SSR 페이로드에서
+  답글이 빠지고 `relatedPosts`(무관한 추천 글)만 남았다. 브라우저로 같은 문서를 받아도
+  답글은 없고 화면에만 렌더된다. 되살리려면 아래의 "페이지네이션을 붙이지 않는다" 결정을
+  다시 판단해야 한다. 그때까지는 본문만 저장한다.
+- threads 답글은 타임라인 GraphQL이 주지 않는다. 위 결함 전까지는 게시물 문서의 SSR
+  페이로드가 답글까지 담고 있어서 persisted query 좌표(`doc_id`)를 새로 들지 않았다.
   단 `threads.net`으로 요청하면 리다이렉트 뒤 페이로드가 빠진 셸이 오므로 `threads.com`으로 받는다.
   같은 URL이라도 페이로드가 빠진 문서가 간헐적으로 와서 한 번 재시도한다.
 - threads는 작성자 self-reply 연작을 답글과 같은 `edges`에 담는다. 그 연작은 이미 본문에
@@ -224,6 +228,12 @@ arXiv 메일링은 09:00 KST라 00:02 배치보다 늦고 주말에는 없다. �
 
 - Feed 크롤러: `since` 유무에 따라 RSS/API 모드 자동 전환
 - API 크롤러: `data/sessions/{platform}_session.json` 세션 쿠키 재사용
+- **threads For You 타임라인만 브라우저를 태운다.** Meta가 2026-09-08부터 클라이언트
+  지문으로 거른다. 브라우저가 방금 7건을 받은 요청을 payload와 헤더까지 그대로 즉시
+  재전송해도 edges가 0으로 오고 오류도 없다(2026-09-22 실측). 요청을 더 정교하게
+  흉내내는 방향으로는 못 고치므로, 같은 증상을 만나면 그쪽으로 시간을 쓰지 않는다.
+  같은 날 `X-IG-App-ID` 헤더도 거부 대상이 됐다(error 1357054). 이 헤더는 세션 기본
+  헤더에 두지 않는다. 문서 GET은 통과하고 GraphQL만 죽어서 세션 만료처럼 보인다.
 - Reddit API 크롤러: subreddit listing은 verification challenge 해제 후 JSON endpoint 호출, 홈 피드는 로그인 세션 기반 `best.json` 호출
 
 ### 주요 모듈
