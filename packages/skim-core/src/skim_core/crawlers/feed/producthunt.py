@@ -12,6 +12,7 @@ import typer
 from bs4 import BeautifulSoup
 
 from ...comments import Comment, append_comment_section, render_comment_section
+from ...db import drop_known_items
 from ...enrichment import enrich_with_content
 from ...feed_config import PRODUCTHUNT_RSS
 from ...feed_utils import FEED_HEADERS, fetch_feed
@@ -162,10 +163,16 @@ class ProductHuntCrawler:
         if debug:
             print("[PH] Product Hunt 피드 수집 중...")
 
-        items = fetch_feed(PRODUCTHUNT_RSS, "producthunt", since)
+        # 피드는 갱신순 50건이고 published는 런칭 시각이라, 런칭 며칠 뒤 갱신되며
+        # 올라오는 항목이 많다. 창을 7일로 넓혀 받되(cli.MIN_LOOKBACK_DAYS) 이미
+        # 저장된 런칭은 원문 추출 전에 뺀다. URL이 아니라 id로 거르는 건 같은 제품
+        # 페이지로 재런칭한 글이 별개 항목이기 때문이다.
+        items = drop_known_items(
+            "producthunt", fetch_feed(PRODUCTHUNT_RSS, "producthunt", since), "external_id"
+        )
 
         if debug:
-            print(f"  -> {len(items)}개 항목")
+            print(f"  -> {len(items)}개 새 항목")
 
         if not items:
             return []
