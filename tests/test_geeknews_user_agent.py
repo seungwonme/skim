@@ -7,7 +7,7 @@ news.hada.io는 토픽 페이지에서 특정 Chrome 버전(2026-08 기준 124, 
 """
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from skim_core.crawlers.feed.geeknews import fetch_geeknews_metrics
 from skim_core.feed_utils import FEED_HEADERS, probe_user_agent
@@ -27,11 +27,16 @@ class GeekNewsUserAgentTests(unittest.TestCase):
         self.assertEqual(get.call_args.kwargs["headers"], FEED_HEADERS)
 
     def test_probe_reports_blocked_user_agent(self):
-        """403이면 doctor 경고, 200이면 조용하다."""
+        """403도, 200으로 위장해 오는 차단 페이지도 경고로 잡는다."""
         with patch("skim_core.feed_utils.requests.get") as get:
-            get.return_value.status_code = 403
+            get.return_value = Mock(status_code=403, text="Forbidden")
             self.assertIn("blocked", probe_user_agent())
-            get.return_value.status_code = 200
+
+            # 차단 페이지가 200으로 오기도 한다. 상태 코드만 보면 통과로 읽힌다.
+            get.return_value = Mock(status_code=200, text="Forbidden")
+            self.assertIn("blocked", probe_user_agent())
+
+            get.return_value = Mock(status_code=200, text="<html>topic</html>")
             self.assertIsNone(probe_user_agent())
 
         self.assertEqual(get.call_args.kwargs["headers"], FEED_HEADERS)

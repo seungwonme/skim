@@ -16,17 +16,19 @@ from urllib3.util.retry import Retry
 # 저장 측은 UTC ISO 8601 로 강제 (fetch_feed `published` 필드).
 KST = timezone(timedelta(hours=9))
 FEED_TIMEOUT_SECONDS = 15
-# news.hada.io는 브라우저 토큰뿐 아니라 Chrome 메이저 버전도 본다. 2026-08-09부터
-# Chrome/124가 403으로 막혔고, 2026-08-29부터는 Chrome/139가 막혔다(3주간 댓글·지표
-# 전량 유실). 차단은 "이 버전 미만"이 아니라 특정 버전 목록이다(2026-09-22 실측:
-# 120·139는 403, 130~138·140 이상은 200). 스크레이퍼 기본값으로 흔한 버전이 오르는
-# 것으로 보이므로, 막히면 다음 버전으로 올린다. `skim doctor`가 매일 확인한다.
+# news.hada.io는 이 UA 문자열 단위로 요청량을 보고 토픽 페이지를 막는다. 버전
+# 블록리스트가 아니라 평판이고, 쓰지 않으면 몇십 분 만에 풀린다 (2026-09-22 실측:
+# 막힌 UA가 20분 뒤 정상 응답, 8-09에 막혔던 Chrome/124도 회복). 문제는 막힌 뒤에도
+# 계속 두드리면 차단이 갱신된다는 것이다. 매 회차 50건을 403으로 맞으면서 3주간
+# 차단을 새로 걸어온 게 그 결과다. 그래서 버전을 올리는 건 대책이 아니고, 요청을
+# 줄이고 막히면 물러나는 geeknews 크롤러의 간격·서킷브레이커가 근본 대책이다.
+# 아래 버전 교체는 3주간 갱신돼 굳은 차단을 한 번 털고 시작하기 위한 것이다.
 #
 # 이 상수가 공개 소스 요청의 단일 UA다. 예전에는 enrichment, ailabs, playwright
 # 컨텍스트가 각자 Chrome/124를 들고 있어서, 여기 버전을 올려도 그쪽은 계속 막혔다.
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
 )
 FEED_HEADERS = {"User-Agent": USER_AGENT}
 
@@ -147,15 +149,20 @@ def fetch_feed(
 
 
 def probe_user_agent(url: str = "https://news.hada.io/topic?id=1") -> Optional[str]:
-    """`USER_AGENT`가 차단 목록에 올랐는지 본다. 문제 없으면 None, 있으면 사유.
+    """`USER_AGENT`가 지금 막혀 있는지 본다. 문제 없으면 None, 있으면 사유.
 
-    차단은 토픽 페이지에서만 걸려서 RSS는 멀쩡히 오고 게시글도 저장된다. 댓글과
-    지표만 조용히 빠지고, 그 결손은 본문 길이 기준의 source_health가 못 본다.
+    차단은 토픽 페이지에만 걸려서 RSS는 멀쩡히 오고 게시글도 저장된다. 댓글과 지표만
+    조용히 빠지는데, 그 결손은 본문 길이로 보는 source_health가 잡지 못한다. 실제로
+    2026-08-29부터 3주간 아무 경고 없이 비어 있었다.
     """
     try:
-        status = requests.get(url, headers=FEED_HEADERS, timeout=10).status_code
+        resp = requests.get(url, headers=FEED_HEADERS, timeout=10)
     except requests.RequestException as exc:
         return f"user-agent probe failed: {exc}"
-    if status == 403:
-        return f"user-agent blocked by {url} (403): bump Chrome version in feed_utils.USER_AGENT"
+    # 차단 페이지가 200으로 오기도 한다. 상태 코드만 보면 통과로 읽힌다.
+    if resp.status_code == 403 or resp.text.strip().startswith("Forbidden"):
+        return (
+            f"user-agent blocked by {url}: 요청을 줄여 차단이 풀리기를 기다리거나, "
+            "급하면 feed_utils.USER_AGENT의 Chrome 버전을 올린다"
+        )
     return None
