@@ -29,9 +29,12 @@ def make_post(username="alice", text="hello", code="ABC"):
     }
 
 
-def graphql_response(payload, status_code=200):
+def graphql_response(payload, status_code=200, envelope=True):
     response = Mock()
     response.status_code = status_code
+    # Meta는 본문을 `for (;;);` 봉투에 담아 보낸다. 크롤러는 resp.text를 읽는다.
+    prefix = "for (;;);" if envelope else ""
+    response.text = prefix + json.dumps(payload)
     response.json = Mock(return_value=payload)
     return response
 

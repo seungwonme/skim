@@ -75,10 +75,12 @@ def min_lookback_days(platform: str, now: datetime) -> int:
     """플랫폼이 최소로 필요한 조회 창(일). --days로 더 좁혀도 이 밑으로 안 내려간다.
 
     좁은 창에서 항상 0건이 나오는 소스는 회귀 경고를 매일 울려, 진짜 고장 신호를
-    덮는다. arXiv는 주말에 announce하지 않으므로 월/토/일은 금요일 몫까지 거슬러 본다.
+    덮는다. arXiv는 주말에 announce하지 않고, 메일링은 09:00 KST라 00:02 배치보다
+    늦다. 화 00:02는 월요일 메일링 전이라 마지막이 금요일분인데, 2일 창은 그
+    발행일을 잘라 0건이 된다. 월/화/토/일은 금요일 몫까지 거슬러 본다.
     """
     if platform == "arxiv":
-        return 4 if now.weekday() in (0, 5, 6) else 2
+        return 4 if now.weekday() in (0, 1, 5, 6) else 2
     return MIN_LOOKBACK_DAYS.get(platform, 0)
 
 
