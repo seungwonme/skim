@@ -33,7 +33,14 @@ USER_AGENT = (
 FEED_HEADERS = {"User-Agent": USER_AGENT}
 
 
-def make_retrying_session(extra_headers: Optional[dict] = None) -> requests.Session:
+RETRY_STATUSES = (429, 500, 502, 503, 504)
+
+
+def make_retrying_session(
+    extra_headers: Optional[dict] = None,
+    retry_statuses: tuple = RETRY_STATUSES,
+    backoff_factor: float = 0.8,
+) -> requests.Session:
     """429/5xx에 지수 백오프로 재시도하는 HTTP 세션.
 
     단발 요청이면 503 한 번에 그 소스의 그날 수집분이 빈 리스트로 끝난다. 데일리가
@@ -41,6 +48,8 @@ def make_retrying_session(extra_headers: Optional[dict] = None) -> requests.Sess
 
     세션 쿠키로 계정이 식별되는 API 크롤러(threads/x/linkedin/reddit)에는 쓰지 않는다.
     거기서 자동 재시도는 차단 신호를 무시하고 계속 두드리는 것과 같다.
+
+    retry_statuses는 소스가 일시 거절을 표준 밖 코드로 줄 때만 넓힌다 (arxiv의 406).
     """
     session = requests.Session()
     session.headers.update(FEED_HEADERS)
@@ -50,8 +59,8 @@ def make_retrying_session(extra_headers: Optional[dict] = None) -> requests.Sess
         total=3,
         connect=3,
         read=3,
-        backoff_factor=0.8,
-        status_forcelist=(429, 500, 502, 503, 504),
+        backoff_factor=backoff_factor,
+        status_forcelist=retry_statuses,
         allowed_methods=frozenset(["GET", "HEAD"]),
         raise_on_status=False,
         respect_retry_after_header=True,
