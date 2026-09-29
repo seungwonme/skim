@@ -204,6 +204,15 @@ def arxiv_api_url(
     )
 
 
+def arxiv_rss_url(category: str) -> str:
+    """카테고리의 최신 공지 목록 (Atom). API가 거절할 때의 폴백이다.
+
+    API와 다른 호스트라 2026-09의 406 거절을 같이 맞지 않았다. 공지가 없는 날은
+    빈 피드가 온다.
+    """
+    return f"https://rss.arxiv.org/atom/{category}"
+
+
 # 하위 호환: 단일 URL을 참조하던 코드가 남아 있을 수 있다.
 ARXIV_API_URL = arxiv_api_url("cs.AI")
 
