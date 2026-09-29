@@ -261,7 +261,8 @@ class RunTests(_DbCase):
         self.assertEqual(len(self._target_ids()), 8)
         self.assertNotIn("geeknews_topic_failures", self._extra(1))
 
-    def test_blocked_run_stops_at_the_breaker(self):
+    def test_blocked_run_stops_at_the_first_block(self):
+        # 백필은 크롤 뒤에 돈다. 크롤이 한도를 다 썼으면 첫 요청에서 알 수 있다.
         self._fill(10)
 
         with (
@@ -273,9 +274,39 @@ class RunTests(_DbCase):
         ):
             backfill.run(self.conn, backfill.fetch_targets(self.conn), delay=1)
 
-        # 막힌 뒤에 더 두드리면 차단이 갱신된다. 막힌 것도 글 탓이 아니다.
-        self.assertEqual(get.call_count, geeknews.MAX_CONSECUTIVE_BLOCKS)
+        # 막힌 뒤에 더 두드리면 차단이 연장된다. 막힌 것도 글 탓이 아니다.
+        self.assertEqual(get.call_count, 1)
         self.assertEqual(len(self._target_ids()), 10)
+
+    def test_no_budget_left_means_no_requests(self):
+        # 크롤이 한도를 다 쓴 밤이다. 백필은 두드리지 않고 끝나야 한다.
+        self._fill(3)
+
+        with (
+            patch.object(backfill, "topic_budget_left", return_value=0),
+            patch.object(backfill, "fetch_topic") as fetch,
+        ):
+            stats = backfill.run(self.conn, backfill.fetch_targets(self.conn), delay=1)
+
+        fetch.assert_not_called()
+        self.assertEqual(stats["filled"], 0)
+
+    def test_waits_for_the_budget_when_asked(self):
+        self._fill(1)
+
+        with (
+            patch.object(backfill, "topic_budget_left", side_effect=[0, 0, 5, 5]),
+            patch.object(backfill, "fetch_topic", return_value=(TOPIC, "ok")) as fetch,
+            patch.object(backfill.time, "sleep") as sleep,
+            patch.object(geeknews, "extract_original", return_value=(ARTICLE, "defuddle", None)),
+        ):
+            stats = backfill.run(
+                self.conn, backfill.fetch_targets(self.conn), delay=0, wait_minutes=90
+            )
+
+        self.assertEqual(sleep.call_count, 2)
+        fetch.assert_called_once()
+        self.assertEqual(stats["filled"], 1)
 
     def test_dry_run_sends_no_requests(self):
         self._fill(3)

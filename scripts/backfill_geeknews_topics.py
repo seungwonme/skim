@@ -15,13 +15,18 @@
 `extra.geeknews_topic_failures`를 세어 3번째에 빠진다. 이런 글을 빼지 않으면 최신순
 맨 앞에 남아 매일 밤 연속 실패로 멈추고, 뒤의 행이 영영 채워지지 않는다.
 
-크롤러와 같은 함수(fetch_topic_page, enrich_geeknews_item)를 부른다. 간격과
-서킷브레이커도 같다. 막히면 멈추고, 다음 실행이 남은 행을 이어서 채운다.
-데일리는 크롤 뒤에 --limit으로 조금씩 돈다 (scripts/run_daily_feed.sh).
+크롤러와 같은 함수(fetch_topic, enrich_geeknews_item)를 부르고, 토픽 요청 한도
+(한 시간 25건)도 크롤과 파일로 나눠 쓴다. news.hada.io는 30건 안팎에서 막고, 한 번
+막히면 25분이 지나도 풀리지 않았다. 그래서 한도가 없으면 요청하지 않고, 한 번이라도
+막히면 바로 멈춘다. 다음 실행이 남은 행을 이어서 채운다.
+
+데일리는 크롤 뒤에 돌아 크롤이 쓰고 남은 한도만 쓴다. 쌓인 결손을 줄이려면
+--wait-minutes로 한도가 빌 때를 기다리며 오래 돌린다 (한 시간에 25건).
 
 사용:
     uv run python scripts/backfill_geeknews_topics.py --dry-run
     uv run python scripts/backfill_geeknews_topics.py --limit 100
+    uv run python scripts/backfill_geeknews_topics.py --limit 200 --wait-minutes 480
 """
 
 import argparse
@@ -38,14 +43,17 @@ from skim_core.crawlers.feed.geeknews import (
     enrich_geeknews_item,
     fetch_topic,
     saved_original_from,
-    topic_blocked,
+    topic_budget_left,
     topic_id_from_url,
 )
 from skim_core.db import get_connection
 
-# 행 사이 대기. 크롤러의 토픽 간격(3초) 위에 얹는다. 3초 간격 백필이 360건, 18분을
-# 버티고 막힌 기록이 있어(2026-08) 오래 도는 백필은 분당 10회 아래로 둔다.
+# 행 사이 대기. 크롤러의 토픽 간격(3초) 위에 얹는다. 차단은 요청 수로 걸리므로
+# 이건 한 번에 몰리지 않게 하는 정도다. 요청 수는 한도가 막는다.
 DEFAULT_DELAY = 6.0
+
+# 한도가 빌 때를 확인하는 주기.
+BUDGET_POLL_SECONDS = 60
 
 # 차단이 아닌 실패(네트워크 단절, 마크업 변경)가 이만큼 이어지면 멈춘다.
 MAX_CONSECUTIVE_FAILURES = 5
@@ -194,17 +202,31 @@ def save(conn, updates: List[Dict], marks: Optional[List[Dict]] = None) -> int:
     return 0
 
 
-def run(conn, targets: List[Dict], delay: float) -> Dict[str, int]:
-    """대상을 차례로 채운다. 막히거나 실패가 이어지면 멈춘다."""
+def wait_for_budget(deadline: float) -> bool:
+    """토픽 요청 한도가 빌 때까지 기다린다. deadline을 넘기면 False."""
+    while topic_budget_left() <= 0:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            return False
+        time.sleep(min(BUDGET_POLL_SECONDS, remaining))
+    return True
+
+
+def run(conn, targets: List[Dict], delay: float, wait_minutes: float = 0) -> Dict[str, int]:
+    """대상을 차례로 채운다. 한도가 없거나 막히거나 실패가 이어지면 멈춘다."""
     stats = {"filled": 0, "failed": 0, "gone": 0}
     pending: List[Dict] = []
     marks: List[Dict] = []
     streak = 0
+    deadline = time.time() + wait_minutes * 60
     for i, row in enumerate(targets, 1):
-        if topic_blocked():
-            print("GeekNews가 막았습니다. 남은 행은 다음 실행이 채웁니다.")
+        if not wait_for_budget(deadline):
+            print("토픽 요청 한도를 다 썼습니다. 남은 행은 다음 실행이 채웁니다.")
             break
         topic, outcome = fetch_topic(topic_id_from_url(row["url"]))
+        if outcome in ("blocked", "skipped", "budget"):
+            print("GeekNews가 막았습니다. 남은 행은 다음 실행이 채웁니다.")
+            break
         if topic is None:
             if outcome in ("gone", "empty"):
                 marks.append(mark_failure(row, outcome))
@@ -215,7 +237,7 @@ def run(conn, targets: List[Dict], delay: float) -> Dict[str, int]:
             else:
                 stats["failed"] += 1
                 streak += 1
-            if streak >= MAX_CONSECUTIVE_FAILURES and not topic_blocked():
+            if streak >= MAX_CONSECUTIVE_FAILURES:
                 print(f"연속 {streak}건 실패로 중단합니다.")
                 break
         else:
@@ -242,6 +264,12 @@ def main() -> int:
     parser.add_argument(
         "--delay", type=float, default=DEFAULT_DELAY, help="행 사이 대기 초"
     )
+    parser.add_argument(
+        "--wait-minutes",
+        type=float,
+        default=0,
+        help="토픽 요청 한도가 빌 때를 기다리는 최대 분. 0이면 남은 한도만 쓴다",
+    )
     args = parser.parse_args()
 
     try:
@@ -257,11 +285,11 @@ def main() -> int:
         }
         print(
             f"대상 {len(targets)}건 (본문 {by_priority[1]}, 댓글 {by_priority[2]}, "
-            f"지표 {by_priority[3]})"
+            f"지표 {by_priority[3]}), 남은 토픽 요청 한도 {topic_budget_left()}건"
         )
         if args.dry_run or not targets:
             return 0
-        stats = run(conn, targets, args.delay)
+        stats = run(conn, targets, args.delay, args.wait_minutes)
     finally:
         conn.close()
     print(

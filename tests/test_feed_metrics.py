@@ -227,7 +227,8 @@ class GeekNewsMetricsTests(unittest.TestCase):
                 },
             ),
             patch(
-                "skim_core.crawlers.feed.geeknews.fetch_topic_page", return_value=topic
+                "skim_core.crawlers.feed.geeknews.fetch_topic",
+                return_value=(topic, "ok"),
             ) as topic_page,
         ):
             posts = asyncio.run(crawler.crawl(since=SINCE))
@@ -253,7 +254,7 @@ class GeekNewsMetricsTests(unittest.TestCase):
         ]
         with (
             patch("skim_core.crawlers.feed.geeknews.fetch_feed", return_value=items),
-            patch("skim_core.crawlers.feed.geeknews.fetch_topic_page") as fetch_topic,
+            patch("skim_core.crawlers.feed.geeknews.fetch_topic") as fetch_topic,
         ):
             posts = asyncio.run(crawler.crawl(since=SINCE, no_content=True))
 

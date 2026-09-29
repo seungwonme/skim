@@ -167,6 +167,50 @@ class CrawlRequestBudgetTests(_Isolated):
             # 원문은 토픽 페이지 없이도 받았으므로 요약 조각만 남지는 않는다.
             self.assertIn("## Original Article", post.content_markdown)
 
+    def test_topic_budget_goes_first_to_what_only_the_topic_page_has(self):
+        # 한도(30건 안팎)가 회차 글 수(50건 안팎)보다 작다. 원문 링크 없는 자체 글은
+        # 토픽 페이지가 본문 전부이고, 댓글은 토픽 페이지에만 있다.
+        items = [
+            {"title": "링크 글", "url": "https://news.hada.io/topic?id=1",
+             "original_url": "https://example.com/1", "comments": 0},
+            {"title": "Show GN", "url": "https://news.hada.io/topic?id=2", "comments": 0},
+            {"title": "토론 글", "url": "https://news.hada.io/topic?id=3",
+             "original_url": "https://example.com/3", "comments": 5},
+        ]
+        requested = []
+
+        def fetch(topic_id):
+            requested.append(topic_id)
+            return None, "error"
+
+        with (
+            patch.object(geeknews, "fetch_topic", side_effect=fetch),
+            patch.object(
+                geeknews, "extract_original", return_value=(ARTICLE, "defuddle", None)
+            ),
+        ):
+            result = geeknews.enrich_geeknews_items(items)
+
+        self.assertEqual(requested, ["2", "3", "1"])
+        # 저장 순서는 피드 순서 그대로다.
+        self.assertEqual([i["title"] for i in result], ["링크 글", "Show GN", "토론 글"])
+
+    def test_crawl_stops_at_the_hourly_budget_and_keeps_originals(self):
+        # 크롤과 백필이 한 시간에 쓰는 토픽 요청을 합쳐 한도 아래로 둔다. 한도를 넘긴
+        # 글은 요청하지 않고, 목록에서 받은 원문 링크로 원문만 붙인다.
+        count = geeknews.TOPIC_BUDGET + 5
+        posts, topic_urls = self._crawl(
+            self._items(count),
+            lambda url: _resp(text=TOPIC_HTML.replace("34432", url.split("=")[-1])),
+        )
+
+        self.assertEqual(len(topic_urls), geeknews.TOPIC_BUDGET)
+        self.assertEqual(geeknews.topic_budget_left(), 0)
+        partial = [p for p in posts if p.model_extra.get("content_status") == "partial"]
+        self.assertEqual(len(partial), 5)
+        for post in partial:
+            self.assertIn("## Original Article", post.content_markdown)
+
     def test_generic_enrichment_does_not_open_topic_pages(self):
         # enrich_with_content가 토픽 페이지를 열면 간격과 서킷브레이커를 우회한다.
         item = {

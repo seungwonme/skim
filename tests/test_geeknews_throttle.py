@@ -5,6 +5,8 @@ news.hada.io는 (IP, UA) 단위로 요청량을 보고 막고, 막힌 뒤에도 
 2026-08-29~09-22 댓글·지표 3주 유실의 원인이다.
 """
 
+import json
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -86,6 +88,36 @@ class GeekNewsThrottleTests(unittest.TestCase):
                 page, outcome = geeknews.fetch_topic("1")
             self.assertEqual(outcome, expected)
             self.assertEqual(page is not None, expected == "ok")
+
+    def test_hourly_budget_is_shared_through_a_file(self):
+        # 크롤과 백필은 다른 프로세스다. 한 시간 안에 쓴 요청은 파일로 함께 센다.
+        now = time.time()
+        stamps = [now - 60] * geeknews.TOPIC_BUDGET
+        geeknews.TOPIC_BUDGET_FILE.write_text(json.dumps(stamps), encoding="utf-8")
+        with (
+            patch.object(geeknews.requests, "get", return_value=_resp(200)) as get,
+            patch.object(geeknews.time, "sleep"),
+        ):
+            self.assertEqual(geeknews.fetch_topic("1"), (None, "budget"))
+        get.assert_not_called()
+
+        # 한 시간이 지난 요청은 한도에서 빠진다.
+        old = [now - geeknews.TOPIC_BUDGET_WINDOW_SECONDS - 1] * geeknews.TOPIC_BUDGET
+        geeknews.TOPIC_BUDGET_FILE.write_text(json.dumps(old), encoding="utf-8")
+        self.assertEqual(geeknews.topic_budget_left(), geeknews.TOPIC_BUDGET)
+
+    def test_blocked_requests_spend_the_budget_too(self):
+        with (
+            patch.object(geeknews.requests, "get", return_value=_resp(403)),
+            patch.object(geeknews.time, "sleep"),
+            patch.object(geeknews.typer, "echo"),
+        ):
+            geeknews.fetch_topic("1")
+        self.assertEqual(geeknews.topic_budget_left(), geeknews.TOPIC_BUDGET - 1)
+
+    def test_broken_budget_file_counts_as_empty(self):
+        geeknews.TOPIC_BUDGET_FILE.write_text("{not json", encoding="utf-8")
+        self.assertEqual(geeknews.topic_budget_left(), geeknews.TOPIC_BUDGET)
 
     def test_missing_id_and_open_breaker_send_nothing(self):
         with (

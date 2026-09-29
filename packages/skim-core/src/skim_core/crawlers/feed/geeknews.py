@@ -8,6 +8,7 @@ enrichment.py에서 같은 토픽 페이지를 글마다 두 번씩 간격 없�
 24요청쯤에서 막히고 나머지 글이 RSS 요약 조각으로 저장됐다 (2026-09, #29).
 """
 
+import json
 import re
 import time
 from dataclasses import dataclass
@@ -22,17 +23,23 @@ from ...enrichment import _is_content_usable, defuddle, extract_article_content
 from ...feed_config import GEEKNEWS_RSS
 from ...feed_utils import CHALLENGE_MARKER, FEED_HEADERS, fetch_feed
 from ...models import Post
+from ...paths import DATA_DIR
 from ...timestamp import _REL_KO, relative_ko_to_iso
 
 GEEKNEWS_URL = "https://news.hada.io/"
 _TOPIC_ID = re.compile(r"topic\?id=(\d+)")
 MAX_COMMENTS = 15
 
-# news.hada.io는 토픽 페이지를 (IP, UA) 단위로 보고 요청이 몰리면 막는다. 실측:
-# 1초 간격은 33건쯤(2026-09-22), 간격 없이 글당 2요청을 몰던 본문 경로는 24요청쯤
-# (9/25~27 매 회차 1~12번 글까지만 원문), 3초 간격은 약 360건, 18분을 버텼다
-# (2026-08 지표 백필). 회차당 토픽 요청은 글 수(50건 안팎)만큼이라 3초면 그 안에 든다.
+# news.hada.io는 토픽 페이지를 (IP, UA) 단위 요청 수로 막는다. 간격은 상관없다:
+# 1초 간격 33건(2026-09-22), 3초 간격 31건(2026-09-29)에서 똑같이 막혔다. 3초 간격으로
+# 360건을 버틴 2026-08 기록은 브라우저 확인이 생기기 전 값이다. 한 번 막히면 25분이
+# 지나도 풀리지 않았다(2026-09-29 21:24 차단, 21:50 여전히 차단).
+# 그래서 요청 수 자체를 한도 아래로 둔다. 간격은 한 번에 몰리지 않게 하는 정도다.
 TOPIC_REQUEST_INTERVAL_SECONDS = 3.0
+TOPIC_BUDGET = 25
+TOPIC_BUDGET_WINDOW_SECONDS = 3600
+# 크롤과 백필은 다른 프로세스라 한도를 파일로 나눠 쓴다. 최근 요청 시각만 담는다.
+TOPIC_BUDGET_FILE = DATA_DIR / "geeknews_topic_budget.json"
 
 # 막힌 뒤에도 계속 두드리면 차단이 갱신돼 풀리지 않는다. 2026-08-29~09-22에 댓글과
 # 지표가 3주간 통째로 빈 게 그 상태다: 매 회차 50건을 전부 403으로 맞으면서 매일
@@ -43,6 +50,10 @@ MAX_CONSECUTIVE_BLOCKS = 3
 # 목록 한 장이 20건. RSS가 주는 50건을 세 장이면 덮는다. 필요한 id를 다 찾으면
 # 남은 장은 받지 않으므로 이건 상한일 뿐이다.
 METRICS_INDEX_MAX_PAGES = 3
+
+# 목록(`/newest`)은 토픽 페이지와 달리 브라우저 확인이 걸린 적이 없다. 간격은
+# 토픽 요청과 따로 둔다.
+LISTING_REQUEST_INTERVAL_SECONDS = 3.0
 
 # 홈(`/`)은 인기순이라 최근 글을 빠뜨린다(실측: RSS 50건 중 23건만 겹쳤다).
 # `/newest`는 시간순이라 RSS 창과 그대로 맞는다.
@@ -77,6 +88,35 @@ def _is_blocked(resp: requests.Response) -> bool:
 def topic_blocked() -> bool:
     """이 프로세스에서 서킷브레이커가 열렸는지. 열리면 남은 토픽 요청을 보내지 않는다."""
     return _consecutive_blocks >= MAX_CONSECUTIVE_BLOCKS
+
+
+def _recent_topic_requests(now: float) -> List[float]:
+    try:
+        stamps = json.loads(TOPIC_BUDGET_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(stamps, list):
+        return []
+    return [
+        t
+        for t in stamps
+        if isinstance(t, (int, float)) and 0 <= now - t < TOPIC_BUDGET_WINDOW_SECONDS
+    ]
+
+
+def topic_budget_left(now: Optional[float] = None) -> int:
+    """최근 한 시간 동안 이 작업공간에서 쓴 토픽 요청을 빼고 남은 수."""
+    now = time.time() if now is None else now
+    return max(0, TOPIC_BUDGET - len(_recent_topic_requests(now)))
+
+
+def _spend_topic_budget(now: float) -> None:
+    stamps = _recent_topic_requests(now) + [now]
+    try:
+        TOPIC_BUDGET_FILE.parent.mkdir(parents=True, exist_ok=True)
+        TOPIC_BUDGET_FILE.write_text(json.dumps(stamps), encoding="utf-8")
+    except OSError as e:
+        typer.echo(f"   [!] GeekNews 토픽 한도 기록 실패: {e}")
 
 
 def topic_id_from_url(url: str) -> Optional[str]:
@@ -190,7 +230,7 @@ def fetch_listing_index(
         # 필요한 글을 다 찾았으면 남은 장은 받지 않는다.
         if wanted and wanted <= index.keys():
             break
-        time.sleep(TOPIC_REQUEST_INTERVAL_SECONDS)
+        time.sleep(LISTING_REQUEST_INTERVAL_SECONDS)
     return index
 
 
@@ -242,22 +282,26 @@ def parse_topic_page(html: str, topic_id: str) -> TopicPage:
 def fetch_topic(topic_id: Optional[str]) -> Tuple[Optional[TopicPage], str]:
     """토픽 페이지를 한 번 받는다. `(page, outcome)`을 돌려준다.
 
-    outcome은 ok, skipped(id 없음, 서킷브레이커 열림), blocked, gone(404, 410),
-    empty(200인데 아무것도 못 읽음), error(네트워크, 5xx, 파싱 예외) 중 하나다.
-    글 탓인 실패는 gone과 empty뿐이다. 백필은 이 둘만 글에 기록해, 삭제된 글을
-    매일 밤 다시 두드리다 멈추는 일을 막는다.
+    outcome은 ok, skipped(id 없음, 서킷브레이커 열림), budget(한도 소진, 요청 안 함),
+    blocked, gone(404, 410), empty(200인데 아무것도 못 읽음), error(네트워크, 5xx,
+    파싱 예외) 중 하나다. 글 탓인 실패는 gone과 empty뿐이다. 백필은 이 둘만 글에
+    기록해, 삭제된 글을 매일 밤 다시 두드리다 멈추는 일을 막는다.
 
-    요청 사이 간격을 지키고, 연속으로 막히면 이 프로세스의 남은 토픽 요청을 모두
-    건너뛴다. 막힌 뒤에도 두드리면 차단이 갱신돼 며칠씩 풀리지 않는다.
+    요청 수는 `TOPIC_BUDGET`(한 시간)을 넘기지 않는다. 연속으로 막히면 이 프로세스의
+    남은 토픽 요청을 모두 건너뛴다. 막힌 뒤에도 두드리면 차단이 길어진다.
     """
     global _last_topic_request, _consecutive_blocks  # pylint: disable=global-statement
     if not topic_id or topic_blocked():
         return None, "skipped"
+    if topic_budget_left() <= 0:
+        return None, "budget"
 
     waited = time.monotonic() - _last_topic_request
     if waited < TOPIC_REQUEST_INTERVAL_SECONDS:
         time.sleep(TOPIC_REQUEST_INTERVAL_SECONDS - waited)
     _last_topic_request = time.monotonic()
+    # 막힌 요청도 한도를 쓴다. 보내기 전에 적어야 예외가 나도 빠지지 않는다.
+    _spend_topic_budget(time.time())
 
     # 파싱까지 try 안에 둔다. HTTP만 감싸면 news.hada.io의 마크업이 바뀔 때
     # 셀렉터 예외가 crawl 루프로 올라가 그 회차 GeekNews가 통째로 저장 0건이 된다.
@@ -410,14 +454,30 @@ def enrich_geeknews_item(
     item["word_count"] = len(body.split())
 
 
+def _topic_priority(item: dict) -> tuple:
+    """토픽 요청이 모자랄 때 먼저 받을 글. 토픽 페이지에만 있는 것이 많은 순서다.
+
+    원문 링크가 없는 자체 글(Show GN, Ask GN)은 토픽 페이지가 본문 전부이고, 댓글은
+    토픽 페이지에만 있다. 나머지 글도 GN 요약을 받지만, 원문은 목록 링크로 이미 받는다.
+    """
+    return (bool(item.get("original_url")), -(item.get("comments") or 0))
+
+
 def enrich_geeknews_items(items: List[dict]) -> List[dict]:
-    """글마다 토픽 페이지를 한 번만 열어 본문을 만든다."""
+    """글마다 토픽 페이지를 한 번만 열어 본문을 만든다. 순서는 `_topic_priority`다."""
     if not items:
         return items
     print(f"\n[콘텐츠] {len(items)}개 GeekNews 글의 본문을 만듭니다...")
-    for i, item in enumerate(items):
-        print(f"  [{i + 1}/{len(items)}] {(item.get('title') or '')[:50]}...")
-        topic = fetch_topic_page(topic_id_from_url(item.get("url", "")))
+    out_of_budget = False
+    for n, item in enumerate(sorted(items, key=_topic_priority), 1):
+        print(f"  [{n}/{len(items)}] {(item.get('title') or '')[:50]}...")
+        topic, outcome = fetch_topic(topic_id_from_url(item.get("url", "")))
+        if outcome == "budget" and not out_of_budget:
+            out_of_budget = True
+            print(
+                f"   [!] GeekNews 토픽 요청 한도(한 시간 {TOPIC_BUDGET}건)를 다 썼습니다. "
+                "남은 글은 원문만 붙여 partial로 저장합니다."
+            )
         enrich_geeknews_item(item, topic)
     partial = sum(1 for it in items if it.get("content_status") == "partial")
     print(
