@@ -143,13 +143,34 @@ class OpsCliTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.stderr)
         payload = json.loads(result.stdout)
         row = next(r for r in payload["recent_thin"] if r["platform"] == "geeknews")
-        self.assertEqual((row["partial"], row["thin"], row["total"]), (8, 0, 12))
+        self.assertEqual(
+            (row["fragment"], row["partial"], row["thin"], row["total"]), (6, 2, 0, 12)
+        )
+        # 경고는 조각뿐인 본문만 센다. 원문이 붙은 partial은 보여만 준다.
         self.assertTrue(
-            any(w.startswith("geeknews:") and "8/12" in w for w in payload["warnings"]),
+            any(w.startswith("geeknews:") and "6/12" in w for w in payload["warnings"]),
             payload["warnings"],
         )
 
-    def test_doctor_tolerates_a_few_partial_rows(self):
+    def test_doctor_does_not_warn_on_partial_bodies_with_originals(self):
+        # 토픽 요청 한도가 하루 글 수보다 작아 GN 요약이 빠진 partial은 매일 생긴다.
+        # 원문은 있으므로 경고하면 매일 울리는 잡음이 된다.
+        self._insert_geeknews(
+            12,
+            content_markdown="RSS 요약 조각이다...\n\n---\n\n## Original Article\n\n원문",
+            extra=json.dumps({"content_status": "partial", "enrichment_method": "defuddle"}),
+        )
+
+        result = self.runner.invoke(
+            app, ["doctor", "--db", str(self.db), "--emit", "json"]
+        )
+
+        payload = json.loads(result.stdout)
+        row = next(r for r in payload["recent_thin"] if r["platform"] == "geeknews")
+        self.assertEqual((row["fragment"], row["partial"]), (0, 12))
+        self.assertFalse([w for w in payload["warnings"] if w.startswith("geeknews:")])
+
+    def test_doctor_tolerates_a_few_fragment_rows(self):
         # 정상 주에도 GeekNews partial은 0~5% 나온다. 그 수준에서는 경고하지 않는다.
         self._insert_geeknews(
             1,
@@ -169,7 +190,7 @@ class OpsCliTests(unittest.TestCase):
 
         payload = json.loads(result.stdout)
         row = next(r for r in payload["recent_thin"] if r["platform"] == "geeknews")
-        self.assertEqual((row["partial"], row["total"]), (1, 20))
+        self.assertEqual((row["fragment"], row["total"]), (1, 20))
         self.assertFalse([w for w in payload["warnings"] if w.startswith("geeknews:")])
 
     def test_doctor_reports_extractor_availability(self):
