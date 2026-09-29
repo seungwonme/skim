@@ -36,10 +36,15 @@ if [ -f "$LOG" ] && [ "$(wc -c <"$LOG")" -gt "$LOG_MAX_BYTES" ]; then
     mv "$LOG" "$LOG.1"
 fi
 
-# 과거분 지표 백필의 하루 몫. GeekNews는 /topic?id= 경로에 누적 요청 한도가 있어
-# (2026-08-09 관측: 하루 1,000건쯤에서 403) 한 번에 다 못 받는다. 매일 조금씩 받으면
-# 한도에 걸리지 않고, 다 채워지면 대상이 없어 즉시 끝난다.
+# 과거분 지표 백필의 하루 몫. 여기서는 hackernews만 돈다. GeekNews 지표는 아래 토픽
+# 백필이 본문, 댓글과 같은 요청으로 채운다.
 METRICS_BACKFILL_LIMIT=400
+
+# GeekNews 토픽 백필의 상한. 크롤에서 한도가 모자라 못 받은 GN 요약과 댓글, 그리고
+# 2026-08-29 ~ 09-28 차단 기간에 요약 조각만 남은 행(#29)을 채운다. 토픽 요청은
+# 크롤과 합쳐 20시간 창에 25건을 넘기지 않으므로(geeknews.TOPIC_BUDGET), 크롤이
+# 한도를 다 쓴 밤에는 요청 없이 바로 끝난다.
+GEEKNEWS_TOPIC_BACKFILL_LIMIT=100
 
 echo "======= start $(date '+%Y-%m-%d %H:%M:%S') =======" >>"$LOG"
 
@@ -74,9 +79,14 @@ uv run skim crawl all --days 1 >>"$LOG" 2>&1 || status=$?
 
 # 크롤이 실패해도 백필은 돌린다. 둘은 서로 독립이다.
 backfill_status=0
-uv run python scripts/backfill_feed_metrics.py --limit "$METRICS_BACKFILL_LIMIT" \
-    >>"$LOG" 2>&1 || backfill_status=$?
+uv run python scripts/backfill_feed_metrics.py --platform hackernews \
+    --limit "$METRICS_BACKFILL_LIMIT" >>"$LOG" 2>&1 || backfill_status=$?
 echo "지표 백필 exit=$backfill_status" >>"$LOG"
+
+geeknews_status=0
+uv run python scripts/backfill_geeknews_topics.py \
+    --limit "$GEEKNEWS_TOPIC_BACKFILL_LIMIT" >>"$LOG" 2>&1 || geeknews_status=$?
+echo "GeekNews 토픽 백필 exit=$geeknews_status" >>"$LOG"
 
 # 점검 결과는 cron.log에 묻히지 않게 따로 떨군다. 이 파일만 보면 어제 상태를 안다.
 doctor_status=0

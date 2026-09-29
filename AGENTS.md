@@ -64,6 +64,8 @@ uv run skim mark 12 34 --state read                         # 소비 상태
 # 운영
 uv run skim backup --keep 3     # 온라인 백업 + quick_check
 uv run skim doctor --strict     # warning 있으면 exit 1
+uv run python scripts/backfill_geeknews_topics.py --dry-run    # GN 요약, 댓글이 빠진 행 수
+uv run python scripts/backfill_geeknews_topics.py --limit 200 --wait-minutes 480  # 한도를 기다리며 채움
 
 # 기타
 uv run skim platforms           # 지원 플랫폼 목록
@@ -119,7 +121,7 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
 | 플랫폼 | 섹션 라벨 | 추가 요청 |
 |--------|-----------|-----------|
 | hackernews | `## Hacker News Comments` | Algolia item API 1건 |
-| geeknews | `## GeekNews Comments` | 댓글 있는 글만 1건. 지표는 `/newest` 목록에서 받는다 |
+| geeknews | `## GeekNews Comments` | 없음. GN 요약과 같은 토픽 페이지 1건에서 받는다. 지표와 원문 링크는 `/newest` 목록 |
 | x | `## X Replies` | 스레드는 없음(TweetDetail 재사용). 단독 트윗은 답글 3개 이상인 것만, 회차당 20건까지 |
 | reddit | `## Reddit Comments` | 게시글당 1건 (초당 1요청 간격) |
 | linkedin | `## LinkedIn Comments` | 게시글당 1건 (Voyager `feed/comments`) |
@@ -204,6 +206,25 @@ arXiv 메일링은 09:00 KST라 00:02 배치보다 늦고 주말에는 없다. �
   조용히 넘어가면 "그날 그만큼밖에 없었다"로 읽힌다.
 - **불완전한 본문은 표시한다.** everyto는 구독자 벽까지만 저장되므로
   `content_status="paywalled"`를 단다. 표시가 없으면 반쪽을 완결된 글로 요약한다.
+  geeknews는 토픽 페이지를 못 받아 GN 요약 대신 RSS 요약 조각이 들어간 글에
+  `content_status="partial"`을 단다.
+- **요청량으로 막히는 호스트는 요청을 한 모듈에 모으고 한도를 센다.** news.hada.io는
+  토픽 페이지를 (IP, UA) 단위 요청 수로 막는다. 간격은 상관없다: 1초 간격 33건
+  (2026-09-22), 3초 간격 31건(2026-09-29 21:24)에서 똑같이 막혔고, 21:50과 22:30에도
+  막혀 있었다. 2026-09에는 enrichment.py가 같은 토픽 페이지를 글마다 두 번씩 따로
+  열어 매 회차 24요청쯤에서 막히고, 9월 저장분 1,082건 중 959건이 RSS 요약 조각만
+  남았다 (#29).
+  지금은 원문 링크와 지표를 브라우저 확인이 걸리지 않는 `/newest` 목록에서 받고,
+  토픽 페이지는 `geeknews.fetch_topic`만 연다. 크롤, 백필, 수동 실행이 20시간 창에
+  25건(`TOPIC_BUDGET`)을 `data/geeknews_topic_budget.json`으로 나눠 쓰고, 한도가
+  모자라면 원문 링크 없는 자체 글, 댓글 많은 글부터 받는다. 한 번 막히면 차단 시각을
+  그 파일에 적어 창이 지날 때까지 어느 프로세스도 요청하지 않는다. 막힌 뒤의 요청은
+  차단을 연장한다. 다른 모듈과 테스트에서 news.hada.io를 부르지 않는다 (테스트는
+  `conftest.py`가 한도 파일을 격리하고, doctor 테스트는 `probe_user_agent`를 막는다).
+  하루 글 수(50건 안팎)가 한도보다 많아 GN 요약과 댓글이 빠진 `partial` 행은 매일
+  생긴다. 원문은 붙어 있으므로 doctor는 보여만 준다. doctor 경고는 두 가지다: 원문조차
+  없는 "피드 요약 조각뿐인 본문"이 최근 7일 20%를 넘을 때, 그리고 한도 파일에 차단이
+  기록됐을 때(이때는 probe도 보내지 않는다).
 - **서브피드 이름을 `platform`에 넣지 않는다.** `db.py`는 Post의 `platform`을 인자보다
   우선하므로, `fetch_feed`가 넣는 피드 이름(`hackernews/show`)을 그대로 넘기면 DB에
   별도 플랫폼 행이 생긴다. 서브피드는 `source`에 남긴다 (blogs가 쓰는 방식).
@@ -255,7 +276,7 @@ arXiv 메일링은 09:00 KST라 00:02 배치보다 늦고 주말에는 없다. �
   소비 상태(읽음/보관)는 `feedback` 테이블을 쓴다. `posts`에 컬럼을 더하지 않는다.
 - `packages/skim-core/src/skim_core/enrichment.py`: `bunx defuddle`, `yt-dlp`, transcript 정리
 - `packages/skim-core/src/skim_core/comments.py`: 플랫폼 중립 `Comment`와 본문 댓글 섹션 합성
-- `packages/skim-core/src/skim_core/feed_utils.py`: RSS/Atom 파싱, KST 변환. `FEED_HEADERS`의 Chrome 버전은 news.hada.io가 UA 문자열 단위 요청량으로 토픽 페이지를 막을 때 걸린다. 버전을 올리는 건 임시방편이고, 차단은 쓰지 않으면 몇십 분에 풀리므로 물러나는 쪽이 정답이다 (geeknews 크롤러의 간격·서킷브레이커)
+- `packages/skim-core/src/skim_core/feed_utils.py`: RSS/Atom 파싱, KST 변환. `FEED_HEADERS`의 Chrome 버전은 news.hada.io가 UA 문자열 단위 요청량으로 토픽 페이지를 막을 때 걸린다. 버전을 올리는 건 임시방편이고, 차단은 쓰지 않으면 몇십 분에 풀리므로 물러나는 쪽이 정답이다 (geeknews 크롤러의 간격·서킷브레이커). `CHALLENGE_MARKER`는 2026-09 차단의 형태였던 Turnstile 브라우저 확인 페이지의 표지다
 - `packages/skim-core/src/skim_core/feed_config.py`: RSS URL, YouTube 채널 ID, API endpoint 설정
 - `apps/desktop/`: SwiftUI desktop reader for local `data/skim.db`
 

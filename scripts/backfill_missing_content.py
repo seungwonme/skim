@@ -45,7 +45,10 @@ HN_PLATFORM = "hackernews"
 # producthunt는 봇 트래픽을 429로 막는다. 지연을 줘도 누적 요청이 쌓이면 단건도
 # 막히고, playwright 폴백은 54단어짜리 차단 화면만 받는다. 원래 본문이 짧은
 # 태그라인이라 제목/요약으로 충분하다고 보고 대상에서 뺀다(2026-08-08 결정).
-EXCLUDED_PLATFORMS = {"youtube", "producthunt"}
+#
+# geeknews는 scripts/backfill_geeknews_topics.py가 맡는다. 토픽 페이지 요청이 그
+# 스크립트의 간격과 서킷브레이커를 거쳐야 한다 (#29).
+EXCLUDED_PLATFORMS = {"youtube", "producthunt", "geeknews"}
 
 BATCH_SIZE = 25
 

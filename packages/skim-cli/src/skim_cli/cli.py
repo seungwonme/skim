@@ -16,6 +16,7 @@ import typer
 
 from skim_core.crawlers import REGISTRY
 from skim_core.crawlers.auth.cdp import login as cdp_login
+from skim_core.crawlers.feed.geeknews import last_topic_block
 from skim_core.feed_utils import probe_user_agent
 from skim_core.db import (
     DB_PATH,
@@ -93,6 +94,51 @@ REGRESSION_LOOKBACK_DAYS = 14
 # doctor가 본문 결손을 보는 창. 이보다 길게 잡으면 이미 고친 옛 버그의 잔재가
 # 섞여 지금 고장났는지 알 수 없다.
 RECENT_THIN_LOOKBACK_DAYS = 7
+
+# 본문이 피드 요약 조각뿐인 행. 비어 있지는 않아서 위 결손 집계에 안 잡힌다.
+# GeekNews 9월 저장분 89%가 이 상태였는데 doctor는 `2/268`로만 보였다 (#29).
+_EXTRA_JSON_SQL = "COALESCE(NULLIF(TRIM(extra), ''), '{}')"
+FRAGMENT_BODY_SQL = (
+    f"json_extract({_EXTRA_JSON_SQL}, '$.enrichment_method') = 'failed' "
+    "AND TRIM(COALESCE(content_markdown, '')) <> '' "
+    "AND TRIM(content_markdown) = TRIM(COALESCE(summary, ''))"
+)
+# 원문은 있고 플랫폼 본문(GN 요약, 댓글)만 빠진 행. GeekNews는 토픽 요청 한도가
+# 하루 글 수보다 작아 이 행이 매일 생긴다. 경고하지 않고 보여만 준다.
+PARTIAL_STATUS_SQL = f"json_extract({_EXTRA_JSON_SQL}, '$.content_status') = 'partial'"
+# 2026-07 이후 주간 실측: GeekNews를 뺀 전 플랫폼 0%, GeekNews 정상 주 0~5%, 토픽
+# 페이지가 막힌 주 28~98%. 그 사이를 가른다. 표본이 적으면 한두 건에 흔들린다.
+FRAGMENT_BODY_WARN_RATIO = 0.2
+FRAGMENT_BODY_MIN_ROWS = 10
+
+
+def _fragment_body_warnings(rows: List[dict]) -> List[str]:
+    """최근 유입분 중 요약 조각뿐인 본문 비율이 정상 범위를 넘은 플랫폼."""
+    return [
+        f"{row['platform']}: 최근 {RECENT_THIN_LOOKBACK_DAYS}일 본문 "
+        f"{row['fragment']}/{row['total']}건이 피드 요약 조각뿐이다"
+        for row in rows
+        if row["total"] >= FRAGMENT_BODY_MIN_ROWS
+        and row["fragment"] / row["total"] >= FRAGMENT_BODY_WARN_RATIO
+    ]
+
+
+def _geeknews_topic_warnings() -> List[str]:
+    """GeekNews 토픽 페이지 차단 여부.
+
+    news.hada.io는 토픽 페이지를 막아도 RSS는 주므로 크롤은 성공으로 끝나고 댓글과
+    지표만 3주씩 조용히 빠졌다 (2026-08-29~09-22). 크롤이 차단을 기록했으면 그걸
+    보고하고 probe는 보내지 않는다. 막힌 뒤의 요청은 차단을 연장한다. 차단된 날은
+    원문만 붙은 partial이라 본문 경고에 안 잡힌다.
+    """
+    blocked_at = last_topic_block()
+    if blocked_at:
+        return [
+            f"geeknews: 토픽 페이지가 {datetime.fromtimestamp(blocked_at):%Y-%m-%d %H:%M}에 "
+            "막혔다. GN 요약과 댓글 없이 원문만 저장된다"
+        ]
+    ua_issue = probe_user_agent()
+    return [ua_issue] if ua_issue else []
 
 
 def platform_help(include_all: bool = False) -> str:
@@ -619,19 +665,22 @@ def doctor(
             for row in conn.execute(
                 f"""
                 SELECT platform, COUNT(*) AS total,
-                       SUM(CASE WHEN COALESCE(content_markdown, '') = '' THEN 1 ELSE 0 END) AS thin
+                       SUM(CASE WHEN COALESCE(content_markdown, '') = '' THEN 1 ELSE 0 END) AS thin,
+                       SUM(CASE WHEN {FRAGMENT_BODY_SQL} THEN 1 ELSE 0 END) AS fragment,
+                       SUM(CASE WHEN {PARTIAL_STATUS_SQL} THEN 1 ELSE 0 END) AS partial
                 FROM posts
                 WHERE crawled_at >= datetime('now', '-{RECENT_THIN_LOOKBACK_DAYS} days')
                   AND NOT (platform = 'youtube' AND summary IS NULL)
                   {"AND platform = ?" if platform else ""}
                 GROUP BY platform
-                HAVING thin > 0
+                HAVING thin > 0 OR fragment > 0 OR partial > 0
                 ORDER BY thin DESC
                 """,
                 params,
             ).fetchall()
         ]
         conn.close()
+        report["warnings"].extend(_fragment_body_warnings(report["recent_thin"]))
     except Exception as exc:  # pragma: no cover - defensive report path
         report["warnings"].append(f"database check failed: {exc}")
 
@@ -660,11 +709,7 @@ def doctor(
         if not found:
             report["warnings"].append(f"{name} not on PATH")
 
-    # news.hada.io는 특정 Chrome 버전을 403으로 막는다. 게시글은 RSS로 들어와서
-    # 크롤은 성공으로 끝나고 댓글·지표만 3주씩 조용히 빠졌다 (2026-08-29~09-22).
-    ua_issue = probe_user_agent()
-    if ua_issue:
-        report["warnings"].append(ua_issue)
+    report["warnings"].extend(_geeknews_topic_warnings())
 
     if report["db_exists"]:
         integrity = check_integrity(db_path)
@@ -729,10 +774,17 @@ def _emit_doctor(report: dict, emit: str) -> None:
                 f"with_text={row['with_text']} missing_text={row['missing_text']} "
                 f"latest={row['latest_crawl']}"
             )
-    if report.get("recent_thin"):
+    thin_rows = [row for row in report.get("recent_thin", []) if row["thin"]]
+    if thin_rows:
         typer.echo(f"recent missing body (last {RECENT_THIN_LOOKBACK_DAYS}d):")
-        for row in report["recent_thin"]:
+        for row in thin_rows:
             typer.echo(f"  {row['platform']}: {row['thin']}/{row['total']}")
+    for key, label in (("fragment", "feed fragment only"), ("partial", "partial body")):
+        rows = [row for row in report.get("recent_thin", []) if row.get(key)]
+        if rows:
+            typer.echo(f"recent {label} (last {RECENT_THIN_LOOKBACK_DAYS}d):")
+            for row in rows:
+                typer.echo(f"  {row['platform']}: {row[key]}/{row['total']}")
     if report.get("extractor"):
         state = "ok" if report["extractor"]["ok"] else "unavailable"
         typer.echo(f"extractor: playwright {state} - {report['extractor']['detail']}")

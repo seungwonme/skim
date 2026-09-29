@@ -36,6 +36,12 @@ class GeekNewsUserAgentTests(unittest.TestCase):
             get.return_value = Mock(status_code=200, text="Forbidden")
             self.assertIn("blocked", probe_user_agent())
 
+            # 2026-09 차단은 200에 Turnstile 브라우저 확인 페이지로 왔다.
+            get.return_value = Mock(
+                status_code=200, text='<div id="browser-check-turnstile"></div>'
+            )
+            self.assertIn("browser check", probe_user_agent())
+
             get.return_value = Mock(status_code=200, text="<html>topic</html>")
             self.assertIsNone(probe_user_agent())
 

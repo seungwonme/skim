@@ -5,6 +5,8 @@ news.hada.io는 (IP, UA) 단위로 요청량을 보고 막고, 막힌 뒤에도 
 2026-08-29~09-22 댓글·지표 3주 유실의 원인이다.
 """
 
+import json
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -54,17 +56,94 @@ class GeekNewsThrottleTests(unittest.TestCase):
 
         self.assertEqual(get.call_count, geeknews.MAX_CONSECUTIVE_BLOCKS)
 
-    def test_a_success_clears_the_streak(self):
-        pages = [_resp(403), _resp(403), _resp(), _resp(403), _resp(403)]
+    def test_a_block_holds_every_process_off_for_the_window(self):
+        # 막힌 뒤에 두드리면 차단이 길어진다. 다음 프로세스(백필, 수동 크롤)도
+        # 한도 파일을 보고 창이 지날 때까지 요청하지 않는다.
         with (
-            patch.object(geeknews.requests, "get", side_effect=pages) as get,
+            patch.object(geeknews.requests, "get", return_value=_resp(403)) as get,
+            patch.object(geeknews.time, "sleep"),
+            patch.object(geeknews.typer, "echo"),
+        ):
+            geeknews.fetch_topic("1")
+            geeknews.reset_topic_throttle()  # 새 프로세스
+            self.assertEqual(geeknews.fetch_topic("2"), (None, "budget"))
+
+        self.assertEqual(get.call_count, 1)
+        self.assertEqual(geeknews.topic_budget_left(), 0)
+        self.assertIsNotNone(geeknews.last_topic_block())
+        state = json.loads(geeknews.TOPIC_BUDGET_FILE.read_text(encoding="utf-8"))
+        self.assertEqual(len(state["requests"]), 1, "막힌 요청도 한 번만 센다")
+
+    def test_outcome_tells_deleted_topics_from_blocks(self):
+        # 백필은 글 탓인 실패(gone, empty)만 행에 남긴다. 차단이나 네트워크 오류를
+        # 글 탓으로 세면 멀쩡한 글이 대상에서 빠진다.
+        cases = [
+            (_resp(404), "gone"),
+            (_resp(403), "blocked"),
+            (_resp(200, "<html></html>"), "empty"),
+            (_resp(200, "<span id='tp1'>3</span>"), "ok"),
+            (ConnectionError("reset"), "error"),
+        ]
+        for response, expected in cases:
+            # 막힌 경우는 한도를 다 쓴 것으로 적으므로 경우마다 새로 시작한다.
+            geeknews.reset_topic_throttle()
+            geeknews.TOPIC_BUDGET_FILE.unlink(missing_ok=True)
+            with (
+                patch.object(geeknews.requests, "get", side_effect=[response]),
+                patch.object(geeknews.time, "sleep"),
+                patch.object(geeknews.typer, "echo"),
+            ):
+                page, outcome = geeknews.fetch_topic("1")
+            self.assertEqual(outcome, expected)
+            self.assertEqual(page is not None, expected == "ok")
+
+    def test_budget_is_shared_through_a_file(self):
+        # 크롤과 백필은 다른 프로세스다. 한 시간 안에 쓴 요청은 파일로 함께 센다.
+        now = time.time()
+        stamps = [now - 60] * geeknews.TOPIC_BUDGET
+        geeknews.TOPIC_BUDGET_FILE.write_text(
+            json.dumps({"requests": stamps}), encoding="utf-8"
+        )
+        with (
+            patch.object(geeknews.requests, "get", return_value=_resp(200)) as get,
             patch.object(geeknews.time, "sleep"),
         ):
-            for _ in range(len(pages)):
-                geeknews.fetch_geeknews_metrics("1")
+            self.assertEqual(geeknews.fetch_topic("1"), (None, "budget"))
+        get.assert_not_called()
 
-        # 중간에 한 번 성공하면 연속이 끊겨 남은 요청을 계속한다.
-        self.assertEqual(get.call_count, len(pages))
+        # 창이 지난 요청은 한도에서 빠진다.
+        old = [now - geeknews.TOPIC_BUDGET_WINDOW_SECONDS - 1] * geeknews.TOPIC_BUDGET
+        geeknews.TOPIC_BUDGET_FILE.write_text(
+            json.dumps({"requests": old}), encoding="utf-8"
+        )
+        self.assertEqual(geeknews.topic_budget_left(), geeknews.TOPIC_BUDGET)
+
+    def test_every_request_spends_the_budget(self):
+        with (
+            patch.object(geeknews.requests, "get", return_value=_resp(404)),
+            patch.object(geeknews.time, "sleep"),
+            patch.object(geeknews.typer, "echo"),
+        ):
+            geeknews.fetch_topic("1")
+            geeknews.fetch_topic("2")
+        self.assertEqual(geeknews.topic_budget_left(), geeknews.TOPIC_BUDGET - 2)
+
+    def test_broken_budget_file_counts_as_empty(self):
+        geeknews.TOPIC_BUDGET_FILE.write_text("{not json", encoding="utf-8")
+        self.assertEqual(geeknews.topic_budget_left(), geeknews.TOPIC_BUDGET)
+
+    def test_missing_id_and_open_breaker_send_nothing(self):
+        with (
+            patch.object(geeknews.requests, "get", return_value=_resp(403)) as get,
+            patch.object(geeknews.time, "sleep"),
+            patch.object(geeknews.typer, "echo"),
+        ):
+            self.assertEqual(geeknews.fetch_topic(None), (None, "skipped"))
+            for _ in range(geeknews.MAX_CONSECUTIVE_BLOCKS):
+                geeknews.fetch_topic("1")
+            self.assertEqual(geeknews.fetch_topic("1"), (None, "skipped"))
+
+        self.assertEqual(get.call_count, geeknews.MAX_CONSECUTIVE_BLOCKS)
 
 
 class MetricsIndexTests(unittest.TestCase):
@@ -93,10 +172,10 @@ class MetricsIndexTests(unittest.TestCase):
             patch.object(geeknews.requests, "get", return_value=_resp(text=self.LISTING)) as get,
             patch.object(geeknews.time, "sleep"),
         ):
-            index = geeknews.fetch_metrics_index(["100", "101"])
+            index = geeknews.fetch_listing_index(["100", "101"])
 
-        self.assertEqual(index["100"], {"likes": 7, "comments": 4})
-        self.assertEqual(index["101"], {"likes": 2, "comments": 0})
+        self.assertEqual(index["100"], {"likes": 7, "comments": 4, "original_url": None})
+        self.assertEqual(index["101"], {"likes": 2, "comments": 0, "original_url": None})
         # 필요한 id를 첫 장에서 다 찾았으면 남은 장은 받지 않는다.
         self.assertEqual(get.call_count, 1)
 
@@ -107,7 +186,7 @@ class MetricsIndexTests(unittest.TestCase):
             ) as get,
             patch.object(geeknews.time, "sleep"),
         ):
-            self.assertEqual(geeknews.fetch_metrics_index(["100"]), {})
+            self.assertEqual(geeknews.fetch_listing_index(["100"]), {})
 
         self.assertEqual(get.call_count, 1)
 

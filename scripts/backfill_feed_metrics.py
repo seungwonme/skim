@@ -12,6 +12,10 @@ URL 파싱으로 id를 못 뽑는다. 그런 행은 Algolia 검색으로 되찾�
 
 재실행해도 안전하다. 이미 채워진 행은 대상에서 빠진다.
 
+데일리는 여기서 hackernews만 돈다. GeekNews 지표는 scripts/backfill_geeknews_topics.py가
+GN 요약, 댓글과 같은 토픽 요청 한 번으로 채운다 (#29). 이 스크립트의 geeknews 경로는
+수동 실행용으로만 남는다.
+
 사용:
     uv run python scripts/backfill_feed_metrics.py --dry-run
     uv run python scripts/backfill_feed_metrics.py --platform geeknews --limit 50
