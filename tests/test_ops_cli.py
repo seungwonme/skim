@@ -2,6 +2,7 @@
 
 import json
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -10,6 +11,7 @@ from unittest.mock import patch
 from typer.testing import CliRunner
 
 from skim_cli.cli import app
+from skim_core.crawlers.feed import geeknews
 from skim_core.db import get_connection, init_db
 
 RECENT_TIMESTAMP = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
@@ -192,6 +194,25 @@ class OpsCliTests(unittest.TestCase):
         row = next(r for r in payload["recent_thin"] if r["platform"] == "geeknews")
         self.assertEqual((row["fragment"], row["total"]), (1, 20))
         self.assertFalse([w for w in payload["warnings"] if w.startswith("geeknews:")])
+
+    def test_doctor_reports_a_recorded_topic_block_without_probing(self):
+        # 차단된 날은 원문만 붙은 partial이라 본문 경고에 안 잡힌다. 크롤이 적어 둔
+        # 차단을 보고하고, 막힌 뒤의 요청은 차단을 연장하므로 probe는 보내지 않는다.
+        geeknews.TOPIC_BUDGET_FILE.write_text(
+            json.dumps({"requests": [], "blocked_at": time.time() - 60}),
+            encoding="utf-8",
+        )
+        with patch("skim_cli.cli.probe_user_agent") as probe:
+            result = self.runner.invoke(
+                app, ["doctor", "--db", str(self.db), "--emit", "json"]
+            )
+
+        probe.assert_not_called()
+        payload = json.loads(result.stdout)
+        self.assertTrue(
+            any(w.startswith("geeknews: 토픽 페이지가") for w in payload["warnings"]),
+            payload["warnings"],
+        )
 
     def test_doctor_reports_extractor_availability(self):
         result = self.runner.invoke(

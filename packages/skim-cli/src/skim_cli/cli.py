@@ -16,6 +16,7 @@ import typer
 
 from skim_core.crawlers import REGISTRY
 from skim_core.crawlers.auth.cdp import login as cdp_login
+from skim_core.crawlers.feed.geeknews import last_topic_block
 from skim_core.feed_utils import probe_user_agent
 from skim_core.db import (
     DB_PATH,
@@ -120,6 +121,24 @@ def _fragment_body_warnings(rows: List[dict]) -> List[str]:
         if row["total"] >= FRAGMENT_BODY_MIN_ROWS
         and row["fragment"] / row["total"] >= FRAGMENT_BODY_WARN_RATIO
     ]
+
+
+def _geeknews_topic_warnings() -> List[str]:
+    """GeekNews 토픽 페이지 차단 여부.
+
+    news.hada.io는 토픽 페이지를 막아도 RSS는 주므로 크롤은 성공으로 끝나고 댓글과
+    지표만 3주씩 조용히 빠졌다 (2026-08-29~09-22). 크롤이 차단을 기록했으면 그걸
+    보고하고 probe는 보내지 않는다. 막힌 뒤의 요청은 차단을 연장한다. 차단된 날은
+    원문만 붙은 partial이라 본문 경고에 안 잡힌다.
+    """
+    blocked_at = last_topic_block()
+    if blocked_at:
+        return [
+            f"geeknews: 토픽 페이지가 {datetime.fromtimestamp(blocked_at):%Y-%m-%d %H:%M}에 "
+            "막혔다. GN 요약과 댓글 없이 원문만 저장된다"
+        ]
+    ua_issue = probe_user_agent()
+    return [ua_issue] if ua_issue else []
 
 
 def platform_help(include_all: bool = False) -> str:
@@ -690,11 +709,7 @@ def doctor(
         if not found:
             report["warnings"].append(f"{name} not on PATH")
 
-    # news.hada.io는 특정 Chrome 버전을 403으로 막는다. 게시글은 RSS로 들어와서
-    # 크롤은 성공으로 끝나고 댓글·지표만 3주씩 조용히 빠졌다 (2026-08-29~09-22).
-    ua_issue = probe_user_agent()
-    if ua_issue:
-        report["warnings"].append(ua_issue)
+    report["warnings"].extend(_geeknews_topic_warnings())
 
     if report["db_exists"]:
         integrity = check_integrity(db_path)
