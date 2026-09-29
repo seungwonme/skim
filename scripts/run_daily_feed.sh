@@ -42,8 +42,8 @@ METRICS_BACKFILL_LIMIT=400
 
 # GeekNews 토픽 백필의 상한. 크롤에서 한도가 모자라 못 받은 GN 요약과 댓글, 그리고
 # 2026-08-29 ~ 09-28 차단 기간에 요약 조각만 남은 행(#29)을 채운다. 토픽 요청은
-# 크롤과 합쳐 한 시간 25건을 넘기지 않으므로(geeknews.TOPIC_BUDGET), 크롤이 한도를
-# 다 쓴 밤에는 요청 없이 바로 끝난다.
+# 크롤과 합쳐 20시간 창에 25건을 넘기지 않으므로(geeknews.TOPIC_BUDGET), 크롤이
+# 한도를 다 쓴 밤에는 요청 없이 바로 끝난다.
 GEEKNEWS_TOPIC_BACKFILL_LIMIT=100
 
 echo "======= start $(date '+%Y-%m-%d %H:%M:%S') =======" >>"$LOG"

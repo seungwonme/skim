@@ -32,20 +32,23 @@ MAX_COMMENTS = 15
 
 # news.hada.io는 토픽 페이지를 (IP, UA) 단위 요청 수로 막는다. 간격은 상관없다:
 # 1초 간격 33건(2026-09-22), 3초 간격 31건(2026-09-29)에서 똑같이 막혔다. 3초 간격으로
-# 360건을 버틴 2026-08 기록은 브라우저 확인이 생기기 전 값이다. 한 번 막히면 25분이
-# 지나도 풀리지 않았다(2026-09-29 21:24 차단, 21:50 여전히 차단).
-# 그래서 요청 수 자체를 한도 아래로 둔다. 간격은 한 번에 몰리지 않게 하는 정도다.
+# 360건을 버틴 2026-08 기록은 브라우저 확인이 생기기 전 값이다. 한 번 막히면 오래
+# 간다: 2026-09-29 21:24에 막힌 뒤 21:50, 22:30에도 막혀 있었다. 9월 말 데일리도
+# 매일 밤 24요청 안팎에서 막혔다. 창 길이는 모르지만 한 시간보다 길다.
+# 그래서 요청 수를 하루(20시간 창) 한도 아래로 둔다. 창을 24시간보다 조금 짧게 잡아
+# 매일 밤 크롤이 새 한도로 시작한다. 간격은 한 번에 몰리지 않게 하는 정도다.
 TOPIC_REQUEST_INTERVAL_SECONDS = 3.0
 TOPIC_BUDGET = 25
-TOPIC_BUDGET_WINDOW_SECONDS = 3600
-# 크롤과 백필은 다른 프로세스라 한도를 파일로 나눠 쓴다. 최근 요청 시각만 담는다.
+TOPIC_BUDGET_WINDOW_SECONDS = 20 * 3600
+# 크롤, 백필, 수동 실행은 다른 프로세스라 한도를 파일로 나눠 쓴다. 최근 요청 시각만 담는다.
 TOPIC_BUDGET_FILE = DATA_DIR / "geeknews_topic_budget.json"
 
 # 막힌 뒤에도 계속 두드리면 차단이 갱신돼 풀리지 않는다. 2026-08-29~09-22에 댓글과
 # 지표가 3주간 통째로 빈 게 그 상태다: 매 회차 50건을 전부 403으로 맞으면서 매일
 # 차단을 새로 걸었다. 반대로 쓰지 않으면 풀린다 (8-09에 막힌 UA가 9-22에 정상 응답).
-# 그래서 막히면 그 회차의 남은 요청을 포기한다. 게시글 저장은 영향받지 않는다.
-MAX_CONSECUTIVE_BLOCKS = 3
+# 그래서 한 번 막히면 남은 요청을 포기하고, 한도 파일도 다 쓴 것으로 적어 다른
+# 프로세스도 창이 지날 때까지 요청하지 않게 한다. 게시글 저장은 영향받지 않는다.
+MAX_CONSECUTIVE_BLOCKS = 1
 
 # 목록 한 장이 20건. RSS가 주는 50건을 세 장이면 덮는다. 필요한 id를 다 찾으면
 # 남은 장은 받지 않으므로 이건 상한일 뿐이다.
@@ -90,31 +93,57 @@ def topic_blocked() -> bool:
     return _consecutive_blocks >= MAX_CONSECUTIVE_BLOCKS
 
 
-def _recent_topic_requests(now: float) -> List[float]:
+def _load_topic_budget() -> dict:
+    """한도 파일. `{"requests": [요청 시각...], "blocked_at": 막힌 시각 또는 null}`."""
     try:
-        stamps = json.loads(TOPIC_BUDGET_FILE.read_text(encoding="utf-8"))
+        state = json.loads(TOPIC_BUDGET_FILE.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return []
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def _within_window(stamp: Any, now: float) -> bool:
+    return (
+        isinstance(stamp, (int, float)) and 0 <= now - stamp < TOPIC_BUDGET_WINDOW_SECONDS
+    )
+
+
+def _recent_topic_requests(state: dict, now: float) -> List[float]:
+    stamps = state.get("requests")
     if not isinstance(stamps, list):
         return []
-    return [
-        t
-        for t in stamps
-        if isinstance(t, (int, float)) and 0 <= now - t < TOPIC_BUDGET_WINDOW_SECONDS
-    ]
+    return [t for t in stamps if _within_window(t, now)]
+
+
+def last_topic_block(now: Optional[float] = None) -> Optional[float]:
+    """창 안에서 토픽 페이지가 막힌 시각. 없으면 None. doctor가 요청 없이 읽는다."""
+    now = time.time() if now is None else now
+    blocked_at = _load_topic_budget().get("blocked_at")
+    return blocked_at if _within_window(blocked_at, now) else None
 
 
 def topic_budget_left(now: Optional[float] = None) -> int:
-    """최근 한 시간 동안 이 작업공간에서 쓴 토픽 요청을 빼고 남은 수."""
+    """창(`TOPIC_BUDGET_WINDOW_SECONDS`) 안에서 이 작업공간이 쓰고 남은 토픽 요청 수.
+
+    창 안에서 한 번이라도 막혔으면 0이다.
+    """
     now = time.time() if now is None else now
-    return max(0, TOPIC_BUDGET - len(_recent_topic_requests(now)))
+    state = _load_topic_budget()
+    if _within_window(state.get("blocked_at"), now):
+        return 0
+    return max(0, TOPIC_BUDGET - len(_recent_topic_requests(state, now)))
 
 
-def _spend_topic_budget(now: float) -> None:
-    stamps = _recent_topic_requests(now) + [now]
+def _spend_topic_budget(now: float, blocked: bool = False) -> None:
+    state = _load_topic_budget()
+    blocked_at = now if blocked else state.get("blocked_at")
+    record = {
+        "requests": _recent_topic_requests(state, now) + [now],
+        "blocked_at": blocked_at if _within_window(blocked_at, now) else None,
+    }
     try:
         TOPIC_BUDGET_FILE.parent.mkdir(parents=True, exist_ok=True)
-        TOPIC_BUDGET_FILE.write_text(json.dumps(stamps), encoding="utf-8")
+        TOPIC_BUDGET_FILE.write_text(json.dumps(record), encoding="utf-8")
     except OSError as e:
         typer.echo(f"   [!] GeekNews 토픽 한도 기록 실패: {e}")
 
@@ -287,8 +316,8 @@ def fetch_topic(topic_id: Optional[str]) -> Tuple[Optional[TopicPage], str]:
     파싱 예외) 중 하나다. 글 탓인 실패는 gone과 empty뿐이다. 백필은 이 둘만 글에
     기록해, 삭제된 글을 매일 밤 다시 두드리다 멈추는 일을 막는다.
 
-    요청 수는 `TOPIC_BUDGET`(한 시간)을 넘기지 않는다. 연속으로 막히면 이 프로세스의
-    남은 토픽 요청을 모두 건너뛴다. 막힌 뒤에도 두드리면 차단이 길어진다.
+    요청 수는 `TOPIC_BUDGET`(20시간 창)을 넘기지 않는다. 막히면 이 프로세스의 남은
+    토픽 요청을 건너뛰고 한도도 다 쓴 것으로 적는다. 막힌 뒤에 두드리면 차단이 길어진다.
     """
     global _last_topic_request, _consecutive_blocks  # pylint: disable=global-statement
     if not topic_id or topic_blocked():
@@ -313,11 +342,11 @@ def fetch_topic(topic_id: Optional[str]) -> Tuple[Optional[TopicPage], str]:
         )
         if _is_blocked(resp):
             _consecutive_blocks += 1
-            if topic_blocked():
-                typer.echo(
-                    "   [!] GeekNews가 요청을 막았습니다. 이 회차의 남은 토픽 요청을 "
-                    "건너뜁니다 (계속 두드리면 차단이 길어집니다)."
-                )
+            _spend_topic_budget(time.time(), blocked=True)
+            typer.echo(
+                "   [!] GeekNews가 요청을 막았습니다. 남은 토픽 요청은 한도 창이 지날 "
+                "때까지 보내지 않습니다 (두드리면 차단이 길어집니다)."
+            )
             return None, "blocked"
         # 지워진 글은 404("아마도 글이 지워진거 같습니다!")로 온다 (2026-09-29 확인).
         if resp.status_code in (404, 410):
@@ -475,7 +504,7 @@ def enrich_geeknews_items(items: List[dict]) -> List[dict]:
         if outcome == "budget" and not out_of_budget:
             out_of_budget = True
             print(
-                f"   [!] GeekNews 토픽 요청 한도(한 시간 {TOPIC_BUDGET}건)를 다 썼습니다. "
+                f"   [!] GeekNews 토픽 요청 한도({TOPIC_BUDGET}건)를 다 썼거나 막혔습니다. "
                 "남은 글은 원문만 붙여 partial로 저장합니다."
             )
         enrich_geeknews_item(item, topic)
