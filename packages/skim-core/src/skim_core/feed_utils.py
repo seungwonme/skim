@@ -157,6 +157,12 @@ def fetch_feed(
     return results
 
 
+# news.hada.io가 요청이 몰린 (IP, UA)에 내주는 Cloudflare Turnstile "브라우저 확인"
+# 페이지의 표지. 200에 정상 HTML로 와서 상태 코드로는 성공과 구분되지 않는다
+# (2026-09-22 확인).
+CHALLENGE_MARKER = "browser-check-turnstile"
+
+
 def probe_user_agent(url: str = "https://news.hada.io/topic?id=1") -> Optional[str]:
     """`USER_AGENT`가 지금 막혀 있는지 본다. 문제 없으면 None, 있으면 사유.
 
@@ -173,5 +179,11 @@ def probe_user_agent(url: str = "https://news.hada.io/topic?id=1") -> Optional[s
         return (
             f"user-agent blocked by {url}: 요청을 줄여 차단이 풀리기를 기다리거나, "
             "급하면 feed_utils.USER_AGENT의 Chrome 버전을 올린다"
+        )
+    # 2026-09 차단은 이 형태였다. 사이트가 의도한 봇 확인이라 넘기지 않고 요청을 줄인다.
+    if CHALLENGE_MARKER in resp.text:
+        return (
+            f"browser check served by {url}: 토픽 요청이 막혀 GN 요약과 댓글이 "
+            "partial로 저장된다. 요청을 줄여 풀리기를 기다린다"
         )
     return None

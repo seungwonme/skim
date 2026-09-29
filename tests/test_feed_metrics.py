@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 
 from skim_core.crawlers.feed.geeknews import (
     GeekNewsCrawler,
+    TopicPage,
     fetch_geeknews_metrics,
     topic_id_from_url,
 )
@@ -208,25 +209,33 @@ class GeekNewsMetricsTests(unittest.TestCase):
                 "published": "2026-08-01T09:00:00+09:00",
             }
         ]
+        topic = TopicPage(
+            summary="- 한국어 요약",
+            original_url=None,
+            likes=9,
+            comments=9,
+            comment_section="## GeekNews Comments\n\n- **a**: b",
+        )
         with (
             patch("skim_core.crawlers.feed.geeknews.fetch_feed", return_value=items),
-            patch("skim_core.crawlers.feed.geeknews.enrich_with_content"),
-            # 지표는 목록에서 온다. 글마다 토픽 페이지를 열면 회차당 50건이 되고
-            # 그 물량이 차단을 불렀다.
+            # 지표와 원문 링크는 목록에서 온다. 글마다 토픽 페이지를 열면 회차당
+            # 50건이 되고 그 물량이 차단을 불렀다.
             patch(
-                "skim_core.crawlers.feed.geeknews.fetch_metrics_index",
-                return_value={"32235": {"likes": 7, "comments": 3}},
+                "skim_core.crawlers.feed.geeknews.fetch_listing_index",
+                return_value={
+                    "32235": {"likes": 7, "comments": 3, "original_url": None}
+                },
             ),
             patch(
-                "skim_core.crawlers.feed.geeknews.fetch_geeknews_metrics",
-                return_value={"comment_section": "## GeekNews Comments\n\n- **a**: b"},
+                "skim_core.crawlers.feed.geeknews.fetch_topic_page", return_value=topic
             ) as topic_page,
         ):
             posts = asyncio.run(crawler.crawl(since=SINCE))
 
+        # 목록 값이 먼저다. 토픽 페이지 값은 목록에 없을 때만 쓴다.
         self.assertEqual(posts[0].likes, 7)
         self.assertEqual(posts[0].comments, 3)
-        # 댓글 본문은 목록에 없으므로 댓글이 있는 글만 토픽 페이지를 연다.
+        # GN 요약과 댓글은 토픽 페이지 한 번으로 함께 받는다.
         topic_page.assert_called_once_with("32235")
         self.assertIn("## GeekNews Comments", posts[0].content_markdown)
 
@@ -244,14 +253,11 @@ class GeekNewsMetricsTests(unittest.TestCase):
         ]
         with (
             patch("skim_core.crawlers.feed.geeknews.fetch_feed", return_value=items),
-            patch("skim_core.crawlers.feed.geeknews.enrich_with_content"),
-            patch(
-                "skim_core.crawlers.feed.geeknews.fetch_geeknews_metrics"
-            ) as fetch_metrics,
+            patch("skim_core.crawlers.feed.geeknews.fetch_topic_page") as fetch_topic,
         ):
             posts = asyncio.run(crawler.crawl(since=SINCE, no_content=True))
 
-        fetch_metrics.assert_not_called()
+        fetch_topic.assert_not_called()
         self.assertIsNone(posts[0].likes)
 
     def test_no_content_skips_the_metrics_listing_too(self):
@@ -269,7 +275,7 @@ class GeekNewsMetricsTests(unittest.TestCase):
         with (
             patch("skim_core.crawlers.feed.geeknews.fetch_feed", return_value=items),
             patch(
-                "skim_core.crawlers.feed.geeknews.fetch_metrics_index"
+                "skim_core.crawlers.feed.geeknews.fetch_listing_index"
             ) as fetch_index,
         ):
             posts = asyncio.run(crawler.crawl(since=SINCE, no_content=True))

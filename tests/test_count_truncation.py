@@ -32,7 +32,15 @@ def _items(n, prefix="https://example.com/"):
 class CountTruncationTests(unittest.TestCase):
     """enrich_with_content가 count개만 받는지 본다."""
 
-    def _assert_truncated(self, module, crawler, count, feed_items, **kwargs):
+    def _assert_truncated(
+        self,
+        module,
+        crawler,
+        count,
+        feed_items,
+        enrich_attr="enrich_with_content",
+        **kwargs,
+    ):
         seen = {}
 
         def spy(items):
@@ -42,7 +50,7 @@ class CountTruncationTests(unittest.TestCase):
             return items
 
         with (
-            patch.object(module, "enrich_with_content", side_effect=spy),
+            patch.object(module, enrich_attr, side_effect=spy),
             patch.object(module, "fetch_feed", return_value=list(feed_items)),
         ):
             asyncio.run(
@@ -65,8 +73,16 @@ class CountTruncationTests(unittest.TestCase):
             )
 
     def test_geeknews(self):
-        with patch.object(geeknews, "fetch_geeknews_metrics", return_value=None):
-            self._assert_truncated(geeknews, geeknews.GeekNewsCrawler(), 3, _items(20))
+        # 목록 요청도 count 뒤에 나간다. 막지 않으면 news.hada.io에 실제로 요청한다.
+        with patch.object(geeknews, "fetch_listing_index", return_value={}) as index:
+            self._assert_truncated(
+                geeknews,
+                geeknews.GeekNewsCrawler(),
+                3,
+                _items(20),
+                enrich_attr="enrich_geeknews_items",
+            )
+        self.assertEqual(len(index.call_args.args[0]), 3)
 
     def test_everyto(self):
         self._assert_truncated(everyto, everyto.EveryToCrawler(), 3, _items(20))

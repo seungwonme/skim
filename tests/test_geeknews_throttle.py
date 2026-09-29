@@ -66,6 +66,40 @@ class GeekNewsThrottleTests(unittest.TestCase):
         # 중간에 한 번 성공하면 연속이 끊겨 남은 요청을 계속한다.
         self.assertEqual(get.call_count, len(pages))
 
+    def test_outcome_tells_deleted_topics_from_blocks(self):
+        # 백필은 글 탓인 실패(gone, empty)만 행에 남긴다. 차단이나 네트워크 오류를
+        # 글 탓으로 세면 멀쩡한 글이 대상에서 빠진다.
+        cases = [
+            (_resp(404), "gone"),
+            (_resp(403), "blocked"),
+            (_resp(200, "<html></html>"), "empty"),
+            (_resp(200, "<span id='tp1'>3</span>"), "ok"),
+            (ConnectionError("reset"), "error"),
+        ]
+        for response, expected in cases:
+            geeknews.reset_topic_throttle()
+            with (
+                patch.object(geeknews.requests, "get", side_effect=[response]),
+                patch.object(geeknews.time, "sleep"),
+                patch.object(geeknews.typer, "echo"),
+            ):
+                page, outcome = geeknews.fetch_topic("1")
+            self.assertEqual(outcome, expected)
+            self.assertEqual(page is not None, expected == "ok")
+
+    def test_missing_id_and_open_breaker_send_nothing(self):
+        with (
+            patch.object(geeknews.requests, "get", return_value=_resp(403)) as get,
+            patch.object(geeknews.time, "sleep"),
+            patch.object(geeknews.typer, "echo"),
+        ):
+            self.assertEqual(geeknews.fetch_topic(None), (None, "skipped"))
+            for _ in range(geeknews.MAX_CONSECUTIVE_BLOCKS):
+                geeknews.fetch_topic("1")
+            self.assertEqual(geeknews.fetch_topic("1"), (None, "skipped"))
+
+        self.assertEqual(get.call_count, geeknews.MAX_CONSECUTIVE_BLOCKS)
+
 
 class MetricsIndexTests(unittest.TestCase):
     """지표는 /newest 목록에서 받는다. 글마다 토픽 페이지를 열던 때는 회차당 50건을
@@ -93,10 +127,10 @@ class MetricsIndexTests(unittest.TestCase):
             patch.object(geeknews.requests, "get", return_value=_resp(text=self.LISTING)) as get,
             patch.object(geeknews.time, "sleep"),
         ):
-            index = geeknews.fetch_metrics_index(["100", "101"])
+            index = geeknews.fetch_listing_index(["100", "101"])
 
-        self.assertEqual(index["100"], {"likes": 7, "comments": 4})
-        self.assertEqual(index["101"], {"likes": 2, "comments": 0})
+        self.assertEqual(index["100"], {"likes": 7, "comments": 4, "original_url": None})
+        self.assertEqual(index["101"], {"likes": 2, "comments": 0, "original_url": None})
         # 필요한 id를 첫 장에서 다 찾았으면 남은 장은 받지 않는다.
         self.assertEqual(get.call_count, 1)
 
@@ -107,7 +141,7 @@ class MetricsIndexTests(unittest.TestCase):
             ) as get,
             patch.object(geeknews.time, "sleep"),
         ):
-            self.assertEqual(geeknews.fetch_metrics_index(["100"]), {})
+            self.assertEqual(geeknews.fetch_listing_index(["100"]), {})
 
         self.assertEqual(get.call_count, 1)
 

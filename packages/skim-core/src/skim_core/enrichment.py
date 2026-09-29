@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import List, Optional
 
 import requests
-from bs4 import BeautifulSoup
 
 try:
     import trafilatura  # pylint: disable=import-error
@@ -599,45 +598,6 @@ def _apply_youtube_summary_fallback(item: dict) -> bool:
     return True
 
 
-def _geeknews_topic_body_from_html(html: str) -> Optional[str]:
-    """토픽 페이지 HTML에서 큐레이터 요약(.topic_contents)을 마크다운으로 추출"""
-    soup = BeautifulSoup(html, "html.parser")
-    node = soup.select_one(".topic_contents")
-    if not node:
-        return None
-    lines = []
-    for el in node.find_all(["p", "li", "h1", "h2", "h3", "blockquote"]):
-        text = el.get_text(" ", strip=True)
-        if text:
-            lines.append(f"- {text}" if el.name == "li" else text)
-    body = "\n".join(dict.fromkeys(lines)) if lines else node.get_text(" ", strip=True)
-    return body.strip() or None
-
-
-def fetch_geeknews_topic_body(topic_url: str) -> Optional[str]:
-    """긱뉴스 토픽 페이지에서 한국어 요약 본문을 가져온다"""
-    try:
-        r = _HTTP_SESSION.get(topic_url, timeout=10)
-        return _geeknews_topic_body_from_html(r.text)
-    except Exception:
-        return None
-
-
-def resolve_geeknews_original_url(topic_url: str) -> Optional[str]:
-    """긱뉴스 토픽 페이지에서 원문 URL을 추출"""
-    try:
-        r = _HTTP_SESSION.get(topic_url, timeout=10)
-        soup = BeautifulSoup(r.text, "html.parser")
-        title_a = soup.select_one(".topictitle a")
-        if title_a:
-            href = title_a.get("href", "")
-            if href and not href.startswith("/") and "news.hada.io" not in href:
-                return href
-    except Exception:
-        pass
-    return None
-
-
 def _pdf_fallback(url: str, min_words: int = 60) -> Optional[dict]:
     """링크가 PDF면 PDF 추출을 시도한다. HTML 추출기는 PDF에서 늘 실패한다."""
     if not url or ".pdf" not in url.lower():
@@ -697,56 +657,15 @@ def _apply_youtube_comments(item: dict, url: str) -> None:
     print(f"    -> 댓글 {section.count(chr(10) + '- ') + 1}건")
 
 
-def _enrich_geeknews_item(item: dict, url: str) -> Optional[dict]:
-    """GeekNews: 토픽 페이지의 한국어 요약을 1차 본문으로 삼고 원문을 뒤에 붙인다.
-
-    원문이 랜딩/디렉터리 페이지라 내비게이션 잡문이 추출돼도 본문이 무너지지 않는다.
-    """
-    topic_body = fetch_geeknews_topic_body(url)
-    original_url = resolve_geeknews_original_url(url)
-    data = None
-    if original_url:
-        item["original_url"] = original_url
-        print(f"    -> 원문: {original_url[:60]}")
-        data = defuddle(original_url)
-        if not _is_content_usable(data, item.get("title", ""), min_words=3):
-            data, method, error = extract_article_content(
-                original_url, item.get("title", "")
-            )
-            item["enrichment_method"] = method
-            if error:
-                item["enrichment_error"] = error
-    elif not topic_body:
-        data = defuddle(url)
-
-    if topic_body:
-        original_md = (data or {}).get("content_markdown", "").strip()
-        merged = topic_body
-        if original_md:
-            merged += "\n\n---\n\n## Original Article\n\n" + original_md
-        data = dict(data or {})
-        data["content_markdown"] = merged
-        data["word_count"] = len(merged.split())
-    elif not _is_content_usable(data, item.get("title", ""), min_words=3):
-        # GN⁺ 요약이 아직 안 붙었는데 원문 추출까지 못 쓰게 나오면 본문이 통째로
-        # 빈다. producthunt 태그라인과 같은 처리로 피드 요약을 최저선으로 남긴다.
-        # method=failed라 다음 크롤에서 요약이 붙으면 덮어쓴다. 공통 게이트를 한 번
-        # 더 지나므로, 요약이 제목과 같거나 3단어 미만이면 그대로 빈 본문이 된다.
-        fallback = (item.get("summary") or "").strip()
-        if fallback:
-            data = {
-                "content_markdown": fallback,
-                "word_count": len(fallback.split()),
-            }
-            item["enrichment_method"] = "failed"
-    return data
-
-
 def _extract_for_platform(item: dict, url: str) -> Optional[dict]:
     """플랫폼에 맞는 본문 추출 경로를 고른다."""
     platform = item["platform"]
-    if platform == "geeknews" and "news.hada.io/topic" in url:
-        return _enrich_geeknews_item(item, url)
+    if platform == "geeknews":
+        # GeekNews 본문은 crawlers/feed/geeknews.py의 enrich_geeknews_items가 만든다.
+        # 토픽 페이지는 요청량으로 막히는 자리라 그 모듈의 간격과 서킷브레이커를
+        # 거쳐야 한다. 여기서 열면 둘 다 우회해 2026-09의 차단을 되풀이한다 (#29).
+        print("    [!] GeekNews는 enrich_geeknews_items로 추출합니다. 건너뜁니다.")
+        return None
     if (
         platform.startswith("ailabs")
         or platform.startswith("blogs")
