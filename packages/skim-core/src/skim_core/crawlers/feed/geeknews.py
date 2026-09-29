@@ -135,10 +135,11 @@ def topic_budget_left(now: Optional[float] = None) -> int:
 
 
 def _spend_topic_budget(now: float, blocked: bool = False) -> None:
+    """요청 한 건을 적는다. blocked면 요청은 보내기 전에 이미 적었으므로 차단 시각만 적는다."""
     state = _load_topic_budget()
     blocked_at = now if blocked else state.get("blocked_at")
     record = {
-        "requests": _recent_topic_requests(state, now) + [now],
+        "requests": _recent_topic_requests(state, now) + ([] if blocked else [now]),
         "blocked_at": blocked_at if _within_window(blocked_at, now) else None,
     }
     try:

@@ -71,6 +71,8 @@ class GeekNewsThrottleTests(unittest.TestCase):
         self.assertEqual(get.call_count, 1)
         self.assertEqual(geeknews.topic_budget_left(), 0)
         self.assertIsNotNone(geeknews.last_topic_block())
+        state = json.loads(geeknews.TOPIC_BUDGET_FILE.read_text(encoding="utf-8"))
+        self.assertEqual(len(state["requests"]), 1, "막힌 요청도 한 번만 센다")
 
     def test_outcome_tells_deleted_topics_from_blocks(self):
         # 백필은 글 탓인 실패(gone, empty)만 행에 남긴다. 차단이나 네트워크 오류를
