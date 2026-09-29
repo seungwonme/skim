@@ -94,6 +94,31 @@ REGRESSION_LOOKBACK_DAYS = 14
 # 섞여 지금 고장났는지 알 수 없다.
 RECENT_THIN_LOOKBACK_DAYS = 7
 
+# 본문이 피드 요약 조각뿐이거나 partial인 행. 비어 있지는 않아서 위 결손 집계에
+# 안 잡힌다. GeekNews 9월 저장분 89%가 이 상태였는데 doctor는 `2/268`로만 보였다 (#29).
+_EXTRA_JSON_SQL = "COALESCE(NULLIF(TRIM(extra), ''), '{}')"
+PARTIAL_BODY_SQL = (
+    f"json_extract({_EXTRA_JSON_SQL}, '$.content_status') = 'partial' "
+    f"OR (json_extract({_EXTRA_JSON_SQL}, '$.enrichment_method') = 'failed' "
+    "AND TRIM(COALESCE(content_markdown, '')) <> '' "
+    "AND TRIM(content_markdown) = TRIM(COALESCE(summary, '')))"
+)
+# 2026-07 이후 주간 실측: GeekNews를 뺀 전 플랫폼 0%, GeekNews 정상 주 0~5%, 토픽
+# 페이지가 막힌 주 28~98%. 그 사이를 가른다. 표본이 적으면 한두 건에 흔들린다.
+PARTIAL_BODY_WARN_RATIO = 0.2
+PARTIAL_BODY_MIN_ROWS = 10
+
+
+def _partial_body_warnings(rows: List[dict]) -> List[str]:
+    """최근 유입분 중 조각이나 partial 본문 비율이 정상 범위를 넘은 플랫폼."""
+    return [
+        f"{row['platform']}: 최근 {RECENT_THIN_LOOKBACK_DAYS}일 본문 "
+        f"{row['partial']}/{row['total']}건이 요약 조각이나 partial이다"
+        for row in rows
+        if row["total"] >= PARTIAL_BODY_MIN_ROWS
+        and row["partial"] / row["total"] >= PARTIAL_BODY_WARN_RATIO
+    ]
+
 
 def platform_help(include_all: bool = False) -> str:
     """User-facing platform list derived from the crawler registry."""
@@ -619,19 +644,21 @@ def doctor(
             for row in conn.execute(
                 f"""
                 SELECT platform, COUNT(*) AS total,
-                       SUM(CASE WHEN COALESCE(content_markdown, '') = '' THEN 1 ELSE 0 END) AS thin
+                       SUM(CASE WHEN COALESCE(content_markdown, '') = '' THEN 1 ELSE 0 END) AS thin,
+                       SUM(CASE WHEN {PARTIAL_BODY_SQL} THEN 1 ELSE 0 END) AS partial
                 FROM posts
                 WHERE crawled_at >= datetime('now', '-{RECENT_THIN_LOOKBACK_DAYS} days')
                   AND NOT (platform = 'youtube' AND summary IS NULL)
                   {"AND platform = ?" if platform else ""}
                 GROUP BY platform
-                HAVING thin > 0
+                HAVING thin > 0 OR partial > 0
                 ORDER BY thin DESC
                 """,
                 params,
             ).fetchall()
         ]
         conn.close()
+        report["warnings"].extend(_partial_body_warnings(report["recent_thin"]))
     except Exception as exc:  # pragma: no cover - defensive report path
         report["warnings"].append(f"database check failed: {exc}")
 
@@ -729,10 +756,16 @@ def _emit_doctor(report: dict, emit: str) -> None:
                 f"with_text={row['with_text']} missing_text={row['missing_text']} "
                 f"latest={row['latest_crawl']}"
             )
-    if report.get("recent_thin"):
+    thin_rows = [row for row in report.get("recent_thin", []) if row["thin"]]
+    if thin_rows:
         typer.echo(f"recent missing body (last {RECENT_THIN_LOOKBACK_DAYS}d):")
-        for row in report["recent_thin"]:
+        for row in thin_rows:
             typer.echo(f"  {row['platform']}: {row['thin']}/{row['total']}")
+    partial_rows = [row for row in report.get("recent_thin", []) if row.get("partial")]
+    if partial_rows:
+        typer.echo(f"recent partial body (last {RECENT_THIN_LOOKBACK_DAYS}d):")
+        for row in partial_rows:
+            typer.echo(f"  {row['platform']}: {row['partial']}/{row['total']}")
     if report.get("extractor"):
         state = "ok" if report["extractor"]["ok"] else "unavailable"
         typer.echo(f"extractor: playwright {state} - {report['extractor']['detail']}")
