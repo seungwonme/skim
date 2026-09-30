@@ -24,7 +24,13 @@ from pathlib import Path
 from typing import Optional
 
 from skim_core.crawlers import REGISTRY
-from skim_core.db import finish_run, get_connection, save_posts, save_run, update_run_progress
+from skim_core.db import (
+    finish_run,
+    get_connection,
+    save_posts,
+    save_run,
+    update_run_progress,
+)
 from skim_core.paths import workspace_root
 from skim_core.research import store
 from skim_core.research.search import search_posts
@@ -158,11 +164,17 @@ def _filter_by_session(
     for p in platforms:
         needs_session = p in SESSION_REQUIRED
         if p == "reddit":
-            needs_session = _reddit_requires_session(options_by_platform.get("reddit", {}))
+            needs_session = _reddit_requires_session(
+                options_by_platform.get("reddit", {})
+            )
         if needs_session and not session_file_exists(p, workspace=workspace):
             if explicit:
-                raise NoSessionError(f"{p}: no session. Run `uv run skim login {p}` first.")
-            stdlib_warnings.warn(f"[skim] {p}: no session file, skipped. Run `skim login {p}`")
+                raise NoSessionError(
+                    f"{p}: no session. Run `uv run skim login {p}` first."
+                )
+            stdlib_warnings.warn(
+                f"[skim] {p}: no session file, skipped. Run `skim login {p}`"
+            )
             skipped.append(p)
             continue
         kept.append(p)
@@ -289,7 +301,9 @@ def research_lock(workspace: Path):
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             acquired = True
         except BlockingIOError as exc:
-            raise ConcurrentResearchError("another research refresh is in progress") from exc
+            raise ConcurrentResearchError(
+                "another research refresh is in progress"
+            ) from exc
         yield
     finally:
         if acquired:
@@ -305,7 +319,9 @@ def _cleanup_stale_research_runs(conn: sqlite3.Connection) -> int:
 
     `conn` 은 `get_connection()` 반환물 (row_factory=sqlite3.Row 전제).
     """
-    cutoff = (datetime.now(UTC) - timedelta(minutes=STALE_RUNNING_TTL_MINUTES)).isoformat()
+    cutoff = (
+        datetime.now(UTC) - timedelta(minutes=STALE_RUNNING_TTL_MINUTES)
+    ).isoformat()
     rows = conn.execute(
         """SELECT id, runner_pid, runner_host, started_at
            FROM research_runs
@@ -431,7 +447,11 @@ async def refresh_platforms(
     except Exception as exc:  # pylint: disable=broad-except
         # record_started 실패 시 runs row 가 leak 되지 않도록 즉시 종결 (codex Phase 2 review)
         finish_run(
-            run_id, "failed", 0, summary=f"record_started failed: {exc!s}"[:500], db_path=db_path
+            run_id,
+            "failed",
+            0,
+            summary=f"record_started failed: {exc!s}"[:500],
+            db_path=db_path,
         )
         raise
 
@@ -439,7 +459,9 @@ async def refresh_platforms(
     inserted_ids: set[tuple[str, str]] = set()
     try:
         for platform in available:
-            update_run_progress(run_id, platform, f"research refresh: {platform}", db_path=db_path)
+            update_run_progress(
+                run_id, platform, f"research refresh: {platform}", db_path=db_path
+            )
             try:
                 options = _build_crawler_options(platform, days)
                 posts = await REGISTRY[platform]().crawl(**options)
@@ -450,10 +472,14 @@ async def refresh_platforms(
                 inserted_ids.update({(platform, eid) for eid in new_ids})
                 crawled.append(platform)
             except Exception as exc:  # pylint: disable=broad-except
-                update_run_progress(run_id, platform, f"{platform} failed: {exc}", db_path=db_path)
+                update_run_progress(
+                    run_id, platform, f"{platform} failed: {exc}", db_path=db_path
+                )
                 continue
     except Exception as exc:  # pylint: disable=broad-except
-        finish_run(run_id, "failed", len(inserted_ids), summary=str(exc)[:500], db_path=db_path)
+        finish_run(
+            run_id, "failed", len(inserted_ids), summary=str(exc)[:500], db_path=db_path
+        )
         store.record_failed(research_run_id, str(exc)[:500], db_path=db_path)
         raise
 
@@ -466,7 +492,9 @@ async def refresh_platforms(
             summary=f"all platforms failed: {available}",
             db_path=db_path,
         )
-        store.record_failed(research_run_id, f"all platforms failed: {available}", db_path=db_path)
+        store.record_failed(
+            research_run_id, f"all platforms failed: {available}", db_path=db_path
+        )
         raise AllPlatformsFailedError(f"all platforms failed: {available}")
 
     # 일부 또는 전체 성공 — runs 는 'completed'
@@ -584,7 +612,10 @@ async def run_with_expansion(
 
     # fetched_this_run flag 부여
     for p in results:
-        p["fetched_this_run"] = (p["platform"], p.get("external_id")) in newly_fetched_ids
+        p["fetched_this_run"] = (
+            p["platform"],
+            p.get("external_id"),
+        ) in newly_fetched_ids
 
     # research_runs 종결 (refresh 가 실제로 일어났던 경우만)
     if research_run_id is not None:
@@ -648,7 +679,10 @@ async def _run_with_lock_and_refresh(
                     posts=initial_results,
                     search_stats=initial_stats,
                     days_requested=days,
-                    warnings=[*initial_warnings, "recent refresh within 30m, using cached"],
+                    warnings=[
+                        *initial_warnings,
+                        "recent refresh within 30m, using cached",
+                    ],
                 )
             if _has_running(conn, tokens_key, sources_key):
                 raise ConcurrentResearchError("another research run is active")
@@ -737,7 +771,10 @@ async def run_research(
             posts=initial_results,
             search_stats=initial_stats,
             days_requested=days,
-            warnings=[*initial_search_warnings, f"concurrent refresh in progress: {exc}"],
+            warnings=[
+                *initial_search_warnings,
+                f"concurrent refresh in progress: {exc}",
+            ],
         )
     except NoSessionError:
         return 1, {}

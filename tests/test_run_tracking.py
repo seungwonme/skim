@@ -6,7 +6,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from skim_core.db import get_connection, init_db, save_posts, save_run, update_run_progress
+from skim_core.db import (
+    get_connection,
+    init_db,
+    save_posts,
+    save_run,
+    update_run_progress,
+)
 from skim_core.enrichment import _select_youtube_subtitle_languages, enrich_with_content
 from skim_core.models import Post
 
@@ -213,7 +219,9 @@ ko-0L2zzeR32C4              Korean                  vtt, srt
         self.assertEqual(selected, "en-US-y-JJSUA13BM,ko-0L2zzeR32C4")
 
     @patch("skim_core.enrichment.extract_youtube_transcript", return_value=None)
-    def test_enrich_with_content_uses_summary_when_youtube_transcript_is_missing(self, _extract):
+    def test_enrich_with_content_uses_summary_when_youtube_transcript_is_missing(
+        self, _extract
+    ):
         item = {
             "platform": "youtube/Test Channel",
             "title": "Fallback video",

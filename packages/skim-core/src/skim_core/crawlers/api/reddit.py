@@ -494,7 +494,9 @@ class RedditAPICrawler:
     # Atom 요약의 링크 게시물 껍데기. strip_html이 앵커를 텍스트로 만들면
     # "submitted by /u/x [link] [comments]"만 남고 원문 href는 사라진다.
     _RSS_LINK_HREF = re.compile(r'<a href="([^"]+)">\[link\]</a>')
-    _RSS_SHELL = re.compile(r"^submitted by\s+/u/\S+\s*(\[link\]\s*)?(\[comments\]\s*)?$")
+    _RSS_SHELL = re.compile(
+        r"^submitted by\s+/u/\S+\s*(\[link\]\s*)?(\[comments\]\s*)?$"
+    )
 
     def parse_rss_entry(self, entry: dict, subreddit: str) -> Optional[Post]:
         """Reddit Atom entry를 Post로 변환합니다."""

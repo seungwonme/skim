@@ -69,13 +69,17 @@ class ShouldRefreshPerPlatformTests(unittest.TestCase):
     SOURCES = ["hackernews", "reddit"]
 
     def test_force_returns_all(self):
-        self.assertEqual(should_refresh_per_platform([], "force", self.SOURCES), self.SOURCES)
+        self.assertEqual(
+            should_refresh_per_platform([], "force", self.SOURCES), self.SOURCES
+        )
 
     def test_never_returns_empty(self):
         self.assertEqual(should_refresh_per_platform([], "never", self.SOURCES), [])
 
     def test_auto_stale_only(self):
-        results = [{"platform": "hackernews", "timestamp": _hours_ago_iso(1)}] * 5  # fresh + enough
+        results = [
+            {"platform": "hackernews", "timestamp": _hours_ago_iso(1)}
+        ] * 5  # fresh + enough
         stale = should_refresh_per_platform(results, "auto", self.SOURCES)
         self.assertEqual(stale, ["reddit"])  # reddit no posts → stale
 
@@ -121,12 +125,16 @@ class FilterBySessionTests(unittest.TestCase):
 
     def test_keeps_platforms_with_session(self):
         (self.workspace / "data" / "sessions" / "threads_session.json").write_text("{}")
-        kept, skipped = _filter_by_session(["threads"], explicit=False, workspace=self.workspace)
+        kept, skipped = _filter_by_session(
+            ["threads"], explicit=False, workspace=self.workspace
+        )
         self.assertEqual(kept, ["threads"])
         self.assertEqual(skipped, [])
 
     def test_skips_missing_session(self):
-        kept, skipped = _filter_by_session(["threads"], explicit=False, workspace=self.workspace)
+        kept, skipped = _filter_by_session(
+            ["threads"], explicit=False, workspace=self.workspace
+        )
         self.assertEqual(kept, [])
         self.assertEqual(skipped, ["threads"])
 
@@ -144,7 +152,9 @@ class FilterBySessionTests(unittest.TestCase):
         self.assertEqual(kept, ["reddit"])
 
     def test_feed_platform_no_session_required(self):
-        kept, _ = _filter_by_session(["hackernews"], explicit=False, workspace=self.workspace)
+        kept, _ = _filter_by_session(
+            ["hackernews"], explicit=False, workspace=self.workspace
+        )
         self.assertEqual(kept, ["hackernews"])
 
 
@@ -159,7 +169,9 @@ class WithinBackoffTests(unittest.TestCase):
         if self.db.exists():
             self.db.unlink()
 
-    def _insert(self, *, tokens_key: str, sources_key: str, status: str, started_at: str) -> None:
+    def _insert(
+        self, *, tokens_key: str, sources_key: str, status: str, started_at: str
+    ) -> None:
         conn = sqlite3.connect(str(self.db))
         conn.execute(
             """INSERT INTO research_runs
@@ -173,7 +185,12 @@ class WithinBackoffTests(unittest.TestCase):
 
     def test_true_for_recent_completed_same_key(self):
         recent = _hours_ago_iso(0.1)
-        self._insert(tokens_key='["a"]', sources_key='["b"]', status="completed", started_at=recent)
+        self._insert(
+            tokens_key='["a"]',
+            sources_key='["b"]',
+            status="completed",
+            started_at=recent,
+        )
         conn = get_connection(self.db)
         try:
             self.assertTrue(within_backoff(conn, '["a"]', '["b"]'))
@@ -182,7 +199,12 @@ class WithinBackoffTests(unittest.TestCase):
 
     def test_false_for_different_tokens(self):
         recent = _hours_ago_iso(0.1)
-        self._insert(tokens_key='["a"]', sources_key='["b"]', status="completed", started_at=recent)
+        self._insert(
+            tokens_key='["a"]',
+            sources_key='["b"]',
+            status="completed",
+            started_at=recent,
+        )
         conn = get_connection(self.db)
         try:
             self.assertFalse(within_backoff(conn, '["x"]', '["b"]'))
@@ -190,8 +212,12 @@ class WithinBackoffTests(unittest.TestCase):
             conn.close()
 
     def test_false_for_old_completed(self):
-        old = (datetime.now(UTC) - timedelta(minutes=BACKOFF_WINDOW_MINUTES + 5)).isoformat()
-        self._insert(tokens_key='["a"]', sources_key='["b"]', status="completed", started_at=old)
+        old = (
+            datetime.now(UTC) - timedelta(minutes=BACKOFF_WINDOW_MINUTES + 5)
+        ).isoformat()
+        self._insert(
+            tokens_key='["a"]', sources_key='["b"]', status="completed", started_at=old
+        )
         conn = get_connection(self.db)
         try:
             self.assertFalse(within_backoff(conn, '["a"]', '["b"]'))
@@ -201,7 +227,10 @@ class WithinBackoffTests(unittest.TestCase):
     def test_ignores_interrupted_rows(self):
         recent = _hours_ago_iso(0.1)
         self._insert(
-            tokens_key='["a"]', sources_key='["b"]', status="interrupted", started_at=recent
+            tokens_key='["a"]',
+            sources_key='["b"]',
+            status="interrupted",
+            started_at=recent,
         )
         conn = get_connection(self.db)
         try:
@@ -211,7 +240,9 @@ class WithinBackoffTests(unittest.TestCase):
 
     def test_ignores_failed_rows(self):
         recent = _hours_ago_iso(0.1)
-        self._insert(tokens_key='["a"]', sources_key='["b"]', status="failed", started_at=recent)
+        self._insert(
+            tokens_key='["a"]', sources_key='["b"]', status="failed", started_at=recent
+        )
         conn = get_connection(self.db)
         try:
             self.assertFalse(within_backoff(conn, '["a"]', '["b"]'))
@@ -440,7 +471,10 @@ class RunResearchTests(unittest.TestCase):
         )
         self.assertEqual(code, 0)
         self.assertTrue(
-            any("threads: no session file, skipped" in warning for warning in resp["warnings"])
+            any(
+                "threads: no session file, skipped" in warning
+                for warning in resp["warnings"]
+            )
         )
 
 

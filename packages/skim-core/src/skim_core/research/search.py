@@ -118,7 +118,8 @@ def search_posts(
     params: list = []
     for token in escaped_tokens:
         clauses = " OR ".join(
-            f"LOWER(COALESCE({fname}, '')) LIKE ? ESCAPE '\\'" for fname in SEARCH_FIELDS
+            f"LOWER(COALESCE({fname}, '')) LIKE ? ESCAPE '\\'"
+            for fname in SEARCH_FIELDS
         )
         where.append(f"({clauses})")
         like = f"%{token}%"
@@ -150,9 +151,9 @@ def search_posts(
         raw_rows = conn.execute(window_sql, [*params, limit]).fetchall()
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
         # rows_scanned: WHERE 매칭 row 총 수 (cap 전). 측정/디버깅용.
-        scanned = conn.execute(f"SELECT COUNT(*) FROM posts WHERE {where_sql}", params).fetchone()[
-            0
-        ]
+        scanned = conn.execute(
+            f"SELECT COUNT(*) FROM posts WHERE {where_sql}", params
+        ).fetchone()[0]
     finally:
         conn.close()
 

@@ -13,7 +13,6 @@ from ...feed_utils import fetch_feed
 from ...models import Post
 from ...source_registry import resolve_feed_sources
 
-
 # 구독자 벽. 무료 미리보기가 여기서 끊기고 나머지는 프로모 문구로 채워진다.
 # (2026-08-10 실측: "...to unlock this piece and learn about:")
 _PAYWALL = re.compile(

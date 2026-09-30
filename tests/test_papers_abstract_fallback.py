@@ -11,8 +11,14 @@ from skim_core.enrichment import _paper_pdf_url
 
 
 def test_paper_pdf_url_derivation() -> None:
-    assert _paper_pdf_url("https://arxiv.org/abs/2607.01188v1") == "https://arxiv.org/pdf/2607.01188v1"
-    assert _paper_pdf_url("https://huggingface.co/papers/2606.00248") == "https://arxiv.org/pdf/2606.00248"
+    assert (
+        _paper_pdf_url("https://arxiv.org/abs/2607.01188v1")
+        == "https://arxiv.org/pdf/2607.01188v1"
+    )
+    assert (
+        _paper_pdf_url("https://huggingface.co/papers/2606.00248")
+        == "https://arxiv.org/pdf/2606.00248"
+    )
     assert _paper_pdf_url("https://example.com/x") is None
 
 

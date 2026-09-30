@@ -73,7 +73,8 @@ class XAPICrawler:
             raise typer.Exit(1)
 
         try:
-            from twitter.account import Account  # pylint: disable=import-outside-toplevel
+            # pylint: disable-next=import-outside-toplevel
+            from twitter.account import Account
 
             self.account = Account(
                 cookies={"ct0": ct0, "auth_token": auth_token},
@@ -154,7 +155,8 @@ class XAPICrawler:
 
     def _fetch_user_tweets(self, screen_name: str, count: int) -> list[dict]:
         """특정 사용자의 트윗 가져오기"""
-        from twitter.scraper import Scraper  # pylint: disable=import-outside-toplevel
+        # pylint: disable-next=import-outside-toplevel
+        from twitter.scraper import Scraper
 
         if self.debug_mode:
             typer.echo(f"  @{screen_name} 트윗 요청 중...")
@@ -471,7 +473,8 @@ class XAPICrawler:
         if getattr(self, "_scraper", None) is not None:
             return self._scraper
         try:
-            from twitter.scraper import Scraper  # pylint: disable=import-outside-toplevel
+            # pylint: disable-next=import-outside-toplevel
+            from twitter.scraper import Scraper
 
             cookies = self._load_cookies()
             self._scraper = Scraper(

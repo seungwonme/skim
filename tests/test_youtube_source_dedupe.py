@@ -65,7 +65,9 @@ class NormalizeTrackedChannelsTests(unittest.TestCase):
         self._add_source("@AndrejKarpathy", "@AndrejKarpathy")
         self._add_post("youtube/@AndrejKarpathy", "vid-1")
 
-        with patch("skim_core.youtube_history.resolve_channel_id", return_value=KARPATHY_ID):
+        with patch(
+            "skim_core.youtube_history.resolve_channel_id", return_value=KARPATHY_ID
+        ):
             stats = normalize_tracked_channels()
 
         self.assertEqual(stats["merged"], 1)
@@ -73,14 +75,18 @@ class NormalizeTrackedChannelsTests(unittest.TestCase):
 
         # 핸들 이름으로 저장돼 있던 글은 남는 구독 쪽으로 옮겨야 사라지지 않는다.
         conn = get_connection(self.db)
-        source = conn.execute("SELECT source FROM posts WHERE external_id='vid-1'").fetchone()[0]
+        source = conn.execute(
+            "SELECT source FROM posts WHERE external_id='vid-1'"
+        ).fetchone()[0]
         conn.close()
         self.assertEqual(source, "youtube/Andrej Karpathy")
 
     def test_unique_handle_is_promoted_to_channel_id(self):
         self._add_source("@aiDotEngineer", "@aiDotEngineer")
 
-        with patch("skim_core.youtube_history.resolve_channel_id", return_value="UCnewchannel"):
+        with patch(
+            "skim_core.youtube_history.resolve_channel_id", return_value="UCnewchannel"
+        ):
             stats = normalize_tracked_channels()
 
         self.assertEqual(stats["promoted"], 1)
@@ -88,7 +94,9 @@ class NormalizeTrackedChannelsTests(unittest.TestCase):
 
     def test_promotion_makes_the_unique_constraint_reject_a_later_duplicate(self):
         self._add_source("@aiDotEngineer", "@aiDotEngineer")
-        with patch("skim_core.youtube_history.resolve_channel_id", return_value="UCnewchannel"):
+        with patch(
+            "skim_core.youtube_history.resolve_channel_id", return_value="UCnewchannel"
+        ):
             normalize_tracked_channels()
 
         # 승격 후에는 같은 채널을 다시 등록하려 해도 DB가 막는다.

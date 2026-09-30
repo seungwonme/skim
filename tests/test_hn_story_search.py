@@ -43,7 +43,9 @@ class SearchStoryIdTests(unittest.TestCase):
         """엉뚱한 스토리를 물면 남의 댓글과 점수가 그 행에 붙는다."""
         with patch(
             "skim_core.crawlers.feed.hackernews._algolia_hits",
-            side_effect=_hits({"objectID": "9", "title": "다른 글", "url": "https://x.y/z"}),
+            side_effect=_hits(
+                {"objectID": "9", "title": "다른 글", "url": "https://x.y/z"}
+            ),
         ):
             found = search_story_id("우리 글", "https://a.b/c")
 

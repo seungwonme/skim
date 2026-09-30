@@ -179,11 +179,23 @@ class CrawlRequestBudgetTests(_Isolated):
         # 한도(30건 안팎)가 회차 글 수(50건 안팎)보다 작다. 원문 링크 없는 자체 글은
         # 토픽 페이지가 본문 전부이고, 댓글은 토픽 페이지에만 있다.
         items = [
-            {"title": "링크 글", "url": "https://news.hada.io/topic?id=1",
-             "original_url": "https://example.com/1", "comments": 0},
-            {"title": "Show GN", "url": "https://news.hada.io/topic?id=2", "comments": 0},
-            {"title": "토론 글", "url": "https://news.hada.io/topic?id=3",
-             "original_url": "https://example.com/3", "comments": 5},
+            {
+                "title": "링크 글",
+                "url": "https://news.hada.io/topic?id=1",
+                "original_url": "https://example.com/1",
+                "comments": 0,
+            },
+            {
+                "title": "Show GN",
+                "url": "https://news.hada.io/topic?id=2",
+                "comments": 0,
+            },
+            {
+                "title": "토론 글",
+                "url": "https://news.hada.io/topic?id=3",
+                "original_url": "https://example.com/3",
+                "comments": 5,
+            },
         ]
         requested = []
 
@@ -201,7 +213,9 @@ class CrawlRequestBudgetTests(_Isolated):
 
         self.assertEqual(requested, ["2", "3", "1"])
         # 저장 순서는 피드 순서 그대로다.
-        self.assertEqual([i["title"] for i in result], ["링크 글", "Show GN", "토론 글"])
+        self.assertEqual(
+            [i["title"] for i in result], ["링크 글", "Show GN", "토론 글"]
+        )
 
     def test_crawl_stops_at_the_budget_and_keeps_originals(self):
         # 크롤과 백필이 20시간 창에 쓰는 토픽 요청을 합쳐 한도 아래로 둔다. 한도를 넘긴
@@ -361,7 +375,9 @@ class SavedOriginalTests(unittest.TestCase):
     def test_body_without_original_section(self):
         self.assertIsNone(geeknews.saved_original_from("RSS 요약 조각"))
         self.assertIsNone(geeknews.saved_original_from(None))
-        self.assertIsNone(geeknews.saved_original_from("요약\n\n## Original Article\n\n"))
+        self.assertIsNone(
+            geeknews.saved_original_from("요약\n\n## Original Article\n\n")
+        )
 
 
 class TopicSummaryTests(unittest.TestCase):

@@ -16,12 +16,18 @@ _CONTENT_HTML = (
 
 
 def test_extracts_rp_redirect() -> None:
-    item = {"content_html": _CONTENT_HTML, "url": "https://www.producthunt.com/products/scritty"}
+    item = {
+        "content_html": _CONTENT_HTML,
+        "url": "https://www.producthunt.com/products/scritty",
+    }
     assert _redirect_url(item) == "https://www.producthunt.com/r/p/1185930?app_id=339"
 
 
 def test_falls_back_to_url_when_no_redirect() -> None:
-    item = {"content_html": "<p>no link here</p>", "url": "https://www.producthunt.com/products/x"}
+    item = {
+        "content_html": "<p>no link here</p>",
+        "url": "https://www.producthunt.com/products/x",
+    }
     assert _redirect_url(item) == "https://www.producthunt.com/products/x"
 
 
@@ -38,7 +44,9 @@ def test_tagline_extracts_first_paragraph() -> None:
 
 
 def test_tagline_strips_inner_tags_and_whitespace() -> None:
-    item = {"content_html": "<p>\n   Track your <b>music</b> repertoire   \n</p><p>x</p>"}
+    item = {
+        "content_html": "<p>\n   Track your <b>music</b> repertoire   \n</p><p>x</p>"
+    }
     assert _tagline(item) == "Track your music repertoire"
 
 

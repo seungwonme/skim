@@ -226,8 +226,12 @@ class SocialAPIMetadataTests(unittest.TestCase):
 
     def test_linkedin_parse_response_keeps_feed_order_and_share_url_id(self):
         crawler = LinkedInAPICrawler.__new__(LinkedInAPICrawler)
-        first_urn = "urn:li:fsd_update:(urn:li:activity:999,MAIN_FEED,EMPTY,DEFAULT,false)"
-        second_urn = "urn:li:fsd_update:(urn:li:activity:888,MAIN_FEED,EMPTY,DEFAULT,false)"
+        first_urn = (
+            "urn:li:fsd_update:(urn:li:activity:999,MAIN_FEED,EMPTY,DEFAULT,false)"
+        )
+        second_urn = (
+            "urn:li:fsd_update:(urn:li:activity:888,MAIN_FEED,EMPTY,DEFAULT,false)"
+        )
         payload = {
             "data": {
                 "data": {
@@ -289,7 +293,9 @@ class SocialAPIMetadataTests(unittest.TestCase):
         crawler = LinkedInAPICrawler.__new__(LinkedInAPICrawler)
         item = {
             "commentary": {
-                "text": {"text": "지금 광고 리포트를 확인해 보세요. 자세한 내용은 링크로."}
+                "text": {
+                    "text": "지금 광고 리포트를 확인해 보세요. 자세한 내용은 링크로."
+                }
             },
             "actor": {
                 "name": {"text": "AB180"},
@@ -313,7 +319,10 @@ class SocialAPIMetadataTests(unittest.TestCase):
             ("https://www.linkedin.com/uas/login?session_redirect=...", "login"),
             ("/checkpoint/challenge/abc", "checkpoint"),
             ("https://www.linkedin.com/authwall?trk=...", "authwall"),
-            ("https://www.linkedin.com/voyager/api/feed/updatesV2", "self-redirect-loop"),
+            (
+                "https://www.linkedin.com/voyager/api/feed/updatesV2",
+                "self-redirect-loop",
+            ),
             ("https://www.linkedin.com/feed/", "redirect"),
         ]
         for location, expected in cases:
@@ -325,7 +334,9 @@ class SocialAPIMetadataTests(unittest.TestCase):
 
     def test_linkedin_parse_relative_timestamp_supports_accessibility_copy(self):
         crawler = LinkedInAPICrawler.__new__(LinkedInAPICrawler)
-        reference_time = datetime(2026, 4, 8, 18, 0, 0, tzinfo=timezone(timedelta(hours=9)))
+        reference_time = datetime(
+            2026, 4, 8, 18, 0, 0, tzinfo=timezone(timedelta(hours=9))
+        )
 
         timestamp = getattr(crawler, "_parse_relative_timestamp")(
             "2 hours ago • Visible to Aiden's connections",
@@ -348,15 +359,23 @@ class SocialAPIMetadataTests(unittest.TestCase):
                         "caption": {"text": "사진 있는 글"},
                         "image_versions2": {
                             "candidates": [
-                                {"url": "https://cdn.threads.net/img-large.jpg", "width": 1080},
-                                {"url": "https://cdn.threads.net/img-small.jpg", "width": 320},
+                                {
+                                    "url": "https://cdn.threads.net/img-large.jpg",
+                                    "width": 1080,
+                                },
+                                {
+                                    "url": "https://cdn.threads.net/img-small.jpg",
+                                    "width": 320,
+                                },
                             ]
                         },
                         "carousel_media": [
                             {
                                 "image_versions2": {
                                     "candidates": [
-                                        {"url": "https://cdn.threads.net/carousel-1.jpg"}
+                                        {
+                                            "url": "https://cdn.threads.net/carousel-1.jpg"
+                                        }
                                     ]
                                 }
                             }
@@ -461,9 +480,17 @@ class SocialAPIMetadataTests(unittest.TestCase):
                 # 단독 트윗
                 "solo": self._x_tweet("200", "혼자 글", "200"),
                 # 남의 스레드에 내가 단 답글 + 그 스레드 작성자 self-reply
-                "root": self._x_tweet("300", "남 루트", "300", author_id="B", screen="bob"),
+                "root": self._x_tweet(
+                    "300", "남 루트", "300", author_id="B", screen="bob"
+                ),
                 "b_reply": self._x_tweet(
-                    "301", "남 self-reply", "300", "300", "B", author_id="B", screen="bob"
+                    "301",
+                    "남 self-reply",
+                    "300",
+                    "300",
+                    "B",
+                    author_id="B",
+                    screen="bob",
                 ),
                 "my_reply": self._x_tweet(
                     "302", "내 답글", "300", "300", "B", author_id="A", screen="aiden"
@@ -487,11 +514,17 @@ class SocialAPIMetadataTests(unittest.TestCase):
                 "url_overridden_by_dest": "https://i.redd.it/direct.png",
                 "preview": {
                     "images": [
-                        {"source": {"url": "https://preview.redd.it/p.jpg?width=640&amp;s=x"}}
+                        {
+                            "source": {
+                                "url": "https://preview.redd.it/p.jpg?width=640&amp;s=x"
+                            }
+                        }
                     ]
                 },
                 "media_metadata": {
-                    "m1": {"s": {"u": "https://preview.redd.it/g1.jpg?auto=webp&amp;s=y"}}
+                    "m1": {
+                        "s": {"u": "https://preview.redd.it/g1.jpg?auto=webp&amp;s=y"}
+                    }
                 },
             }
         )
@@ -515,8 +548,14 @@ class SocialAPIMetadataTests(unittest.TestCase):
                             "vectorImage": {
                                 "rootUrl": "https://media.licdn.com/dms/image/v2/abc/",
                                 "artifacts": [
-                                    {"width": 800, "fileIdentifyingUrlPathSegment": "800.jpg"},
-                                    {"width": 1280, "fileIdentifyingUrlPathSegment": "1280.jpg"},
+                                    {
+                                        "width": 800,
+                                        "fileIdentifyingUrlPathSegment": "800.jpg",
+                                    },
+                                    {
+                                        "width": 1280,
+                                        "fileIdentifyingUrlPathSegment": "1280.jpg",
+                                    },
                                 ],
                             }
                         }

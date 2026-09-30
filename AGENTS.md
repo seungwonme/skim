@@ -27,8 +27,8 @@ just dev     # desktop 앱 실행
 
 # Python 개별 도구
 uv run pytest tests -v
-uv run black . --config pyproject.toml
-uv run isort . --settings-path pyproject.toml
+uv run ruff check --fix packages tests scripts   # import 정렬
+uv run ruff format packages tests scripts        # 포맷터 (편집 훅과 같은 설정)
 uv run flake8
 uv run pylint packages/skim-core/src/skim_core packages/skim-cli/src/skim_cli
 
@@ -328,6 +328,11 @@ arXiv 메일링은 09:00 KST라 00:02 배치보다 늦고 주말에는 없다. �
 - 태스크 러너: `just` (justfile)
 - Node: husky/commitlint 훅용으로만 `pnpm` 유지 (JS/TS 소스 없음)
 - Python: `uv` workspace
+- 포맷터: `ruff format` 하나 (88자, `pyproject.toml`의 `[tool.ruff]`). 편집 훅도 같은 설정으로 돈다.
+  import 정렬도 ruff(`ruff check --fix`, I 규칙만)다. `just lint`가 둘 다 확인한다
+- import 줄 끝에 `# pylint: disable=...`를 달지 않는다. 줄이 길면 정렬기가 주석을 괄호 안으로
+  옮겨 pylint가 읽지 못한다. 윗줄에 `# pylint: disable-next=...`로 쓴다
+- 포맷만 바꾼 커밋은 `.git-blame-ignore-revs`에 적는다. 저장소 전체를 다시 포맷하면 그 커밋을 추가한다
 - Swift desktop: `apps/desktop`
 - Git hooks: `husky`
 - Commit message validation: `commitlint`

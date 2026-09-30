@@ -37,7 +37,9 @@ class HNDiscussionTests(unittest.TestCase):
     def test_fetch_hn_discussion_parses_story_text_and_comments(self):
         resp = MagicMock()
         resp.json.return_value = ALGOLIA_FIXTURE
-        with patch("skim_core.crawlers.feed.hackernews.requests.get", return_value=resp):
+        with patch(
+            "skim_core.crawlers.feed.hackernews.requests.get", return_value=resp
+        ):
             discussion = fetch_hn_discussion("100")
 
         self.assertIn("Ask HN 본문입니다.", discussion["story_text"])
@@ -59,7 +61,11 @@ class HNDiscussionTests(unittest.TestCase):
             self.assertIsNone(fetch_hn_discussion("100"))
 
     def test_compose_hn_body_orders_story_article_comments(self):
-        discussion = {"story_text": "스토리 텍스트", "comments": ["- **a**: c1"], "points": 42}
+        discussion = {
+            "story_text": "스토리 텍스트",
+            "comments": ["- **a**: c1"],
+            "points": 42,
+        }
         body = compose_hn_body("기사 본문", discussion)
         self.assertEqual(
             body,
@@ -148,7 +154,9 @@ class HNDiscussionTests(unittest.TestCase):
         with (
             patch.object(crawler, "_fetch_top_story_items", return_value=items),
             patch("skim_core.crawlers.feed.hackernews.enrich_with_content") as enrich,
-            patch("skim_core.crawlers.feed.hackernews.fetch_hn_discussion") as discussion,
+            patch(
+                "skim_core.crawlers.feed.hackernews.fetch_hn_discussion"
+            ) as discussion,
         ):
             posts = asyncio.run(crawler.crawl(count=1, no_content=True))
 

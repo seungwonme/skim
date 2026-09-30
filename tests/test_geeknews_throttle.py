@@ -32,7 +32,9 @@ class GeekNewsThrottleTests(unittest.TestCase):
 
         # 첫 요청은 기다릴 이유가 없고, 두 번째는 간격을 채운다.
         self.assertEqual(len(sleep.call_args_list), 1)
-        self.assertLessEqual(sleep.call_args[0][0], geeknews.TOPIC_REQUEST_INTERVAL_SECONDS)
+        self.assertLessEqual(
+            sleep.call_args[0][0], geeknews.TOPIC_REQUEST_INTERVAL_SECONDS
+        )
 
     def test_gives_up_the_run_after_consecutive_blocks(self):
         with (
@@ -48,7 +50,9 @@ class GeekNewsThrottleTests(unittest.TestCase):
     def test_block_page_served_as_200_is_not_read_as_success(self):
         # 차단 페이지가 200으로 온다. 상태 코드만 보면 통과로 읽혀 빈 지표가 저장된다.
         with (
-            patch.object(geeknews.requests, "get", return_value=_resp(200, "Forbidden")) as get,
+            patch.object(
+                geeknews.requests, "get", return_value=_resp(200, "Forbidden")
+            ) as get,
             patch.object(geeknews.time, "sleep"),
         ):
             for _ in range(10):
@@ -232,20 +236,28 @@ class MetricsIndexTests(unittest.TestCase):
 
     def test_reads_points_and_comment_counts_from_the_listing(self):
         with (
-            patch.object(geeknews.requests, "get", return_value=_resp(text=self.LISTING)) as get,
+            patch.object(
+                geeknews.requests, "get", return_value=_resp(text=self.LISTING)
+            ) as get,
             patch.object(geeknews.time, "sleep"),
         ):
             index = geeknews.fetch_listing_index(["100", "101"])
 
-        self.assertEqual(index["100"], {"likes": 7, "comments": 4, "original_url": None})
-        self.assertEqual(index["101"], {"likes": 2, "comments": 0, "original_url": None})
+        self.assertEqual(
+            index["100"], {"likes": 7, "comments": 4, "original_url": None}
+        )
+        self.assertEqual(
+            index["101"], {"likes": 2, "comments": 0, "original_url": None}
+        )
         # 필요한 id를 첫 장에서 다 찾았으면 남은 장은 받지 않는다.
         self.assertEqual(get.call_count, 1)
 
     def test_stops_paging_when_the_listing_is_challenged(self):
         with (
             patch.object(
-                geeknews.requests, "get", return_value=_resp(text="browser-check-turnstile")
+                geeknews.requests,
+                "get",
+                return_value=_resp(text="browser-check-turnstile"),
             ) as get,
             patch.object(geeknews.time, "sleep"),
         ):
@@ -258,7 +270,9 @@ class MetricsIndexTests(unittest.TestCase):
         # 셀렉터가 전부 None을 돌려 빈 지표가 조용히 저장된다.
         page = '<html><div id="browser-check-turnstile"></div></html>'
         with (
-            patch.object(geeknews.requests, "get", return_value=_resp(text=page)) as get,
+            patch.object(
+                geeknews.requests, "get", return_value=_resp(text=page)
+            ) as get,
             patch.object(geeknews.time, "sleep"),
         ):
             for _ in range(10):

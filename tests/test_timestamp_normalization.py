@@ -3,7 +3,13 @@
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from skim_core.timestamp import _REL_KO, UTC, epoch_to_iso, relative_ko_to_iso, to_utc_iso
+from skim_core.timestamp import (
+    _REL_KO,
+    UTC,
+    epoch_to_iso,
+    relative_ko_to_iso,
+    to_utc_iso,
+)
 
 KST = timezone(timedelta(hours=9))
 

@@ -82,7 +82,9 @@ def test_failed_enrichment_gets_overwritten_by_successful_retry(tmp_path: Path) 
     assert "enrichment_error" not in extra
 
 
-def test_successful_enrichment_is_not_overwritten_by_later_failure(tmp_path: Path) -> None:
+def test_successful_enrichment_is_not_overwritten_by_later_failure(
+    tmp_path: Path,
+) -> None:
     db_path = tmp_path / "skim.db"
     init_db(db_path)
 

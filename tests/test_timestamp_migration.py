@@ -16,7 +16,9 @@ MIGRATION_PATH = ROOT / "scripts" / "normalize_existing_timestamps.py"
 
 
 def _load_migration():
-    spec = importlib.util.spec_from_file_location("normalize_existing_timestamps", MIGRATION_PATH)
+    spec = importlib.util.spec_from_file_location(
+        "normalize_existing_timestamps", MIGRATION_PATH
+    )
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
@@ -46,7 +48,9 @@ def _seed(db_path: Path, rows: list[tuple[str, str]]) -> None:
 
 def _read(db_path: Path) -> list[tuple[int, str]]:
     conn = sqlite3.connect(str(db_path))
-    rows = [(r[0], r[1]) for r in conn.execute("SELECT id, timestamp FROM posts").fetchall()]
+    rows = [
+        (r[0], r[1]) for r in conn.execute("SELECT id, timestamp FROM posts").fetchall()
+    ]
     conn.close()
     return rows
 
@@ -69,12 +73,16 @@ class DetectAndNormalizeTests(unittest.TestCase):
         self.assertEqual(reason, "relative_ko_skipped")
 
     def test_iso_branch_kst_offset_converted(self):
-        new_value, reason = migration.detect_and_normalize("2026-04-19T14:00:00+09:00", "youtube")
+        new_value, reason = migration.detect_and_normalize(
+            "2026-04-19T14:00:00+09:00", "youtube"
+        )
         self.assertEqual(reason, "iso")
         self.assertEqual(new_value, "2026-04-19T05:00:00+00:00")
 
     def test_iso_branch_already_utc_kept(self):
-        new_value, reason = migration.detect_and_normalize("2026-04-19T05:00:00+00:00", "youtube")
+        new_value, reason = migration.detect_and_normalize(
+            "2026-04-19T05:00:00+00:00", "youtube"
+        )
         self.assertEqual(reason, "iso")
         self.assertEqual(new_value, "2026-04-19T05:00:00+00:00")
 

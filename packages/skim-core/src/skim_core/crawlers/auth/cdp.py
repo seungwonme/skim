@@ -280,7 +280,9 @@ def resolve_login_credentials(
 
     if login_identifier and password:
         if save_credential:
-            save_login_credentials_to_keychain(platform_name, login_identifier, password)
+            save_login_credentials_to_keychain(
+                platform_name, login_identifier, password
+            )
         return login_identifier, password
 
     if save_credential:
@@ -292,7 +294,9 @@ def resolve_login_credentials(
     return None
 
 
-def build_autofill_expression(platform_name: str, login_identifier: str, password: str) -> str:
+def build_autofill_expression(
+    platform_name: str, login_identifier: str, password: str
+) -> str:
     """로그인 폼 자동 입력용 Runtime.evaluate 스크립트를 생성합니다."""
     config = PLATFORM_CONFIG[platform_name]
     payload = json.dumps(
@@ -485,7 +489,12 @@ def get_chrome_path() -> Optional[str]:
         path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
         return path if Path(path).exists() else None
     elif system == "Linux":
-        for candidate in ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]:
+        for candidate in [
+            "google-chrome",
+            "google-chrome-stable",
+            "chromium",
+            "chromium-browser",
+        ]:
             if shutil.which(candidate):
                 return candidate
         return None
@@ -496,7 +505,9 @@ def get_chrome_path() -> Optional[str]:
     return None
 
 
-def find_available_port(starting_from: int = CDP_DEFAULT_PORT, max_attempts: int = 10) -> int:
+def find_available_port(
+    starting_from: int = CDP_DEFAULT_PORT, max_attempts: int = 10
+) -> int:
     """사용 가능한 포트 찾기"""
     for offset in range(max_attempts):
         port = starting_from + offset
@@ -511,7 +522,9 @@ def find_available_port(starting_from: int = CDP_DEFAULT_PORT, max_attempts: int
     )
 
 
-def execute_cdp_command(ws_url: str, method: str, params: Optional[dict] = None) -> dict:
+def execute_cdp_command(
+    ws_url: str, method: str, params: Optional[dict] = None
+) -> dict:
     """WebSocket을 통한 CDP 명령 실행"""
     try:
         import websocket  # pylint: disable=import-outside-toplevel
@@ -535,7 +548,9 @@ def execute_cdp_command(ws_url: str, method: str, params: Optional[dict] = None)
 def get_current_url(ws_url: str) -> str:
     """현재 페이지 URL 반환"""
     execute_cdp_command(ws_url, "Runtime.enable")
-    result = execute_cdp_command(ws_url, "Runtime.evaluate", {"expression": "window.location.href"})
+    result = execute_cdp_command(
+        ws_url, "Runtime.evaluate", {"expression": "window.location.href"}
+    )
     return result.get("result", {}).get("value", "")
 
 
@@ -616,7 +631,9 @@ def login(  # noqa: C901
         )
 
     # PIPE로 열면 아무도 안 읽는 버퍼가 차서 Chrome이 멈출 수 있다.
-    process = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    process = subprocess.Popen(
+        args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
     time.sleep(3)
 
     try:

@@ -126,8 +126,12 @@ def _fetch_via_ytdlp(  # pylint: disable=unused-argument
                 "title": d.get("title", ""),
                 "url": url,
                 "author": channel_name,
-                "published": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat() if ts else "",
-                "summary": d.get("description", "")[:300] if d.get("description") else "",
+                "published": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+                if ts
+                else "",
+                "summary": d.get("description", "")[:300]
+                if d.get("description")
+                else "",
                 # flat-playlist도 view_count는 준다. 추가 요청 없이 조회수가 확보된다.
                 "views": d.get("view_count"),
             }
@@ -174,7 +178,9 @@ class YouTubeCrawler:
             # 핸들 구독은 channel_id가 없어 RSS 주소를 만들 수 없다.
             is_handle = channel_id.startswith("@")
             if not is_handle:
-                url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+                url = (
+                    f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+                )
                 results = fetch_feed(url, f"youtube/{name}", since, quiet=True)
                 longform = [r for r in results if "/shorts/" not in r.get("url", "")]
 

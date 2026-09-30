@@ -48,7 +48,9 @@ class YouTubeViewCountTests(unittest.TestCase):
 
     def test_missing_view_count_stays_none(self):
         """0과 미수집은 다른 값이다. 없으면 None으로 남긴다."""
-        items = self._run([{"id": "abc123XYZ09", "title": "T", "timestamp": 1754611200}])
+        items = self._run(
+            [{"id": "abc123XYZ09", "title": "T", "timestamp": 1754611200}]
+        )
 
         self.assertIsNone(items[0]["views"])
         self.assertIsNone(_item_to_post(items[0]).views)

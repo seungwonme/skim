@@ -5,8 +5,8 @@
   - [Commit Message Convention](#commit-message-convention)
   - [Issue Label Setting](#issue-label-setting)
 - [Code Style Convention](#code-style-convention)
-  - [Black](#black)
-  - [pre-commit](#pre-commit)
+  - [Ruff](#ruff)
+  - [Git hooks](#git-hooks)
 - [Comment Convention](#comment-convention)
 - [Cursor Convention](#cursor-convention)
   - [Code Writing](#code-writing)
@@ -59,45 +59,36 @@
 ## Code Style Convention
 
 - [PEP 8](https://peps.python.org/pep-0008/)을 준수하여 코드를 작성합니다.
-- [Black](https://black.readthedocs.io/en/latest/the_black_code_style/)을 사용하여 코드 스타일을 관리합니다.
+- [Ruff formatter](https://docs.astral.sh/ruff/formatter/)(`ruff format`)로 코드 스타일을, `ruff check`(I 규칙)로 import 순서를 관리합니다.
 - [Flake8](https://flake8.pycqa.org/en/latest/)과 [Pylint](https://pylint.pycqa.org/en/latest/)를 사용하여 코드 품질을 관리합니다.
   - [.flake8](https://flake8.pycqa.org/en/latest/user/configuration.html)
   - [구글 스타일 가이드 .pylintrc](https://google.github.io/styleguide/pyguide.html)
 
-### Black
+### Ruff
 
-`pyproject.toml` 추가
+`pyproject.toml`의 `[tool.ruff]`가 설정입니다. 편집 훅도 파일을 고칠 때마다 같은 설정으로
+`ruff format`을 돌리므로 폭(88자)을 여기서만 바꿉니다. `just format`이 import 정렬과 포맷을
+함께 하고, `just lint`가 둘이 어긋나면 실패합니다.
 
 ```toml
-[tool.black]
-line-length = 100
-target-version = ['py313']
-preview = true
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+include = ["*.py", "*.pyi"]
+
+[tool.ruff.lint]
+select = ["I"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["skim_cli", "skim_core"]
 ```
 
-### pre-commit
+import 줄 끝에 `# pylint: disable=...`를 달면 줄이 길 때 정렬기가 주석을 괄호 안으로 옮겨
+pylint가 읽지 못합니다. 윗줄에 `# pylint: disable-next=...`로 씁니다.
 
-`.pre-commit-config.yaml` 생성
+### Git hooks
 
-```yaml
-repos:
-  - repo: https://github.com/psf/black
-    rev: 25.1.0
-    hooks:
-      - id: black
-        args: ["--target-version", "py313"]
-  - repo: https://github.com/pycqa/flake8
-    rev: 7.1.1
-    hooks:
-      - id: flake8
-        args: ["--config=.flake8"]
-  - repo: https://github.com/pylint-dev/pylint
-    rev: v3.3.4
-    hooks:
-      - id: pylint
-        args:
-          - "--rcfile=.pylintrc"
-```
+`husky`가 커밋 전에 `just lint`(ruff 포맷 확인, flake8, pylint)를, 푸시 전에 `just test && just build`를 돌립니다.
 
 ```shell
 pip install pre-commit

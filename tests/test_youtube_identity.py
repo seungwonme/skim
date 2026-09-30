@@ -8,11 +8,15 @@ from skim_core.crawlers.feed.youtube import _item_to_post, youtube_video_id
 class YouTubeIdentityTests(unittest.TestCase):
     def test_video_id_extracted_from_url_variants(self):
         self.assertEqual(
-            youtube_video_id("https://www.youtube.com/watch?v=wVB95vLg_FQ"), "wVB95vLg_FQ"
+            youtube_video_id("https://www.youtube.com/watch?v=wVB95vLg_FQ"),
+            "wVB95vLg_FQ",
         )
-        self.assertEqual(youtube_video_id("https://youtu.be/wVB95vLg_FQ"), "wVB95vLg_FQ")
         self.assertEqual(
-            youtube_video_id("https://www.youtube.com/shorts/wVB95vLg_FQ"), "wVB95vLg_FQ"
+            youtube_video_id("https://youtu.be/wVB95vLg_FQ"), "wVB95vLg_FQ"
+        )
+        self.assertEqual(
+            youtube_video_id("https://www.youtube.com/shorts/wVB95vLg_FQ"),
+            "wVB95vLg_FQ",
         )
         self.assertIsNone(youtube_video_id("https://example.com/article"))
 

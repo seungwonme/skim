@@ -168,7 +168,9 @@ class ProductHuntCrawler:
         # 저장된 런칭은 원문 추출 전에 뺀다. URL이 아니라 id로 거르는 건 같은 제품
         # 페이지로 재런칭한 글이 별개 항목이기 때문이다.
         items = drop_known_items(
-            "producthunt", fetch_feed(PRODUCTHUNT_RSS, "producthunt", since), "external_id"
+            "producthunt",
+            fetch_feed(PRODUCTHUNT_RSS, "producthunt", since),
+            "external_id",
         )
 
         if debug:
