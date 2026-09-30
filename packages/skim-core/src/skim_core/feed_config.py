@@ -213,8 +213,5 @@ def arxiv_rss_url(category: str) -> str:
     return f"https://rss.arxiv.org/atom/{category}"
 
 
-# 하위 호환: 단일 URL을 참조하던 코드가 남아 있을 수 있다.
-ARXIV_API_URL = arxiv_api_url("cs.AI")
-
 # HuggingFace Daily Papers - JSON API
 HUGGINGFACE_PAPERS_URL = "https://huggingface.co/api/daily_papers"

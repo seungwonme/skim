@@ -1019,16 +1019,3 @@ def post_states(db_path: Optional[Path] = None) -> dict:
     finally:
         conn.close()
     return {row["post_id"]: row["action"] for row in rows}
-
-
-def add_feedback(post_id: int, action: str, db_path: Optional[Path] = None) -> None:
-    """사용자 피드백을 저장합니다."""
-    conn = get_connection(db_path)
-    try:
-        conn.execute(
-            "INSERT INTO feedback (post_id, action) VALUES (?, ?)",
-            (post_id, action),
-        )
-        conn.commit()
-    finally:
-        conn.close()

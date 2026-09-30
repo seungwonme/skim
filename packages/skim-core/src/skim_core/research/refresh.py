@@ -17,7 +17,7 @@ import os
 import socket
 import sqlite3
 import warnings as stdlib_warnings
-from collections import Counter, defaultdict
+from collections import defaultdict
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -80,10 +80,6 @@ class DbWriteError(RuntimeError):
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _count_by_platform(posts: list[dict]) -> dict[str, int]:
-    return dict(Counter(p["platform"] for p in posts))
-
-
 def _group_by_platform(posts: list[dict]) -> dict[str, list[dict]]:
     result: dict[str, list[dict]] = defaultdict(list)
     for p in posts:
@@ -140,15 +136,6 @@ def session_file_exists(platform: str, *, workspace: Optional[Path] = None) -> b
 def _reddit_requires_session(options: dict) -> bool:
     """subreddit 지정 없으면 홈 피드 → 세션 필요."""
     return not options.get("subreddit")
-
-
-def _resolve_sources(requested: list[str]) -> list[str]:
-    if not requested or requested == ["all"]:
-        return list(REGISTRY.keys())
-    unknown = [p for p in requested if p not in REGISTRY]
-    if unknown:
-        raise ValueError(f"unknown sources: {unknown}")
-    return list(requested)
 
 
 def _filter_by_session(

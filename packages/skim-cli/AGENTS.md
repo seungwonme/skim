@@ -24,7 +24,7 @@ Typer 기반 사용자 CLI 패키지. `uv run skim ...` 진입점을 제공하�
 ### Working In This Directory
 - 비즈니스 로직은 `skim_core`에 두고 이 패키지는 argument parsing/presentation만 담당
 - 새 subcommand 추가 시 Typer app에 등록 후 `skim platforms` 출력/README 사용법 동시 업데이트
-- 프린트/진행 표시는 `skim_core.print`를 통해 일관된 Rich 스타일을 사용
+- 출력은 `typer.echo`로 한다. 오류는 `err=True`로 stderr에 쓴다
 
 ### Testing Requirements
 - `skim crawl ...` 기반 회귀는 `tests/test_main_crawl_persistence.py`에서 lib 수준으로 고정
