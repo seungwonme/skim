@@ -14,11 +14,11 @@ from urllib.parse import urlparse
 
 import typer
 
+import skim_core.db
 from skim_core.crawlers import REGISTRY
 from skim_core.crawlers.auth.cdp import login as cdp_login
 from skim_core.crawlers.feed.geeknews import last_topic_block
 from skim_core.db import (
-    DB_PATH,
     POST_STATES,
     backfill_blank_authors,
     backfill_canonical_urls,
@@ -153,7 +153,9 @@ TEXT_PRESENT_SQL = "COALESCE(NULLIF(content_markdown, ''), NULLIF(content, ''), 
 
 
 def _db_or_default(db: Optional[Path]) -> Path:
-    return (db or DB_PATH).expanduser().resolve()
+    # 기본 경로는 부를 때 모듈에서 읽는다. 이름으로 들여오면 테스트가
+    # skim_core.db.DB_PATH를 바꿔도 여기만 운영 DB를 가리킨다 (#32).
+    return (db or skim_core.db.DB_PATH).expanduser().resolve()
 
 
 def _session_dir_for(db_path: Path) -> Path:

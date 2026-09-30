@@ -27,7 +27,7 @@ from typing import Optional
 import requests
 import typer
 
-from ...db import DB_PATH, get_connection, init_db
+from ...db import get_connection, init_db
 from ...paths import SESSIONS_DIR
 
 CHROME_PROFILE_DIR = Path.home() / ".skim" / "chrome-profile"
@@ -184,9 +184,8 @@ def load_login_credentials_from_keychain(
     if platform.system() != "Darwin":
         return None
 
-    path = db_path or DB_PATH
-    init_db(path)
-    conn = get_connection(path)
+    init_db(db_path)
+    conn = get_connection(db_path)
     try:
         if login_identifier:
             row = conn.execute(
@@ -232,9 +231,8 @@ def save_login_credentials_to_keychain(
     service = keychain_secret_service(platform_name)
     write_keychain_password(service, login_identifier, password)
 
-    path = db_path or DB_PATH
-    init_db(path)
-    conn = get_connection(path)
+    init_db(db_path)
+    conn = get_connection(db_path)
     try:
         conn.execute(
             """
