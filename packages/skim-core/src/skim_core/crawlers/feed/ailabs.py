@@ -22,6 +22,7 @@ from ...feed_config import AI_LABS_SOURCES
 from ...feed_utils import (
     USER_AGENT,
     fetch_feed,
+    finish_feed_items,
     is_within_range,
     make_retrying_session,
 )
@@ -523,18 +524,12 @@ class AILabsCrawler:
         if debug:
             print(f"  -> 중복제거 후 {len(all_items)}개 글")
 
-        if not all_items:
-            return []
-
-        all_items.sort(key=lambda x: x.get("published", ""), reverse=True)
         # 소스별 limit(=count)은 과수집 방지용이고, count는 전역 상한이다.
         # 소스 9개면 최대 9*count개가 모이므로 여기서 한 번 더 자른다.
-        # CLI가 마지막에 posts[:count]로 자르므로 이 절단이 없으면 버려질 항목까지
-        # 원문 추출을 돈다.
-        if options.get("count") is not None:
-            all_items = all_items[: options["count"]]
-
-        if not no_content:
-            enrich_with_content(all_items)
-
-        return [_item_to_post(item) for item in all_items]
+        return finish_feed_items(
+            all_items,
+            _item_to_post,
+            enrich=enrich_with_content,
+            count=options.get("count"),
+            no_content=no_content,
+        )

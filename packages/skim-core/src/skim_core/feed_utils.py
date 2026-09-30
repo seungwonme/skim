@@ -5,7 +5,7 @@
 
 import re
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Any, Callable, List, Optional
 
 import feedparser
 import requests
@@ -187,3 +187,27 @@ def probe_user_agent(url: str = "https://news.hada.io/topic?id=1") -> Optional[s
             "partial로 저장된다. 요청을 줄여 풀리기를 기다린다"
         )
     return None
+
+
+def finish_feed_items(
+    items: List[dict],
+    to_post: Callable[[dict], Any],
+    *,
+    enrich: Callable[[List[dict]], Any],
+    count: Optional[int] = None,
+    no_content: bool = False,
+) -> list:
+    """여러 피드에서 모은 항목을 최신순으로 정렬하고 count로 자른 뒤 원문을 붙인다.
+
+    CLI가 마지막에 posts[:count]로 자르므로, 여기서 먼저 자르지 않으면 버려질
+    항목까지 원문 추출을 돈다. enrich는 부르는 크롤러 모듈의 것을 넘긴다
+    (테스트가 크롤러 모듈에서 바꿔 끼운다).
+    """
+    if not items:
+        return []
+    items = sorted(items, key=lambda x: x.get("published", ""), reverse=True)
+    if count is not None:
+        items = items[:count]
+    if not no_content:
+        enrich(items)
+    return [to_post(item) for item in items]
