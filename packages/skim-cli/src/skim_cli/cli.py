@@ -62,9 +62,6 @@ KST = timezone(timedelta(hours=9))
 SNS_PLATFORMS = {"threads", "linkedin", "x", "reddit"}
 SNS_DEFAULT_COUNT = 50
 
-# Feed 크롤러: since 기반 (기간 내 모든 게시글 수집)
-FEED_PLATFORMS = set(REGISTRY.keys()) - SNS_PLATFORMS
-
 # 소스가 노출하는 발행일이 실제 게시 시점보다 뒤처지면 좁은 창에서는 전량 걸러진다.
 # --days를 명시해도 이 값이 바닥으로 깔린다. 일일 배치가 `crawl all --days 1`로
 # 돌기 때문에, 기본값에만 반영하면 정작 배치에서는 계속 0건이 된다.

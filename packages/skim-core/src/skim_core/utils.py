@@ -6,8 +6,7 @@
 
 주요 기능:
 1. 게시글 데이터를 JSON 파일로 저장
-2. 파일명 자동 생성 (타임스탬프 기반)
-3. 메타데이터 포함 저장 형식
+2. 메타데이터 포함 저장 형식
 
 핵심 구현 로직:
 - 크롤링 결과를 구조화된 JSON 형태로 저장
@@ -28,7 +27,6 @@ from pathlib import Path
 from typing import List
 
 from .models import Post
-from .paths import DATA_DIR
 
 
 def save_posts_to_file(posts: List[Post], filepath: str | Path) -> None:
@@ -59,25 +57,3 @@ def save_posts_to_file(posts: List[Post], filepath: str | Path) -> None:
 
     with open(target_path, "w", encoding="utf-8") as f:
         json.dump(output_data, f, ensure_ascii=False, indent=2)
-
-
-def generate_output_filename(platform: str, extension: str = "json") -> str:
-    """
-    플랫폼과 현재 시간을 기반으로 출력 파일명을 생성합니다.
-
-    Args:
-        platform (str): SNS 플랫폼 이름
-        extension (str): 파일 확장자 (기본: json)
-
-    Returns:
-        str: 생성된 파일명 (예: data/threads_20241215_143022.json)
-    """
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return str(DATA_DIR / f"{platform}_{timestamp}.{extension}")
-
-
-def ensure_data_directory() -> None:
-    """
-    data 디렉토리가 존재하지 않으면 생성합니다.
-    """
-    DATA_DIR.mkdir(exist_ok=True)
