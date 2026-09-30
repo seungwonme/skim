@@ -1,11 +1,11 @@
 """`crawl` 저장 경로 회귀 테스트."""
 
-import io
 import inspect
+import io
 import unittest
+from unittest.mock import AsyncMock, patch
 
 import typer
-from unittest.mock import AsyncMock, patch
 
 import skim_cli.cli as main
 from skim_core.models import Post

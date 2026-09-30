@@ -1057,7 +1057,6 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "flake8" },
-    { name = "isort" },
     { name = "pylint" },
     { name = "pytest" },
     { name = "ruff" },
@@ -1069,7 +1068,6 @@ requires-dist = [{ name = "skim-cli", editable = "packages/skim-cli" }]
 [package.metadata.requires-dev]
 dev = [
     { name = "flake8", specifier = ">=7.1.2" },
-    { name = "isort", specifier = ">=6.0.1" },
     { name = "pylint", specifier = ">=3.3.4" },
     { name = "pytest", specifier = ">=8.3.5" },
     { name = "ruff", specifier = ">=0.16.3" },

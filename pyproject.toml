@@ -8,7 +8,6 @@ dependencies = ["skim-cli"]
 [dependency-groups]
 dev = [
     "flake8>=7.1.2",
-    "isort>=6.0.1",
     "pylint>=3.3.4",
     "pytest>=8.3.5",
     "ruff>=0.16.3",
@@ -24,25 +23,21 @@ skim-core = { workspace = true }
 [tool.uv.workspace]
 members = ["packages/*"]
 
-[tool.isort]
-py_version = 312
-line_length = 88
-atomic = true
-multi_line_output = 3
-include_trailing_comma = true
-force_grid_wrap = 0
-use_parentheses = true
-known_first_party = ["skim_cli", "skim_core"]
-known_third_party = []
-
-# 포맷터는 ruff 하나다. 편집 훅도 파일을 고칠 때마다 `ruff format`을 돌린다. 예전에는
-# black(100자) 설정만 있어 훅(ruff 기본 88자)과 폭이 어긋났고, 고친 파일마다 상관없는
-# 줄이 diff에 섞였다. isort 폭도 같게 둔다.
+# 포맷과 import 정렬은 ruff 하나로 한다. 편집 훅도 파일을 고칠 때마다 `ruff format`을
+# 돌린다. 예전에는 black(100자), isort(100자) 설정만 있어 훅(ruff 기본 88자)과 폭이
+# 어긋났고, 고친 파일마다 상관없는 줄이 diff에 섞였다. 린트는 flake8, pylint가 맡는다.
 [tool.ruff]
 line-length = 88
 target-version = "py312"
 # 기본값은 docs/의 마크다운 코드 블록까지 포맷한다. 파이썬 파일만 본다.
 include = ["*.py", "*.pyi"]
+
+# `ruff check`는 import 정렬(I)만 본다. 나머지 린트 규칙은 flake8, pylint가 맡는다.
+[tool.ruff.lint]
+select = ["I"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["skim_cli", "skim_core"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

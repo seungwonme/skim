@@ -165,8 +165,8 @@ Python-only checks:
 
 ```bash
 uv run pytest tests -q
+uv run ruff check --fix packages tests scripts
 uv run ruff format packages tests scripts
-uv run isort packages tests scripts --settings-path pyproject.toml
 uv run flake8
 uv run pylint packages/skim-core/src/skim_core packages/skim-cli/src/skim_cli scripts
 ```

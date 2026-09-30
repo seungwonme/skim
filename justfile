@@ -7,8 +7,10 @@ default:
 dev:
     swift run --package-path apps/desktop SkimDesktop
 
-# Python 린트
+# Python 린트 (포맷과 import 정렬이 어긋나도 실패한다)
 lint:
+    uv run ruff format --check packages tests scripts
+    uv run ruff check packages tests scripts
     uv run flake8 packages tests scripts
     uv run pylint packages/skim-core/src/skim_core packages/skim-cli/src/skim_cli scripts
 
@@ -29,10 +31,10 @@ build:
 install-desktop *args:
     scripts/build-app.sh {{args}}
 
-# 포매터
+# 포매터 (import 정렬 후 포맷)
 format:
+    uv run ruff check --fix packages tests scripts
     uv run ruff format packages tests scripts
-    uv run isort packages tests scripts --settings-path pyproject.toml
 
 # 크롤 (예: just crawl hackernews --days 1)
 crawl *args:

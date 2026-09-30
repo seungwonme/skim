@@ -28,7 +28,8 @@ skim 파이프라인의 라이브러리 레이어. 크롤러 Protocol과 구현�
 
 ### Testing Requirements
 - `uv run pytest tests -v` (레포 루트 `tests/`가 이 패키지를 대상으로 회귀 커버)
-- 린트: 루트 `uv run ruff format`/`isort`/`flake8`/`pylint`
+- 포맷: 루트 `just format` (ruff로 import 정렬과 포맷)
+- 린트: 루트 `just lint` (ruff 포맷 확인, flake8, pylint)
 
 ### Common Patterns
 - 네트워크/파일 I/O는 `async` 유지. CLI 레이어에서 `asyncio.run` 호출
