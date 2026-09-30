@@ -334,5 +334,9 @@ arXiv 메일링은 09:00 KST라 00:02 배치보다 늦고 주말에는 없다. �
   옮겨 pylint가 읽지 못한다. 윗줄에 `# pylint: disable-next=...`로 쓴다
 - 포맷만 바꾼 커밋은 `.git-blame-ignore-revs`에 적는다. 저장소 전체를 다시 포맷하면 그 커밋을 추가한다
 - Swift desktop: `apps/desktop`
-- Git hooks: `husky`
-- Commit message validation: `commitlint`
+- Git hooks: `husky`. pre-commit `just lint`, commit-msg `commitlint`, pre-push `just test && just build`
+- 훅은 체크아웃마다 `pnpm install`로 붙는다. 새 worktree에는 `.husky/_`가 없어 훅이 오류 없이
+  건너뛰어진다. worktree를 만들면 먼저 `pnpm install`을 돌린다. CI는 PR 커밋 메시지를 다시 검사한다
+- Commit message validation: `commitlint` (`commitlint.config.cjs`, config-conventional).
+  한국어 제목을 대문자로 시작하는 영어 단어로 열면 subject-case에 걸린다(`GeekNews 한도를...`,
+  `README를...`). 한국어나 소문자로 시작하게 쓴다

@@ -13,6 +13,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # 커밋 메시지 검사가 PR의 base부터 head까지의 커밋을 읽는다.
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -35,6 +38,15 @@ jobs:
 
       - name: Install JavaScript dependencies
         run: pnpm install
+
+      - name: Commit messages
+        # 로컬 commit-msg 훅은 새 worktree에서 조용히 건너뛰어진다. 훅 디렉터리(.husky/_)가
+        # 체크아웃마다 pnpm install로 따로 생기기 때문이다. PR 커밋은 여기서 한 번 더 본다.
+        if: github.event_name == 'pull_request'
+        run: >-
+          pnpm exec commitlint --verbose
+          --from ${{ github.event.pull_request.base.sha }}
+          --to ${{ github.event.pull_request.head.sha }}
 
       - name: Sync Python workspace
         # --frozen: 재해석하지 않고 uv.lock에 적힌 버전 그대로 설치한다.
