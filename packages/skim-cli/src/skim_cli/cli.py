@@ -6,7 +6,7 @@ import json
 import re
 import shutil
 import sys
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
@@ -209,8 +209,188 @@ async def run_single_crawler(platform: str, options: dict) -> List[Post]:
 # === Commands ===
 
 
+@dataclass(frozen=True)
+class _CrawlFlags:
+    """crawl 명령의 옵션 중 플랫폼마다 크롤러 옵션을 만들 때 쓰는 값."""
+
+    count: Optional[int]
+    days: Optional[int]
+    debug: bool
+    no_content: bool
+    user_id: Optional[str]
+    subreddit: Optional[str]
+    sort: str
+
+
+@dataclass
+class _CrawlTally:
+    """crawl 한 회차의 플랫폼별 결과."""
+
+    total_saved: int = 0
+    failed: List[str] = field(default_factory=list)
+    completed: List[str] = field(default_factory=list)
+    empty: List[str] = field(default_factory=list)
+    # 플랫폼 -> (본문이 빈 글 수, 수집한 글 수)
+    thin: dict = field(default_factory=dict)
+
+
+def _resolve_crawl_targets(platforms: Optional[List[str]]) -> List[str]:
+    """`all`을 풀고, 모르는 플랫폼이 있으면 종료한다."""
+    if not platforms or "all" in platforms:
+        return list(REGISTRY.keys())
+    for name in platforms:
+        if name not in REGISTRY:
+            typer.echo(f"알 수 없는 플랫폼: {name}")
+            typer.echo(f"지원 플랫폼: {platform_help()}")
+            raise typer.Exit(1)
+    return list(platforms)
+
+
+def _crawl_options(platform: str, now: datetime, flags: _CrawlFlags) -> dict:
+    """SNS는 개수, 피드는 기간 기준으로 크롤러 옵션을 만든다."""
+    options: dict = {"debug": flags.debug, "no_content": flags.no_content}
+    if platform in SNS_PLATFORMS:
+        # SNS: count 기반 (기본 50)
+        options["count"] = flags.count if flags.count is not None else SNS_DEFAULT_COUNT
+    else:
+        # Feed: since 기반 (기본 전날 0시부터)
+        days = flags.days if flags.days is not None else 1
+        # 발행일이 밀린 소스는 사용자가 창을 좁혀도 최소 폭을 보장한다.
+        days = max(days, min_lookback_days(platform, now))
+        options["since"] = (now - timedelta(days=days)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        if flags.count is not None:
+            options["count"] = flags.count
+
+    if flags.user_id:
+        options["user_id"] = flags.user_id
+    if platform == "reddit":
+        if flags.subreddit:
+            options["subreddit"] = flags.subreddit
+        options["sort"] = flags.sort
+    return options
+
+
+def _crawl_platform(
+    platform: str,
+    options: dict,
+    *,
+    run_id: int,
+    flags: _CrawlFlags,
+    filepath: Optional[str],
+    tally: _CrawlTally,
+) -> bool:
+    """플랫폼 하나를 크롤해 DB와 JSON 파일에 저장한다. 저장까지 갔으면 True."""
+    try:
+        posts = asyncio.run(run_single_crawler(platform, options))
+    except Exception as e:
+        tally.failed.append(platform)
+        update_run_progress(run_id, platform, f"{platform} 크롤링 실패: {e}")
+        typer.echo(f"  [!] {platform} 크롤링 실패: {e}")
+        if flags.debug:
+            import traceback  # pylint: disable=import-outside-toplevel
+
+            traceback.print_exc()
+        return False
+
+    if flags.count is not None:
+        posts = posts[: flags.count]
+
+    tally.completed.append(platform)
+    if not posts:
+        tally.empty.append(platform)
+        update_run_progress(run_id, platform, f"{platform} 수집된 게시글 없음")
+        typer.echo("  -> 수집된 게시글 없음")
+        return False
+
+    typer.echo(f"  -> {len(posts)}개 수집")
+
+    # 개별 항목의 enrichment 실패는 로그 한 줄로 흘러가고 크롤은 성공으로
+    # 끝난다. playwright 미설치처럼 전 항목에 영향을 주는 고장도 그래서
+    # 며칠씩 묻힌다. 플랫폼별로 세어 마지막에 한 번에 보여준다.
+    # save_posts와 같은 판정 함수를 써야 한다. API형 4종은 본문이 content로
+    # 와서 저장 직전에 승격되므로, 승격 전 content_markdown만 보면 정상
+    # 저장된 회차가 전량 실패로 잡힌다.
+    thin = sum(1 for p in posts if not canonical_body(p, platform))
+    if thin:
+        tally.thin[platform] = (thin, len(posts))
+
+    # DB 저장
+    saved = save_posts(posts, platform)
+    tally.total_saved += saved
+    if saved:
+        typer.echo(f"  -> DB 반영: {saved}개 (신규/보강)")
+
+    # JSON 파일 저장
+    if filepath is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filepath = DATA_DIR / platform / f"{timestamp}.json"
+    save_posts_to_file(posts, filepath)
+    typer.echo(f"  -> 파일: {filepath}")
+
+    update_run_progress(run_id, platform, f"{platform} 처리 완료: {saved}개 DB 반영")
+    return True
+
+
+def _report_crawl_warnings(tally: _CrawlTally) -> List[str]:
+    """0건 회귀와 본문 추출 실패를 알린다. 회귀한 플랫폼을 돌려준다."""
+    # 크롤러가 깨져도 빈 리스트는 예외가 아니라 정상 종료로 보인다. 평소 들어오던
+    # 소스가 0건이면 회귀로 보고 드러낸다. 원래 저빈도인 소스까지 잡지 않도록
+    # 최근 유입 이력이 있는 플랫폼만 대상으로 한다.
+    regressed = (
+        sorted(set(tally.empty) & platforms_with_recent_posts(REGRESSION_LOOKBACK_DAYS))
+        if tally.empty
+        else []
+    )
+    if regressed:
+        typer.echo(
+            f"\n[!] 최근 {REGRESSION_LOOKBACK_DAYS}일간 수집되던 플랫폼이 0건입니다: "
+            f"{', '.join(regressed)}"
+        )
+
+    if tally.thin:
+        detail = ", ".join(
+            f"{name} {miss}/{total}"
+            for name, (miss, total) in sorted(tally.thin.items())
+        )
+        typer.echo(f"\n[!] 본문 추출 실패: {detail}")
+        typer.echo("    반복되면 `uv run skim doctor`로 추출 환경을 점검하세요.")
+    return regressed
+
+
+def _finish_crawl(run_id: int, tally: _CrawlTally, regressed: List[str]) -> None:
+    """run 상태를 닫는다. 실패한 플랫폼이 있으면 exit 1."""
+    if tally.failed:
+        summary = f"실패 플랫폼: {', '.join(tally.failed)}"
+        if tally.completed:
+            summary += f"; 완료 플랫폼: {', '.join(tally.completed)}"
+        if regressed:
+            summary += f"; 0건 회귀: {', '.join(regressed)}"
+        finish_run(run_id, "failed", tally.total_saved, summary)
+        typer.echo(
+            f"\n완료: 총 {tally.total_saved}개 저장 "
+            f"(run #{run_id}, 실패: {', '.join(tally.failed)})"
+        )
+        # cron/모니터링이 실패를 감지할 수 있게 비정상 종료 코드를 반환한다.
+        raise typer.Exit(1)
+
+    if regressed:
+        # 종료 코드는 0으로 둔다. 0건이 정상인 날에 파이프라인 전체를 세우지 않되,
+        # runs.status로 남겨 `skim doctor`와 모니터링이 집어낼 수 있게 한다.
+        finish_run(
+            run_id,
+            "degraded",
+            tally.total_saved,
+            f"전체 플랫폼 처리 완료 (0건 회귀: {', '.join(regressed)})",
+        )
+    else:
+        finish_run(run_id, "success", tally.total_saved, "전체 플랫폼 처리 완료")
+    typer.echo(f"\n완료: 총 {tally.total_saved}개 저장 (run #{run_id})")
+
+
 @app.command()
-def crawl(  # noqa: C901 — CLI 진입점으로 플랫폼별 분기가 불가피
+def crawl(
     platforms: List[str] = typer.Argument(
         None,
         help=f"크롤링할 플랫폼 ({platform_help(include_all=True)})",
@@ -242,177 +422,50 @@ def crawl(  # noqa: C901 — CLI 진입점으로 플랫폼별 분기가 불가�
         uv run skim crawl threads --user-id 314216 --count 5
         uv run skim crawl hackernews geeknews --days 1
     """
-    if not platforms:
-        platforms = ["all"]
-
-    # 'all' 확장
-    if "all" in platforms:
-        targets = list(REGISTRY.keys())
-    else:
-        targets = []
-        for p in platforms:
-            if p not in REGISTRY:
-                typer.echo(f"알 수 없는 플랫폼: {p}")
-                typer.echo(f"지원 플랫폼: {platform_help()}")
-                raise typer.Exit(1)
-            targets.append(p)
+    targets = _resolve_crawl_targets(platforms)
+    flags = _CrawlFlags(
+        count=count,
+        days=days,
+        debug=debug,
+        no_content=no_content,
+        user_id=user_id,
+        subreddit=subreddit,
+        sort=sort,
+    )
+    # -o는 플랫폼이 하나일 때만 쓴다. 여럿이면 플랫폼별 기본 경로에 나눠 저장한다.
+    filepath = output if output and len(targets) == 1 else None
 
     init_db()
     run_id = save_run()
-    total_saved = 0
     now = datetime.now(KST)
+    tally = _CrawlTally()
     active_platform: Optional[str] = None
-    failed_platforms: list[str] = []
-    completed_platforms: list[str] = []
-    empty_platforms: list[str] = []
-    thin_platforms: dict[str, tuple[int, int]] = {}
 
     try:
         for platform in targets:
             active_platform = platform
             update_run_progress(run_id, platform, f"{platform} 크롤링 시작")
             typer.echo(f"[{platform.upper()}] 크롤링 시작...")
-
-            is_sns = platform in SNS_PLATFORMS
-            options: dict = {
-                "debug": debug,
-                "no_content": no_content,
-            }
-
-            if is_sns:
-                # SNS: count 기반 (기본 50)
-                options["count"] = count if count is not None else SNS_DEFAULT_COUNT
-            else:
-                # Feed: since 기반 (기본 전날 0시부터)
-                d = days if days is not None else 1
-                # 발행일이 밀린 소스는 사용자가 창을 좁혀도 최소 폭을 보장한다.
-                d = max(d, min_lookback_days(platform, now))
-                since = (now - timedelta(days=d)).replace(
-                    hour=0, minute=0, second=0, microsecond=0
-                )
-                options["since"] = since
-                if count is not None:
-                    options["count"] = count
-
-            if user_id:
-                options["user_id"] = user_id
-            if platform == "reddit":
-                if subreddit:
-                    options["subreddit"] = subreddit
-                options["sort"] = sort
-
-            try:
-                posts = asyncio.run(run_single_crawler(platform, options))
-            except Exception as e:
-                failed_platforms.append(platform)
-                update_run_progress(run_id, platform, f"{platform} 크롤링 실패: {e}")
-                typer.echo(f"  [!] {platform} 크롤링 실패: {e}")
-                if debug:
-                    import traceback  # pylint: disable=import-outside-toplevel
-
-                    traceback.print_exc()
-                continue
-
-            if count is not None:
-                posts = posts[:count]
-
-            completed_platforms.append(platform)
-            if not posts:
-                empty_platforms.append(platform)
-                update_run_progress(run_id, platform, f"{platform} 수집된 게시글 없음")
-                typer.echo("  -> 수집된 게시글 없음")
-                continue
-
-            typer.echo(f"  -> {len(posts)}개 수집")
-
-            # 개별 항목의 enrichment 실패는 로그 한 줄로 흘러가고 크롤은 성공으로
-            # 끝난다. playwright 미설치처럼 전 항목에 영향을 주는 고장도 그래서
-            # 며칠씩 묻힌다. 플랫폼별로 세어 마지막에 한 번에 보여준다.
-            # save_posts와 같은 판정 함수를 써야 한다. API형 4종은 본문이 content로
-            # 와서 저장 직전에 승격되므로, 승격 전 content_markdown만 보면 정상
-            # 저장된 회차가 전량 실패로 잡힌다.
-            thin = sum(1 for p in posts if not canonical_body(p, platform))
-            if thin:
-                thin_platforms[platform] = (thin, len(posts))
-
-            # DB 저장
-            saved = save_posts(posts, platform)
-            total_saved += saved
-            if saved:
-                typer.echo(f"  -> DB 반영: {saved}개 (신규/보강)")
-
-            # JSON 파일 저장
-            if output and len(targets) == 1:
-                filepath = output
-            else:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                filepath = DATA_DIR / platform / f"{timestamp}.json"
-            save_posts_to_file(posts, filepath)
-            typer.echo(f"  -> 파일: {filepath}")
-
-            update_run_progress(
-                run_id, platform, f"{platform} 처리 완료: {saved}개 DB 반영"
+            stored = _crawl_platform(
+                platform,
+                _crawl_options(platform, now, flags),
+                run_id=run_id,
+                flags=flags,
+                filepath=filepath,
+                tally=tally,
             )
-
-            if platform != targets[-1]:
+            if stored and platform != targets[-1]:
                 typer.echo()
     except Exception as e:
         summary = (
             f"예상치 못한 오류로 중단"
             f"{f' (플랫폼: {active_platform})' if active_platform else ''}: {e}"
         )
-        finish_run(run_id, "failed", total_saved, summary)
+        finish_run(run_id, "failed", tally.total_saved, summary)
         raise
 
-    # 크롤러가 깨져도 빈 리스트는 예외가 아니라 정상 종료로 보인다. 평소 들어오던
-    # 소스가 0건이면 회귀로 보고 드러낸다. 원래 저빈도인 소스까지 잡지 않도록
-    # 최근 유입 이력이 있는 플랫폼만 대상으로 한다.
-    regressed = (
-        sorted(
-            set(empty_platforms) & platforms_with_recent_posts(REGRESSION_LOOKBACK_DAYS)
-        )
-        if empty_platforms
-        else []
-    )
-    if regressed:
-        typer.echo(
-            f"\n[!] 최근 {REGRESSION_LOOKBACK_DAYS}일간 수집되던 플랫폼이 0건입니다: "
-            f"{', '.join(regressed)}"
-        )
-
-    if thin_platforms:
-        detail = ", ".join(
-            f"{name} {miss}/{total}"
-            for name, (miss, total) in sorted(thin_platforms.items())
-        )
-        typer.echo(f"\n[!] 본문 추출 실패: {detail}")
-        typer.echo("    반복되면 `uv run skim doctor`로 추출 환경을 점검하세요.")
-
-    if failed_platforms:
-        summary = f"실패 플랫폼: {', '.join(failed_platforms)}"
-        if completed_platforms:
-            summary += f"; 완료 플랫폼: {', '.join(completed_platforms)}"
-        if regressed:
-            summary += f"; 0건 회귀: {', '.join(regressed)}"
-        finish_run(run_id, "failed", total_saved, summary)
-        typer.echo(
-            f"\n완료: 총 {total_saved}개 저장 (run #{run_id}, 실패: {', '.join(failed_platforms)})"
-        )
-        # cron/모니터링이 실패를 감지할 수 있게 비정상 종료 코드를 반환한다.
-        raise typer.Exit(1)
-
-    if regressed:
-        # 종료 코드는 0으로 둔다. 0건이 정상인 날에 파이프라인 전체를 세우지 않되,
-        # runs.status로 남겨 `skim doctor`와 모니터링이 집어낼 수 있게 한다.
-        finish_run(
-            run_id,
-            "degraded",
-            total_saved,
-            f"전체 플랫폼 처리 완료 (0건 회귀: {', '.join(regressed)})",
-        )
-    else:
-        finish_run(run_id, "success", total_saved, "전체 플랫폼 처리 완료")
-    typer.echo(f"\n완료: 총 {total_saved}개 저장 (run #{run_id})")
+    regressed = _report_crawl_warnings(tally)
+    _finish_crawl(run_id, tally, regressed)
 
 
 @app.command()
@@ -574,61 +627,24 @@ def backup(
         raise typer.Exit(1)
 
 
-@app.command()
-def doctor(
-    platform: Optional[str] = typer.Option(
-        None, "--platform", "-p", help="특정 플랫폼만 점검"
-    ),
-    db: Optional[Path] = typer.Option(None, "--db", help="SQLite DB 경로"),
-    emit: str = typer.Option("summary", "--emit", help="summary|json"),
-    strict: bool = typer.Option(
-        False, "--strict", help="warning이 하나라도 있으면 exit 1 (cron 연동용)"
-    ),
-):
-    """DB, 수집 run, session 상태를 점검합니다."""
-    _validate_platform(platform)
-    if emit not in {"summary", "json"}:
-        typer.echo(
-            "[skim] invalid --emit value. choose from ['json', 'summary']", err=True
-        )
-        raise typer.Exit(2)
+def _doctor_sessions(session_dir: Path, platform: Optional[str]) -> List[dict]:
+    return [
+        {
+            "platform": name,
+            "exists": (session_dir / f"{name}_session.json").exists(),
+            "path": str(session_dir / f"{name}_session.json"),
+        }
+        for name in sorted(REGISTRY)
+        if not platform or name == platform
+    ]
 
-    db_path = _db_or_default(db)
-    session_dir = _session_dir_for(db_path)
-    report: dict = {
-        "db": str(db_path),
-        "db_exists": db_path.exists(),
-        "platform": platform,
-        "platforms": [],
-        "sessions": [],
-        "runs": [],
-        "source_health": [],
-        "warnings": [],
-    }
 
-    for name in sorted(REGISTRY):
-        session_path = session_dir / f"{name}_session.json"
-        if platform and name != platform:
-            continue
-        report["sessions"].append(
-            {
-                "platform": name,
-                "exists": session_path.exists(),
-                "path": str(session_path),
-            }
-        )
-
-    if not db_path.exists():
-        report["warnings"].append(
-            "missing database; run `uv run skim crawl all --days 1`"
-        )
-        _emit_doctor(report, emit)
-        return
-
+def _doctor_read_db(report: dict, db_path: Path, platform: Optional[str]) -> None:
+    """플랫폼별 건수, 최근 run, 최근 본문 결손을 report에 채운다."""
+    platform_filter = "WHERE platform = ?" if platform else ""
+    params = [platform] if platform else []
+    conn = get_connection(db_path)
     try:
-        conn = get_connection(db_path)
-        platform_filter = "WHERE platform = ?" if platform else ""
-        params = [platform] if platform else []
         report["platforms"] = [
             dict(row)
             for row in conn.execute(
@@ -676,16 +692,19 @@ def doctor(
                 params,
             ).fetchall()
         ]
+    finally:
         conn.close()
-        report["warnings"].extend(_fragment_body_warnings(report["recent_thin"]))
-    except Exception as exc:  # pragma: no cover - defensive report path
-        report["warnings"].append(f"database check failed: {exc}")
 
+
+def _check_extractor(report: dict) -> None:
     report["extractor"] = _playwright_status()
     if not report["extractor"]["ok"]:
         report["warnings"].append(
             f"playwright unavailable: {report['extractor']['detail']}"
         )
+
+
+def _check_source_health(report: dict, db_path: Path, platform: Optional[str]) -> None:
     try:
         health = scan_source_health(db_path)
     except Exception as exc:  # pragma: no cover - defensive report path
@@ -694,33 +713,92 @@ def doctor(
     if platform:
         health = [issue for issue in health if issue["platform"] == platform]
     report["source_health"] = health
-    for issue in health:
-        report["warnings"].append(f"{issue['source']}: {issue['detail']}")
+    report["warnings"].extend(
+        f"{issue['source']}: {issue['detail']}" for issue in health
+    )
 
+
+def _check_tools(report: dict) -> None:
     # 외부 CLI 의존: 없으면 본문/자막 추출이 통째로 죽는데 크롤은 성공으로 끝난다.
     # launchd는 셸 프로필을 안 읽어 PATH가 달라지므로 크론에서 특히 잘 사라진다.
     report["tools"] = {
         name: shutil.which(name) or "" for name in ("yt-dlp", "bunx", "uv")
     }
-    for name, found in report["tools"].items():
-        if not found:
-            report["warnings"].append(f"{name} not on PATH")
+    report["warnings"].extend(
+        f"{name} not on PATH" for name, found in report["tools"].items() if not found
+    )
 
-    report["warnings"].extend(_geeknews_topic_warnings())
 
+def _check_integrity(report: dict, db_path: Path) -> None:
     if report["db_exists"]:
         integrity = check_integrity(db_path)
         report["integrity"] = integrity
         if integrity != "ok":
             report["warnings"].append(f"database integrity: {integrity}")
 
+
+def _attention_warnings(report: dict, platform: Optional[str]) -> List[str]:
+    warnings = []
     if platform and not report["platforms"]:
-        report["warnings"].append(f"no posts found for {platform}")
+        warnings.append(f"no posts found for {platform}")
     if any(
         run["status"] in {"failed", "interrupted", "running", "degraded"}
         for run in report["runs"][:3]
     ):
-        report["warnings"].append("recent runs need attention")
+        warnings.append("recent runs need attention")
+    return warnings
+
+
+@app.command()
+def doctor(
+    platform: Optional[str] = typer.Option(
+        None, "--platform", "-p", help="특정 플랫폼만 점검"
+    ),
+    db: Optional[Path] = typer.Option(None, "--db", help="SQLite DB 경로"),
+    emit: str = typer.Option("summary", "--emit", help="summary|json"),
+    strict: bool = typer.Option(
+        False, "--strict", help="warning이 하나라도 있으면 exit 1 (cron 연동용)"
+    ),
+):
+    """DB, 수집 run, session 상태를 점검합니다."""
+    _validate_platform(platform)
+    if emit not in {"summary", "json"}:
+        typer.echo(
+            "[skim] invalid --emit value. choose from ['json', 'summary']", err=True
+        )
+        raise typer.Exit(2)
+
+    db_path = _db_or_default(db)
+    report: dict = {
+        "db": str(db_path),
+        "db_exists": db_path.exists(),
+        "platform": platform,
+        "platforms": [],
+        "sessions": _doctor_sessions(_session_dir_for(db_path), platform),
+        "runs": [],
+        "source_health": [],
+        "warnings": [],
+    }
+
+    if not db_path.exists():
+        report["warnings"].append(
+            "missing database; run `uv run skim crawl all --days 1`"
+        )
+        _emit_doctor(report, emit)
+        return
+
+    try:
+        _doctor_read_db(report, db_path, platform)
+        report["warnings"].extend(_fragment_body_warnings(report["recent_thin"]))
+    except Exception as exc:  # pragma: no cover - defensive report path
+        report["warnings"].append(f"database check failed: {exc}")
+
+    _check_extractor(report)
+    _check_source_health(report, db_path, platform)
+    _check_tools(report)
+    report["warnings"].extend(_geeknews_topic_warnings())
+    _check_integrity(report, db_path)
+    report["warnings"].extend(_attention_warnings(report, platform))
     _emit_doctor(report, emit)
     if strict and report["warnings"]:
         raise typer.Exit(1)
@@ -757,12 +835,7 @@ def _playwright_status() -> dict:
     return {"ok": True, "detail": "chromium headless 실행 가능"}
 
 
-def _emit_doctor(report: dict, emit: str) -> None:
-    if emit == "json":
-        typer.echo(json.dumps(report, ensure_ascii=False, indent=2))
-        return
-
-    typer.echo(f"db: {report['db']} ({'ok' if report['db_exists'] else 'missing'})")
+def _echo_platform_rows(report: dict) -> None:
     if report["platforms"]:
         typer.echo("platforms:")
         for row in report["platforms"]:
@@ -771,17 +844,23 @@ def _emit_doctor(report: dict, emit: str) -> None:
                 f"with_text={row['with_text']} missing_text={row['missing_text']} "
                 f"latest={row['latest_crawl']}"
             )
-    thin_rows = [row for row in report.get("recent_thin", []) if row["thin"]]
-    if thin_rows:
-        typer.echo(f"recent missing body (last {RECENT_THIN_LOOKBACK_DAYS}d):")
-        for row in thin_rows:
-            typer.echo(f"  {row['platform']}: {row['thin']}/{row['total']}")
-    for key, label in (("fragment", "feed fragment only"), ("partial", "partial body")):
-        rows = [row for row in report.get("recent_thin", []) if row.get(key)]
+
+
+def _echo_recent_bodies(report: dict) -> None:
+    recent = report.get("recent_thin", [])
+    for key, label in (
+        ("thin", "missing body"),
+        ("fragment", "feed fragment only"),
+        ("partial", "partial body"),
+    ):
+        rows = [row for row in recent if row.get(key)]
         if rows:
             typer.echo(f"recent {label} (last {RECENT_THIN_LOOKBACK_DAYS}d):")
             for row in rows:
                 typer.echo(f"  {row['platform']}: {row[key]}/{row['total']}")
+
+
+def _echo_environment(report: dict) -> None:
     if report.get("extractor"):
         state = "ok" if report["extractor"]["ok"] else "unavailable"
         typer.echo(f"extractor: playwright {state} - {report['extractor']['detail']}")
@@ -793,6 +872,9 @@ def _emit_doctor(report: dict, emit: str) -> None:
     if report["sessions"]:
         present = [s["platform"] for s in report["sessions"] if s["exists"]]
         typer.echo(f"sessions: {', '.join(present) if present else 'none'}")
+
+
+def _echo_runs(report: dict) -> None:
     if report["runs"]:
         typer.echo("recent runs:")
         for row in report["runs"][:5]:
@@ -800,6 +882,18 @@ def _emit_doctor(report: dict, emit: str) -> None:
                 f"  #{row['id']} {row['status']} current={row['current_platform']} "
                 f"started={row['started_at']} summary={row['summary']}"
             )
+
+
+def _emit_doctor(report: dict, emit: str) -> None:
+    if emit == "json":
+        typer.echo(json.dumps(report, ensure_ascii=False, indent=2))
+        return
+
+    typer.echo(f"db: {report['db']} ({'ok' if report['db_exists'] else 'missing'})")
+    _echo_platform_rows(report)
+    _echo_recent_bodies(report)
+    _echo_environment(report)
+    _echo_runs(report)
     for warning in report["warnings"]:
         typer.echo(f"warning: {warning}")
 
@@ -1243,6 +1337,119 @@ VALID_REFRESH_MODES = {"auto", "never", "force"}
 VALID_EMIT_MODES = {"json", "jsonl", "summary"}
 
 
+def _validate_research_modes(topic: str, refresh: str, emit: str) -> None:
+    if not topic.strip():
+        typer.echo("Usage: skim research TOPIC [OPTIONS]", err=True)
+        raise typer.Exit(code=2)
+
+    if refresh not in VALID_REFRESH_MODES:
+        typer.echo(
+            f"[skim] invalid --refresh value: {refresh!r}. "
+            f"choose from {sorted(VALID_REFRESH_MODES)}",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    if emit not in VALID_EMIT_MODES:
+        typer.echo(
+            f"[skim] invalid --emit value: {emit!r}. "
+            f"choose from {sorted(VALID_EMIT_MODES)}",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+
+def _research_sources(sources: str) -> tuple[List[str], Optional[List[str]]]:
+    """`--sources`를 풀어 (요청 목록, 검색에 넘길 목록)을 돌려준다. all이면 후자는 None."""
+    source_list = [s.strip() for s in sources.split(",") if s.strip()]
+    if source_list == ["all"]:
+        return source_list, None
+    unknown = [p for p in source_list if p not in REGISTRY]
+    if unknown:
+        typer.echo(f"[skim] unknown sources: {unknown}", err=True)
+        typer.echo(f"supported: {', '.join(REGISTRY.keys())}", err=True)
+        raise typer.Exit(code=2)
+    return source_list, source_list
+
+
+def _research_local(
+    topic: str,
+    tokens: List[str],
+    source_list: List[str],
+    sources_for_search: Optional[List[str]],
+    days: int,
+    limit: int,
+) -> dict:
+    """refresh never: 갱신 없이 DB만 검색한다 (Phase 1 동작)."""
+    since_utc_iso = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    posts_raw, stats, warnings = search_posts(
+        topic, since_utc_iso, sources_for_search, limit
+    )
+    warnings = list(warnings)
+    if stats.short_tokens:
+        warnings.append(
+            f"short tokens (<=2 chars): {stats.short_tokens}. substring false positives likely."
+        )
+
+    sys.stderr.write(
+        f"[skim research stats] topic={topic!r} tokens={len(tokens)} "
+        f"rows_scanned={stats.rows_scanned} rows_returned={stats.rows_returned} "
+        f"latency_ms={stats.latency_ms}\n"
+    )
+
+    return build_response(
+        topic=topic,
+        tokens=tokens,
+        date_range={"from": since_utc_iso, "to": utc_now_iso()},
+        sources_requested=source_list,
+        posts=posts_raw,
+        search_stats=stats,
+        days_requested=days,
+        warnings=warnings,
+    )
+
+
+def _research_with_refresh(
+    topic: str,
+    tokens: List[str],
+    sources_for_search: Optional[List[str]],
+    days: int,
+    limit: int,
+    refresh: str,
+) -> dict:
+    """refresh auto/force: 자동 갱신, 잠금, research_runs 기록은 run_research가 맡는다."""
+    exit_code, response = asyncio.run(
+        run_research(
+            topic=topic,
+            sources=sources_for_search or list(REGISTRY.keys()),
+            days=days,
+            limit=limit,
+            refresh_mode=refresh,
+            explicit=sources_for_search is not None,
+        )
+    )
+    if exit_code != 0:
+        sys.stderr.write(f"[skim] research exited with code {exit_code}\n")
+        raise typer.Exit(code=exit_code)
+
+    if response.get("stats"):
+        s = response["stats"]
+        sys.stderr.write(
+            f"[skim research stats] topic={topic!r} tokens={len(tokens)} "
+            f"rows_scanned={s['rows_scanned']} rows_returned={s['rows_returned']} "
+            f"latency_ms={s['latency_ms']} newly_fetched={s['newly_fetched']}\n"
+        )
+        # short_tokens 경고는 Phase 1 path 와 일관되게 응답 warnings 에 추가
+        if s.get("short_tokens"):
+            msg = (
+                f"short tokens (<=2 chars): {s['short_tokens']}. "
+                "substring false positives likely."
+            )
+            if msg not in response["warnings"]:
+                response["warnings"].append(msg)
+    return response
+
+
 @app.command()
 def research(
     topic: str = typer.Argument(..., help="검색 topic (공백 구분 토큰화)"),
@@ -1277,133 +1484,20 @@ def research(
         skim research "agent" --max-chars 2000
     """
     field_list = _parse_fields(fields)
-    if not topic.strip():
-        typer.echo("Usage: skim research TOPIC [OPTIONS]", err=True)
-        raise typer.Exit(code=2)
-
-    if refresh not in VALID_REFRESH_MODES:
-        typer.echo(
-            f"[skim] invalid --refresh value: {refresh!r}. "
-            f"choose from {sorted(VALID_REFRESH_MODES)}",
-            err=True,
-        )
-        raise typer.Exit(code=2)
-
-    if emit not in VALID_EMIT_MODES:
-        typer.echo(
-            f"[skim] invalid --emit value: {emit!r}. "
-            f"choose from {sorted(VALID_EMIT_MODES)}",
-            err=True,
-        )
-        raise typer.Exit(code=2)
-
-    source_list = [s.strip() for s in sources.split(",") if s.strip()]
-    explicit_sources = source_list != ["all"]
-    if explicit_sources:
-        unknown = [p for p in source_list if p not in REGISTRY]
-        if unknown:
-            typer.echo(f"[skim] unknown sources: {unknown}", err=True)
-            typer.echo(f"supported: {', '.join(REGISTRY.keys())}", err=True)
-            raise typer.Exit(code=2)
-        sources_for_search: Optional[List[str]] = source_list
-    else:
-        sources_for_search = None
+    _validate_research_modes(topic, refresh, emit)
+    source_list, sources_for_search = _research_sources(sources)
 
     init_db()
+    # 공백뿐인 topic은 위에서 끝났으므로 토큰은 하나 이상이다.
     tokens = [t.lower() for t in topic.split() if t.strip()]
-
-    # Phase 2: refresh!=never 면 run_research 로 위임 (auto-refresh + lock + research_runs)
-    if refresh != "never":
-        if not tokens:
-            # 토큰 0개면 refresh 무의미 — Phase 1 동작 (warning + 빈 결과)
-            now_utc = datetime.now(timezone.utc)
-            since_utc_iso = (now_utc - timedelta(days=days)).isoformat()
-
-            response = build_response(
-                topic=topic,
-                tokens=tokens,
-                date_range={"from": since_utc_iso, "to": utc_now_iso()},
-                sources_requested=source_list,
-                posts=[],
-                search_stats=SearchStats(),
-                days_requested=days,
-                warnings=["no searchable tokens in topic"],
-            )
-            _emit_response(response, emit, field_list, max_chars)
-            return
-
-        sources_for_search_resolved = sources_for_search or list(REGISTRY.keys())
-        exit_code, response = asyncio.run(
-            run_research(
-                topic=topic,
-                sources=sources_for_search_resolved,
-                days=days,
-                limit=limit,
-                refresh_mode=refresh,
-                explicit=explicit_sources,
-            )
+    if refresh == "never":
+        response = _research_local(
+            topic, tokens, source_list, sources_for_search, days, limit
         )
-        if exit_code != 0:
-            sys.stderr.write(f"[skim] research exited with code {exit_code}\n")
-            raise typer.Exit(code=exit_code)
-
-        if response.get("stats"):
-            s = response["stats"]
-            sys.stderr.write(
-                f"[skim research stats] topic={topic!r} tokens={len(tokens)} "
-                f"rows_scanned={s['rows_scanned']} rows_returned={s['rows_returned']} "
-                f"latency_ms={s['latency_ms']} newly_fetched={s['newly_fetched']}\n"
-            )
-            # short_tokens 경고는 Phase 1 path 와 일관되게 응답 warnings 에 추가
-            if s.get("short_tokens"):
-                msg = (
-                    f"short tokens (<=2 chars): {s['short_tokens']}. "
-                    "substring false positives likely."
-                )
-                if msg not in response["warnings"]:
-                    response["warnings"].append(msg)
-        _emit_response(response, emit, field_list, max_chars)
-        return
-
-    # refresh == 'never' 경로 (Phase 1 동작)
-    now_utc = datetime.now(timezone.utc)
-    since_utc_iso = (now_utc - timedelta(days=days)).isoformat()
-
-    warnings: List[str] = []
-    if not tokens:
-        warnings.append("no searchable tokens in topic")
-        posts_raw: list = []
-
-        stats = SearchStats()
-        search_warnings: List[str] = []
     else:
-        posts_raw, stats, search_warnings = search_posts(
-            topic, since_utc_iso, sources_for_search, limit
+        response = _research_with_refresh(
+            topic, tokens, sources_for_search, days, limit, refresh
         )
-
-    warnings.extend(search_warnings)
-
-    if stats.short_tokens:
-        warnings.append(
-            f"short tokens (<=2 chars): {stats.short_tokens}. substring false positives likely."
-        )
-
-    sys.stderr.write(
-        f"[skim research stats] topic={topic!r} tokens={len(tokens)} "
-        f"rows_scanned={stats.rows_scanned} rows_returned={stats.rows_returned} "
-        f"latency_ms={stats.latency_ms}\n"
-    )
-
-    response = build_response(
-        topic=topic,
-        tokens=tokens,
-        date_range={"from": since_utc_iso, "to": utc_now_iso()},
-        sources_requested=source_list,
-        posts=posts_raw,
-        search_stats=stats,
-        days_requested=days,
-        warnings=warnings,
-    )
     _emit_response(response, emit, field_list, max_chars)
 
 
