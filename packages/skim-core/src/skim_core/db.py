@@ -14,6 +14,7 @@ import os
 import socket
 import sqlite3
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any, List, Optional
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
@@ -127,6 +128,15 @@ CREATE TABLE IF NOT EXISTS app_settings (
     key         TEXT PRIMARY KEY,
     value       TEXT NOT NULL,
     updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- `crawl --catch-up`의 플랫폼별 체크포인트. covered_until은 창을 끊김 없이 채운
+-- 마지막 회차의 시작 시각(ISO 8601, 시간대 포함)이다.
+CREATE TABLE IF NOT EXISTS crawl_checkpoints (
+    platform      TEXT PRIMARY KEY,
+    covered_until TEXT NOT NULL,
+    run_id        INTEGER,
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_posts_platform    ON posts(platform);
@@ -972,6 +982,45 @@ def platforms_with_recent_posts(days: int, db_path: Optional[Path] = None) -> se
         if conn is not None:
             conn.close()
     return {row[0] for row in rows}
+
+
+def load_crawl_checkpoints(db_path: Optional[Path] = None) -> dict[str, datetime]:
+    """플랫폼별로 창을 끊김 없이 채운 마지막 회차의 시작 시각."""
+    conn = get_connection(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT platform, covered_until FROM crawl_checkpoints"
+        ).fetchall()
+    finally:
+        conn.close()
+    return {
+        row["platform"]: datetime.fromisoformat(row["covered_until"]) for row in rows
+    }
+
+
+def save_crawl_checkpoint(
+    platform: str,
+    covered_until: datetime,
+    run_id: Optional[int] = None,
+    db_path: Optional[Path] = None,
+) -> None:
+    """플랫폼의 체크포인트를 옮긴다. 시간대 없는 값은 받지 않는다."""
+    if covered_until.tzinfo is None:
+        raise ValueError("covered_until needs a timezone")
+    conn = get_connection(db_path)
+    try:
+        conn.execute(
+            """INSERT INTO crawl_checkpoints (platform, covered_until, run_id)
+               VALUES (?, ?, ?)
+               ON CONFLICT(platform) DO UPDATE SET
+                   covered_until = excluded.covered_until,
+                   run_id = excluded.run_id,
+                   updated_at = datetime('now')""",
+            (platform, covered_until.isoformat(timespec="seconds"), run_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 # 소비 상태. 새 컬럼을 만들지 않고 이미 있던 feedback 테이블을 쓴다. 이 테이블은
