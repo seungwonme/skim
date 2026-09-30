@@ -19,7 +19,12 @@ import typer
 from bs4 import BeautifulSoup
 
 from ...comments import Comment, append_comment_section, render_comment_section
-from ...enrichment import _is_content_usable, defuddle, extract_article_content
+from ...enrichment import (
+    _is_content_usable,
+    _pdf_fallback,
+    defuddle,
+    extract_article_content,
+)
 from ...feed_config import GEEKNEWS_RSS
 from ...feed_utils import CHALLENGE_MARKER, FEED_HEADERS, fetch_feed
 from ...models import Post
@@ -404,14 +409,21 @@ def extract_original(url: str, title: str) -> tuple:
     defuddle을 먼저 보고, 모자라면 3단 사다리(HTTP, 렌더, defuddle)로 넘어간다.
     사다리는 실패해도 얇은 결과를 돌려주므로 공통 품질 게이트를 한 번 더 거친다.
     차단 화면 문구가 원문으로 붙는 걸 막는다.
+
+    링크가 PDF면 HTML 추출기는 늘 실패하므로 마지막에 PDF 추출을 본다. hackernews와
+    lobsters가 타는 `_pdf_fallback`인데 이 경로에만 빠져 있어서, 2026-07 이후 원문이
+    PDF인 GeekNews 글 6건 중 5건이 failed로 남았다.
     """
     data = defuddle(url)
     if _is_content_usable(data, title, min_words=3):
         return data, "defuddle", None
     data, method, error = extract_article_content(url, title)
-    if not _is_content_usable(data, title, min_words=3):
-        return None, "failed", error or "content not usable"
-    return data, method, error
+    if _is_content_usable(data, title, min_words=3):
+        return data, method, error
+    pdf = _pdf_fallback(url)
+    if pdf:
+        return pdf, "pdf", None
+    return None, "failed", error or "content not usable"
 
 
 def enrich_geeknews_item(

@@ -64,6 +64,10 @@ ARTICLE = {
     "content_markdown": "Original article body with enough words to count",
     "word_count": 8,
 }
+PDF_TEXT = {
+    "content_markdown": "Report body extracted from the PDF file",
+    "word_count": 7,
+}
 
 
 def _resp(status=200, text=""):
@@ -444,6 +448,60 @@ class ExtractOriginalTests(unittest.TestCase):
 
         self.assertIsNone(data)
         self.assertEqual(method, "failed")
+
+    def _extract_with_failed_html(self, url):
+        with (
+            patch.object(geeknews, "defuddle", return_value=None),
+            patch.object(
+                geeknews,
+                "extract_article_content",
+                return_value=(None, "failed", "playwright fetch failed"),
+            ),
+            patch.object(enrichment, "extract_pdf_text", return_value=PDF_TEXT) as pdf,
+        ):
+            return geeknews.extract_original(url, "Report"), pdf
+
+    def test_pdf_link_falls_back_to_pdf_extraction(self):
+        # HTML 추출기는 PDF에서 늘 실패한다. 2026-09-30 데일리의 PDF 원문 글은 렌더가
+        # "Download is starting"으로 끝나 failed가 됐다. hackernews, lobsters는 이미
+        # 이 경로를 탄다.
+        (data, method, error), pdf = self._extract_with_failed_html(
+            "https://example.com/wp-content/20260916-report-(clean).pdf"
+        )
+
+        self.assertEqual(data, PDF_TEXT)
+        self.assertEqual(method, "pdf")
+        self.assertIsNone(error)
+        pdf.assert_called_once()
+
+    def test_html_link_does_not_try_pdf_extraction(self):
+        (data, method, _), pdf = self._extract_with_failed_html(
+            "https://example.com/post"
+        )
+
+        self.assertIsNone(data)
+        self.assertEqual(method, "failed")
+        pdf.assert_not_called()
+
+    def test_pdf_original_keeps_the_row_out_of_failed(self):
+        # 원문이 붙으면 토픽 페이지 없이도 failed가 아니다. 백필은 GN 요약만 더한다.
+        item = {
+            "title": "Report",
+            "summary": "RSS 요약 조각이 조금 들어온다",
+            "original_url": "https://example.com/report.pdf",
+        }
+        with (
+            patch.object(geeknews, "defuddle", return_value=None),
+            patch.object(
+                geeknews, "extract_article_content", return_value=(None, "failed", "x")
+            ),
+            patch.object(enrichment, "extract_pdf_text", return_value=PDF_TEXT),
+        ):
+            enrich_geeknews_item(item, None)
+
+        self.assertEqual(item["enrichment_method"], "pdf")
+        self.assertEqual(item["content_status"], "partial")
+        self.assertIn("## Original Article\n\nReport body", item["content_markdown"])
 
 
 if __name__ == "__main__":

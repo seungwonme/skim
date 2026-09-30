@@ -197,6 +197,9 @@ arXiv 메일링은 09:00 KST라 00:02 배치보다 늦고 주말에는 없다. �
 - **링크 게시물은 원문 URL을 보존하고 추출한다.** 제목만 남기면 소비자가 원문으로 갈
   방법이 없다. 애그리게이터(hackernews/lobsters/everyto/reddit)는 `_enrich_article_item`의
   3단 사다리를 타되 `min_words`를 낮춘다. 짧은 릴리스 노트도 정당한 본문이다.
+  원문이 PDF면 HTML 추출기는 늘 실패하므로 `_pdf_fallback`으로 넘어간다. GeekNews는
+  원문을 `geeknews.extract_original`로 따로 추출해서 이게 빠져 있었다 (2026-07 이후
+  PDF 원문 6건 중 5건 failed).
 - **상류가 주는 고유 id를 버리지 않는다.** 없으면 `db.py`가 URL로 병합해서, 같은 URL의
   서로 다른 글이 통째로 사라진다 (producthunt 재런치). 반대로 id 체계를 바꾸면 같은 글이
   두 행으로 갈라지므로(ailabs 182행) 전환할 때는 백필이 함께 가야 한다.
