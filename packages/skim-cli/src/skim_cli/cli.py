@@ -1337,6 +1337,119 @@ VALID_REFRESH_MODES = {"auto", "never", "force"}
 VALID_EMIT_MODES = {"json", "jsonl", "summary"}
 
 
+def _validate_research_modes(topic: str, refresh: str, emit: str) -> None:
+    if not topic.strip():
+        typer.echo("Usage: skim research TOPIC [OPTIONS]", err=True)
+        raise typer.Exit(code=2)
+
+    if refresh not in VALID_REFRESH_MODES:
+        typer.echo(
+            f"[skim] invalid --refresh value: {refresh!r}. "
+            f"choose from {sorted(VALID_REFRESH_MODES)}",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    if emit not in VALID_EMIT_MODES:
+        typer.echo(
+            f"[skim] invalid --emit value: {emit!r}. "
+            f"choose from {sorted(VALID_EMIT_MODES)}",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+
+def _research_sources(sources: str) -> tuple[List[str], Optional[List[str]]]:
+    """`--sources`를 풀어 (요청 목록, 검색에 넘길 목록)을 돌려준다. all이면 후자는 None."""
+    source_list = [s.strip() for s in sources.split(",") if s.strip()]
+    if source_list == ["all"]:
+        return source_list, None
+    unknown = [p for p in source_list if p not in REGISTRY]
+    if unknown:
+        typer.echo(f"[skim] unknown sources: {unknown}", err=True)
+        typer.echo(f"supported: {', '.join(REGISTRY.keys())}", err=True)
+        raise typer.Exit(code=2)
+    return source_list, source_list
+
+
+def _research_local(
+    topic: str,
+    tokens: List[str],
+    source_list: List[str],
+    sources_for_search: Optional[List[str]],
+    days: int,
+    limit: int,
+) -> dict:
+    """refresh never: 갱신 없이 DB만 검색한다 (Phase 1 동작)."""
+    since_utc_iso = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    posts_raw, stats, warnings = search_posts(
+        topic, since_utc_iso, sources_for_search, limit
+    )
+    warnings = list(warnings)
+    if stats.short_tokens:
+        warnings.append(
+            f"short tokens (<=2 chars): {stats.short_tokens}. substring false positives likely."
+        )
+
+    sys.stderr.write(
+        f"[skim research stats] topic={topic!r} tokens={len(tokens)} "
+        f"rows_scanned={stats.rows_scanned} rows_returned={stats.rows_returned} "
+        f"latency_ms={stats.latency_ms}\n"
+    )
+
+    return build_response(
+        topic=topic,
+        tokens=tokens,
+        date_range={"from": since_utc_iso, "to": utc_now_iso()},
+        sources_requested=source_list,
+        posts=posts_raw,
+        search_stats=stats,
+        days_requested=days,
+        warnings=warnings,
+    )
+
+
+def _research_with_refresh(
+    topic: str,
+    tokens: List[str],
+    sources_for_search: Optional[List[str]],
+    days: int,
+    limit: int,
+    refresh: str,
+) -> dict:
+    """refresh auto/force: 자동 갱신, 잠금, research_runs 기록은 run_research가 맡는다."""
+    exit_code, response = asyncio.run(
+        run_research(
+            topic=topic,
+            sources=sources_for_search or list(REGISTRY.keys()),
+            days=days,
+            limit=limit,
+            refresh_mode=refresh,
+            explicit=sources_for_search is not None,
+        )
+    )
+    if exit_code != 0:
+        sys.stderr.write(f"[skim] research exited with code {exit_code}\n")
+        raise typer.Exit(code=exit_code)
+
+    if response.get("stats"):
+        s = response["stats"]
+        sys.stderr.write(
+            f"[skim research stats] topic={topic!r} tokens={len(tokens)} "
+            f"rows_scanned={s['rows_scanned']} rows_returned={s['rows_returned']} "
+            f"latency_ms={s['latency_ms']} newly_fetched={s['newly_fetched']}\n"
+        )
+        # short_tokens 경고는 Phase 1 path 와 일관되게 응답 warnings 에 추가
+        if s.get("short_tokens"):
+            msg = (
+                f"short tokens (<=2 chars): {s['short_tokens']}. "
+                "substring false positives likely."
+            )
+            if msg not in response["warnings"]:
+                response["warnings"].append(msg)
+    return response
+
+
 @app.command()
 def research(
     topic: str = typer.Argument(..., help="검색 topic (공백 구분 토큰화)"),
@@ -1371,133 +1484,20 @@ def research(
         skim research "agent" --max-chars 2000
     """
     field_list = _parse_fields(fields)
-    if not topic.strip():
-        typer.echo("Usage: skim research TOPIC [OPTIONS]", err=True)
-        raise typer.Exit(code=2)
-
-    if refresh not in VALID_REFRESH_MODES:
-        typer.echo(
-            f"[skim] invalid --refresh value: {refresh!r}. "
-            f"choose from {sorted(VALID_REFRESH_MODES)}",
-            err=True,
-        )
-        raise typer.Exit(code=2)
-
-    if emit not in VALID_EMIT_MODES:
-        typer.echo(
-            f"[skim] invalid --emit value: {emit!r}. "
-            f"choose from {sorted(VALID_EMIT_MODES)}",
-            err=True,
-        )
-        raise typer.Exit(code=2)
-
-    source_list = [s.strip() for s in sources.split(",") if s.strip()]
-    explicit_sources = source_list != ["all"]
-    if explicit_sources:
-        unknown = [p for p in source_list if p not in REGISTRY]
-        if unknown:
-            typer.echo(f"[skim] unknown sources: {unknown}", err=True)
-            typer.echo(f"supported: {', '.join(REGISTRY.keys())}", err=True)
-            raise typer.Exit(code=2)
-        sources_for_search: Optional[List[str]] = source_list
-    else:
-        sources_for_search = None
+    _validate_research_modes(topic, refresh, emit)
+    source_list, sources_for_search = _research_sources(sources)
 
     init_db()
+    # 공백뿐인 topic은 위에서 끝났으므로 토큰은 하나 이상이다.
     tokens = [t.lower() for t in topic.split() if t.strip()]
-
-    # Phase 2: refresh!=never 면 run_research 로 위임 (auto-refresh + lock + research_runs)
-    if refresh != "never":
-        if not tokens:
-            # 토큰 0개면 refresh 무의미 — Phase 1 동작 (warning + 빈 결과)
-            now_utc = datetime.now(timezone.utc)
-            since_utc_iso = (now_utc - timedelta(days=days)).isoformat()
-
-            response = build_response(
-                topic=topic,
-                tokens=tokens,
-                date_range={"from": since_utc_iso, "to": utc_now_iso()},
-                sources_requested=source_list,
-                posts=[],
-                search_stats=SearchStats(),
-                days_requested=days,
-                warnings=["no searchable tokens in topic"],
-            )
-            _emit_response(response, emit, field_list, max_chars)
-            return
-
-        sources_for_search_resolved = sources_for_search or list(REGISTRY.keys())
-        exit_code, response = asyncio.run(
-            run_research(
-                topic=topic,
-                sources=sources_for_search_resolved,
-                days=days,
-                limit=limit,
-                refresh_mode=refresh,
-                explicit=explicit_sources,
-            )
+    if refresh == "never":
+        response = _research_local(
+            topic, tokens, source_list, sources_for_search, days, limit
         )
-        if exit_code != 0:
-            sys.stderr.write(f"[skim] research exited with code {exit_code}\n")
-            raise typer.Exit(code=exit_code)
-
-        if response.get("stats"):
-            s = response["stats"]
-            sys.stderr.write(
-                f"[skim research stats] topic={topic!r} tokens={len(tokens)} "
-                f"rows_scanned={s['rows_scanned']} rows_returned={s['rows_returned']} "
-                f"latency_ms={s['latency_ms']} newly_fetched={s['newly_fetched']}\n"
-            )
-            # short_tokens 경고는 Phase 1 path 와 일관되게 응답 warnings 에 추가
-            if s.get("short_tokens"):
-                msg = (
-                    f"short tokens (<=2 chars): {s['short_tokens']}. "
-                    "substring false positives likely."
-                )
-                if msg not in response["warnings"]:
-                    response["warnings"].append(msg)
-        _emit_response(response, emit, field_list, max_chars)
-        return
-
-    # refresh == 'never' 경로 (Phase 1 동작)
-    now_utc = datetime.now(timezone.utc)
-    since_utc_iso = (now_utc - timedelta(days=days)).isoformat()
-
-    warnings: List[str] = []
-    if not tokens:
-        warnings.append("no searchable tokens in topic")
-        posts_raw: list = []
-
-        stats = SearchStats()
-        search_warnings: List[str] = []
     else:
-        posts_raw, stats, search_warnings = search_posts(
-            topic, since_utc_iso, sources_for_search, limit
+        response = _research_with_refresh(
+            topic, tokens, sources_for_search, days, limit, refresh
         )
-
-    warnings.extend(search_warnings)
-
-    if stats.short_tokens:
-        warnings.append(
-            f"short tokens (<=2 chars): {stats.short_tokens}. substring false positives likely."
-        )
-
-    sys.stderr.write(
-        f"[skim research stats] topic={topic!r} tokens={len(tokens)} "
-        f"rows_scanned={stats.rows_scanned} rows_returned={stats.rows_returned} "
-        f"latency_ms={stats.latency_ms}\n"
-    )
-
-    response = build_response(
-        topic=topic,
-        tokens=tokens,
-        date_range={"from": since_utc_iso, "to": utc_now_iso()},
-        sources_requested=source_list,
-        posts=posts_raw,
-        search_stats=stats,
-        days_requested=days,
-        warnings=warnings,
-    )
     _emit_response(response, emit, field_list, max_chars)
 
 
