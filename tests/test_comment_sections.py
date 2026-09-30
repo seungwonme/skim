@@ -4,7 +4,8 @@
 응답 구조가 달라 파서가 조용히 틀리기 쉬우므로, 실제 응답 모양을 픽스처로 고정한다.
 """
 
-import json
+import asyncio
+import contextlib
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -17,9 +18,15 @@ from skim_core.comments import (
 )
 from skim_core.crawlers.api.linkedin import LinkedInAPICrawler
 from skim_core.crawlers.api.reddit import RedditAPICrawler
-from skim_core.crawlers.api.threads import ThreadsAPICrawler
+from skim_core.crawlers.api.threads import (
+    MAX_REPLY_PAGES,
+    ThreadsAPICrawler,
+    parse_reply_page,
+    shortcode_to_post_id,
+)
 from skim_core.crawlers.feed.geeknews import _parse_comment_section
 from skim_core.crawlers.feed.producthunt import fetch_comment_section as ph_comments
+from skim_core.models import Post
 
 
 class RenderTests(unittest.TestCase):
@@ -271,152 +278,198 @@ PRODUCTHUNT_HTML = """
 """
 
 
-def _threads_doc(edges):
-    payload = {"data": {"data": {"edges": edges}}}
-    return (
-        '<html><body><script type="application/json">'
-        + json.dumps(payload, ensure_ascii=False)
-        + "</script></body></html>"
-    )
-
-
-def _threads_item(username, text, taken_at=1786000000, likes=2):
+def _threads_reply(username, text, taken_at=1786000000, likes=2):
     return {
-        "post": {
-            "user": {"username": username},
-            "caption": {"text": text},
-            "taken_at": taken_at,
-            "like_count": likes,
+        "user": {"username": username},
+        "caption": {"text": text},
+        "taken_at": taken_at,
+        "like_count": likes,
+    }
+
+
+def _threads_page(chains, cursor=None):
+    """답글 쿼리 응답 모양. chains는 스레드마다 [답글, 이어진 대화...]다."""
+    return {
+        "data": {
+            "media": {
+                "text_post_app_info": {
+                    "direct_replies": {
+                        "edges": [
+                            {
+                                "node": {
+                                    "posts": {
+                                        "edges": [{"node": reply} for reply in chain]
+                                    }
+                                }
+                            }
+                            for chain in chains
+                        ],
+                        "page_info": {
+                            "end_cursor": cursor,
+                            "has_next_page": cursor is not None,
+                        },
+                    }
+                }
+            }
         }
     }
 
 
+def _fake_reply_fetcher(pages):
+    """`_reply_fetcher` 대역. pages(post_id, after)가 돌려준 응답을 내준다.
+
+    호출 기록을 calls에 남긴다. 브라우저를 띄우지 않는다.
+    """
+    calls = []
+
+    @contextlib.asynccontextmanager
+    async def fetcher(_self, _posts):
+        async def fetch(post_id, after):
+            calls.append((post_id, after))
+            return pages(post_id, after)
+
+        yield fetch
+
+    return fetcher, calls
+
+
 class ThreadsReplyTests(unittest.TestCase):
     def _crawler(self):
-        with patch.object(ThreadsAPICrawler, "_setup_session", return_value=None):
-            crawler = ThreadsAPICrawler.__new__(ThreadsAPICrawler)
-            return crawler
+        return ThreadsAPICrawler.__new__(ThreadsAPICrawler)
 
-    def _fetch(self, html):
-        crawler = self._crawler()
-        response = MagicMock(status_code=200, text=html)
-        response.raise_for_status.return_value = None
-        with patch(
-            "skim_core.crawlers.api.threads.requests.get", return_value=response
+    def _post(self, code="Dd3x3EgEc9z", comments=3, author="root"):
+        return Post(
+            platform="threads",
+            author=author,
+            content="본문",
+            timestamp="2026-09-30T00:00:00+00:00",
+            url=f"https://www.threads.net/@{author}/post/{code}",
+            external_id=code,
+            comments=comments,
+        )
+
+    def _attach(self, posts, pages):
+        fetcher, calls = _fake_reply_fetcher(pages)
+        with (
+            patch.object(ThreadsAPICrawler, "_reply_fetcher", fetcher),
+            patch("skim_core.crawlers.api.threads.REPLY_REQUEST_INTERVAL", 0),
+            patch("skim_core.crawlers.api.threads.typer.echo") as echo,
         ):
-            return crawler.fetch_reply_section("https://www.threads.net/@root/post/ABC")
+            asyncio.run(self._crawler().attach_replies(posts))
+        return calls, echo
 
-    def test_skips_root_post_and_author_self_reply_chain(self):
-        html = _threads_doc(
+    def test_shortcode_converts_to_post_id(self):
+        # 2026-09-30에 브라우저가 실제로 보낸 postID와 그 게시물의 shortcode.
+        self.assertEqual(shortcode_to_post_id("Dd3x3EgEc9z"), "3996882482997874547")
+        self.assertIsNone(shortcode_to_post_id(""))
+        self.assertIsNone(shortcode_to_post_id("bad!code"))
+
+    def test_skips_author_self_reply_chain_but_keeps_author_answers(self):
+        page = _threads_page(
             [
-                # edges[0] = 원글 (본문에 이미 담김)
-                {"node": {"thread_items": [_threads_item("root", "원글")]}},
-                # 작성자 연작 — 본문에 이미 있으므로 제외돼야 한다
-                {"node": {"thread_items": [_threads_item("root", "1/ 이어지는 글")]}},
+                # 작성자 연작은 본문에 이미 있으므로 제외돼야 한다
+                [_threads_reply("root", "2/2 이어지는 글")],
                 # 타인 답글 + 그에 대한 작성자 답변
-                {
-                    "node": {
-                        "thread_items": [
-                            _threads_item("someone", "타인 답글"),
-                            _threads_item("root", "작성자 답변"),
-                        ]
-                    }
-                },
+                [
+                    _threads_reply("someone", "타인 답글"),
+                    _threads_reply("root", "작성자 답변"),
+                ],
             ]
         )
-        section = self._fetch(html)
+        comments, cursor = parse_reply_page(page, "root")
+        section = render_comment_section("Threads Replies", comments, score_unit="like")
 
         self.assertIn("- **@someone** (2 likes,", section)
         self.assertIn("  - **@root**", section)  # 대화 중 작성자 답변은 남는다
-        self.assertNotIn("1/ 이어지는 글", section)
-        self.assertNotIn("원글", section)
+        self.assertNotIn("2/2 이어지는 글", section)
+        self.assertIsNone(cursor)
 
-    def test_related_posts_are_not_mistaken_for_replies(self):
-        """같은 문서의 relatedPosts도 thread_items를 갖지만 답글이 아니다."""
-        payload = {
-            "data": {
-                "relatedPosts": {
-                    "threads": [
-                        {"thread_items": [_threads_item("stranger", "추천 게시물")]}
-                    ]
-                }
-            }
-        }
-        html = (
-            '<html><body><script type="application/json">'
-            + json.dumps(payload, ensure_ascii=False)
-            + "</script></body></html>"
+    def test_attach_appends_section_and_uses_numeric_post_id(self):
+        post = self._post()
+        calls, _ = self._attach(
+            [post],
+            lambda post_id, after: [_threads_page([[_threads_reply("a", "hi")]])],
         )
-        self.assertIsNone(self._fetch(html))
 
-    def test_retries_once_when_payload_is_missing(self):
-        """답글 페이로드가 빠진 문서가 간헐적으로 온다. 한 번 더 받아본다."""
-        crawler = self._crawler()
-        empty = MagicMock(status_code=200, text="<html></html>")
-        empty.raise_for_status.return_value = None
-        good = MagicMock(
-            status_code=200,
-            text=_threads_doc(
-                [
-                    {"node": {"thread_items": [_threads_item("root", "원글")]}},
-                    {"node": {"thread_items": [_threads_item("someone", "타인 답글")]}},
+        self.assertEqual(calls, [("3996882482997874547", None)])
+        self.assertTrue(post.content_markdown.startswith("본문"))
+        self.assertIn("## Threads Replies", post.content_markdown)
+        self.assertIn("**@a**", post.content_markdown)
+
+    def test_follows_cursor_to_the_next_page(self):
+        post = self._post()
+
+        def pages(post_id, after):
+            if after is None:
+                return [
+                    _threads_page([[_threads_reply("a", "첫 페이지")]], cursor="c1")
                 ]
-            ),
+            return [_threads_page([[_threads_reply("b", "둘째 페이지")]])]
+
+        calls, _ = self._attach([post], pages)
+
+        self.assertEqual([after for _, after in calls], [None, "c1"])
+        self.assertIn("첫 페이지", post.content_markdown)
+        self.assertIn("둘째 페이지", post.content_markdown)
+
+    def test_stops_at_page_cap(self):
+        post = self._post()
+        calls, _ = self._attach(
+            [post],
+            lambda post_id, after: [
+                _threads_page([[_threads_reply("a", f"after={after}")]], cursor="next")
+            ],
         )
-        good.raise_for_status.return_value = None
 
-        with patch(
-            "skim_core.crawlers.api.threads.requests.get", side_effect=[empty, good]
-        ) as get:
-            section = crawler.fetch_reply_section(
-                "https://www.threads.net/@root/post/ABC"
-            )
-
-        self.assertEqual(get.call_count, 2)
-        self.assertIn("타인 답글", section)
-
-    def test_requests_threads_com_not_net(self):
-        """threads.net으로 요청하면 페이로드가 빠진 셸이 온다."""
-        crawler = self._crawler()
-        response = MagicMock(status_code=200, text="<html></html>")
-        response.raise_for_status.return_value = None
-        with patch(
-            "skim_core.crawlers.api.threads.requests.get", return_value=response
-        ) as get:
-            crawler.fetch_reply_section("https://www.threads.net/@root/post/ABC")
-
-        self.assertIn("threads.com", get.call_args[0][0])
-        self.assertNotIn("threads.net", get.call_args[0][0])
+        self.assertEqual(len(calls), MAX_REPLY_PAGES)
 
     def test_attach_fetches_every_post_reporting_replies(self):
         """답글 0건만 건너뛰고 나머지는 회차 상한 없이 전부 조회한다."""
-        crawler = self._crawler()
-        silent = [
-            MagicMock(comments=0, url="silent", content="b", content_markdown=None)
-        ]
-        rest = [
-            MagicMock(comments=1, url=f"u{i}", content="b", content_markdown=None)
-            for i in range(30)
-        ]
-        with patch.object(crawler, "fetch_reply_section", return_value=None) as fetch:
-            crawler.attach_replies(silent + rest)
+        silent = self._post(code="silent", comments=0)
+        rest = [self._post(code=f"code{i}", comments=1) for i in range(30)]
+        calls, _ = self._attach([silent, *rest], lambda post_id, after: [])
 
-        fetched = [call.args[0] for call in fetch.call_args_list]
+        fetched = [post_id for post_id, _ in calls]
         self.assertEqual(len(fetched), 30)
-        self.assertNotIn("silent", fetched)
-        self.assertEqual(fetched[0], "u0")
+        self.assertNotIn(shortcode_to_post_id("silent"), fetched)
+        self.assertEqual(fetched[0], shortcode_to_post_id("code0"))
 
     def test_replies_are_not_truncated(self):
-        """문서가 실어 보낸 답글은 개수 제한 없이 전부 담는다."""
-        edges = [{"node": {"thread_items": [_threads_item("root", "원글")]}}]
-        edges += [
-            {"node": {"thread_items": [_threads_item(f"user{i}", f"답글 {i}")]}}
-            for i in range(40)
-        ]
-        section = self._fetch(_threads_doc(edges))
+        """받은 답글은 개수 제한 없이 전부 담는다."""
+        post = self._post()
+        chains = [[_threads_reply(f"user{i}", f"답글 {i}")] for i in range(40)]
+        self._attach([post], lambda post_id, after: [_threads_page(chains)])
 
-        self.assertEqual(section.count("\n- **"), 40)
-        self.assertIn("답글 39", section)
+        self.assertEqual(post.content_markdown.count("\n- **"), 40)
+        self.assertIn("답글 39", post.content_markdown)
+
+    def test_warns_when_no_post_gets_replies(self):
+        """상류 구조가 바뀌면 예외 없이 전건 빈 결과가 된다. 조용히 넘기지 않는다."""
+        posts = [self._post(code=f"code{i}") for i in range(3)]
+        _, echo = self._attach(
+            posts, lambda post_id, after: [{"data": {"media": None}}]
+        )
+
+        printed = " ".join(str(call.args[0]) for call in echo.call_args_list)
+        self.assertIn("3건에서 답글을 하나도 못 받았습니다", printed)
+
+    def test_browser_failure_keeps_every_body(self):
+        posts = [self._post(code=f"code{i}") for i in range(2)]
+
+        @contextlib.asynccontextmanager
+        async def broken(_self, _posts):
+            raise RuntimeError("웹앱 답글 쿼리를 준비하지 못했습니다 (module)")
+            yield  # pragma: no cover - 도달하지 않는 제너레이터 표식
+
+        with (
+            patch.object(ThreadsAPICrawler, "_reply_fetcher", broken),
+            patch("skim_core.crawlers.api.threads.typer.echo") as echo,
+        ):
+            asyncio.run(self._crawler().attach_replies(posts))
+
+        self.assertTrue(all(post.content_markdown is None for post in posts))
+        printed = " ".join(str(call.args[0]) for call in echo.call_args_list)
+        self.assertIn("Threads 답글 수집 중단", printed)
 
 
 class ProductHuntCommentTests(unittest.TestCase):

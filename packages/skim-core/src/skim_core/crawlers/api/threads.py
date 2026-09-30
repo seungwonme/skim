@@ -2,31 +2,32 @@
 @file threads_api.py
 @description Threads 크롤러
 
-For You 타임라인은 실제 브라우저로 받습니다. 2026-09-08부터 Meta가 클라이언트
-지문으로 걸러, requests로는 브라우저와 똑같은 요청을 보내도 빈 피드가 옵니다.
-나머지 경로(사용자 피드, 게시물 페이지)는 세션 쿠키를 얹은 requests를 씁니다.
+For You 타임라인과 답글은 실제 브라우저로 받습니다. 2026-09-08부터 Meta가 클라이언트
+지문으로 걸러, requests로는 브라우저와 똑같은 요청을 보내도 빈 결과가 옵니다.
+사용자 프로필 피드만 세션 쿠키를 얹은 requests를 씁니다.
 
 주요 기능:
 1. 브라우저로 For You 타임라인 수집 (로그인 세션 재사용)
 2. 사용자 프로필 피드는 GraphQL persisted query 호출
 3. 스레드(self-reply chain) 내용 합치기
 4. 페이지네이션을 통한 대량 수집
+5. 로그인한 브라우저의 웹앱 네트워크 계층으로 답글 수집
 
 @dependencies
-- playwright: 타임라인 수집용 브라우저
+- playwright: 타임라인과 답글 수집용 브라우저
 - requests: HTTP 클라이언트
 - typer: CLI 출력
 """
 
 import asyncio
+import contextlib
 import json
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional
 
 import requests
 import typer
-from bs4 import BeautifulSoup
 
 from ...comments import Comment, append_comment_section, render_comment_section
 from ...models import Post
@@ -42,23 +43,85 @@ WEB_USER_AGENT = (
 
 # 타임라인 스크롤 상한. 한 회에 6~7건씩 오므로 50건이면 10회 안쪽에서 채워진다.
 MAX_TIMELINE_SCROLLS = 15
-# 답글은 문서가 실어 보내는 만큼 전부 담는다. 15개로 자르던 때는 문서에 24개가 와도
-# 9개를 버렸다. 상한이 없으므로 인기 게시물은 본문이 길어진다.
+# 받은 답글은 전부 담는다. 15개로 자르던 때는 24개가 와도 9개를 버렸다.
+# 상한이 없으므로 인기 게시물은 본문이 길어진다.
 MAX_REPLIES = None
 # 답글이 0건이라고 보고된 게시물만 건너뛴다. `comments`가 삭제·비공개 답글까지 세는
 # 부정확한 값이라 높게 잡으면 멀쩡한 글이 빠진다(3이던 때 답글 1~2개인 12.6%가 통째로 빠졌다).
 MIN_REPLIES_FOR_FETCH = 1
-# 게시물 페이지는 답글이 담긴 SSR 페이로드를 로그인 없이도 준다. 단 threads.net으로
-# 요청하면 리다이렉트 뒤 페이로드가 빠진 셸이 와서, threads.com으로 직접 받아야 한다.
-POST_PAGE_HEADERS = {
-    "User-Agent": WEB_USER_AGENT,
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9,ko;q=0.8",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Upgrade-Insecure-Requests": "1",
+
+# 답글은 게시물 페이지의 웹앱이 쓰는 쿼리로 받는다. 모듈 이름으로 찾으므로 doc_id와
+# Relay provider 플래그(2026-09-30 기준 35개)는 웹앱이 재배포돼도 웹앱이 맞춘다.
+REPLIES_QUERY_MODULE = "BarcelonaPostPageDirectRepliesRefetchQuery.graphql"
+# 요청 하나에 받는 최상위 답글 스레드 수. 웹앱은 스크롤마다 4개씩 받지만 서버는 큰 값도
+# 받아 준다. 답글 54개(스레드 17개) 게시물이 요청 1건에 끝났다(2026-09-30 실측).
+REPLY_PAGE_SIZE = 25
+# 게시물당 답글 요청 상한. 25개씩 4번이면 최상위 스레드 100개다.
+MAX_REPLY_PAGES = 4
+# 답글 요청 사이 간격(초). 계정으로 식별되는 요청이라 몰아서 보내지 않는다.
+REPLY_REQUEST_INTERVAL = 1.0
+# 게시물 페이지를 연 뒤 웹앱이 Relay 환경과 답글 쿼리 모듈을 올리기까지 기다리는 시간(초).
+REPLY_BOOT_TIMEOUT = 30
+# 답글 요청 하나의 응답 대기 상한(초).
+REPLY_FETCH_TIMEOUT = 30
+# 게시물 URL의 shortcode는 숫자 게시물 ID를 이 알파벳의 64진수로 쓴 것이다.
+SHORTCODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+
+# 웹앱의 Relay 환경과 답글 쿼리 모듈을 찾아 window에 걸어 둔다. 환경은 React fiber를
+# 루트 쪽으로 올라가며 getNetwork와 getStore를 가진 Provider 값을 찾는다. 준비됐으면
+# "ok", 아니면 아직 없는 쪽의 이름을 돌려준다.
+_BOOT_REPLIES_JS = """
+(moduleName) => {
+  let query;
+  try {
+    query = require(moduleName);
+  } catch (e) {
+    return "module";
+  }
+  const isEnv = (v) =>
+    v && typeof v.getNetwork === "function" && typeof v.getStore === "function";
+  const nodes = [
+    ...document.querySelectorAll("[data-pressable-container]"),
+    ...document.querySelectorAll("body *"),
+  ];
+  for (const node of nodes.slice(0, 5000)) {
+    const key = Object.keys(node).find((k) => k.startsWith("__reactFiber$"));
+    for (let fiber = key && node[key]; fiber; fiber = fiber.return) {
+      const value = fiber.memoizedProps && fiber.memoizedProps.value;
+      const env = isEnv(value) ? value : value && isEnv(value.environment) ? value.environment : null;
+      if (env) {
+        window.__skimReplies = {env, query};
+        return "ok";
+      }
+    }
+  }
+  return "relay environment";
 }
+"""
+
+# 웹앱 네트워크 계층으로 답글 쿼리를 부른다. provider 플래그는 쿼리 모듈이 그 자리에서
+# 계산한다. 같은 doc_id, 변수, 플래그, 웹앱 폼 필드로 손으로 만든 요청은 파이썬에서든
+# 페이지 안 fetch에서든 오류 없이 direct_replies가 null로 온다(2026-09-30 실측).
+_FETCH_REPLIES_JS = """
+async ({postID, after, first}) => {
+  const {env, query} = window.__skimReplies;
+  const variables = {after, filterType: null, first, postID, sortOrder: "TOP"};
+  for (const [name, provider] of Object.entries(query.params.providedVariables || {})) {
+    variables[name] = provider.get();
+  }
+  const payloads = [];
+  await new Promise((resolve, reject) => {
+    env.getNetwork().execute(query.params, variables, {force: true}).subscribe({
+      next: (payload) => payloads.push(payload),
+      error: reject,
+      complete: resolve,
+    });
+  });
+  return payloads;
+}
+"""
+
+ReplyPageFetcher = Callable[[str, Optional[str]], Awaitable[List[Dict[str, Any]]]]
 
 # persisted query 좌표. Meta가 웹앱을 재배포하면 doc_id가 바뀌어 execution error가 난다.
 # 갱신하려면 브라우저로 threads.com을 열어 graphql/query 요청의 doc_id를 다시 읽는다.
@@ -132,6 +195,81 @@ def parse_meta_response(text: str) -> Optional[Dict[str, Any]]:
     return parsed if isinstance(parsed, dict) else None
 
 
+def shortcode_to_post_id(code: str) -> Optional[str]:
+    """게시물 URL의 shortcode를 GraphQL이 받는 숫자 게시물 ID로 바꾼다."""
+    if not code:
+        return None
+    post_id = 0
+    for char in code:
+        digit = SHORTCODE_ALPHABET.find(char)
+        if digit < 0:
+            return None
+        post_id = post_id * 64 + digit
+    return str(post_id)
+
+
+def reply_post_id(post: Post) -> Optional[str]:
+    """답글 쿼리에 넘길 게시물 ID. external_id는 shortcode이고, shortcode가 없던 글만 숫자 pk다."""
+    external_id = post.external_id or ""
+    # shortcode는 11자 안팎이고 pk는 19자리 숫자다.
+    if external_id.isdigit() and len(external_id) > 15:
+        return external_id
+    return shortcode_to_post_id(external_id)
+
+
+def parse_reply_page(
+    payload: Dict[str, Any], root_author: str
+) -> tuple[List[Comment], Optional[str]]:
+    """답글 쿼리 응답 하나에서 (답글 목록, 다음 페이지 커서)를 뽑는다.
+
+    응답은 `data.media.text_post_app_info.direct_replies`에 최상위 답글 스레드를 담고,
+    스레드마다 `posts.edges`에 [답글, 그 답글에 이어진 대화...]가 순서대로 온다.
+    """
+    info = ((payload.get("data") or {}).get("media") or {}).get(
+        "text_post_app_info"
+    ) or {}
+    connection = info.get("direct_replies") or {}
+
+    collected: List[Comment] = []
+    for edge in connection.get("edges") or []:
+        posts = ((edge.get("node") or {}).get("posts") or {}).get("edges") or []
+        chain = [post_edge.get("node") or {} for post_edge in posts]
+        if not chain:
+            continue
+        # 작성자가 스스로 시작한 스레드는 self-reply 연작이라 이미 본문에 담겨 있다.
+        # 대화 도중 작성자가 남의 답글에 단 답변은 depth>0이라 그대로 살아남는다.
+        starter = (chain[0].get("user") or {}).get("username")
+        if root_author and starter == root_author:
+            continue
+        for depth, reply in enumerate(chain):
+            text = (reply.get("caption") or {}).get("text") or ""
+            if not text:
+                continue
+            user = (reply.get("user") or {}).get("username") or "unknown"
+            taken_at = reply.get("taken_at")
+            collected.append(
+                Comment(
+                    author=f"@{user}",
+                    text=text,
+                    score=reply.get("like_count"),
+                    created=(
+                        datetime.fromtimestamp(taken_at, tz=timezone.utc).strftime(
+                            "%Y-%m-%d %H:%M UTC"
+                        )
+                        if taken_at
+                        else None
+                    ),
+                    depth=min(depth, 1),
+                )
+            )
+
+    page_info = connection.get("page_info") or {}
+    next_cursor = (
+        page_info.get("end_cursor") if page_info.get("has_next_page") else None
+    )
+    return collected, next_cursor
+
+
 class ThreadsAPICrawler:
     """
     Threads API 기반 크롤러
@@ -162,9 +300,9 @@ class ThreadsAPICrawler:
         self._tokens: Optional[Dict[str, str]] = None
 
         self.session.cookies.update(cookies)
-        # X-IG-App-ID를 붙이지 않는다. Meta가 2026-09-08부터 이 헤더가 달린
-        # graphql/query 요청을 error 1357054로 거부한다. 브라우저 웹앱도 Threads
-        # 도메인에서는 이 헤더를 보내지 않는다. 세션 기본 헤더에 두면 토큰 추출용
+        # X-IG-App-ID를 붙이지 않는다. Meta가 2026-09-08부터 이 헤더가 달린 requests의
+        # graphql/query 요청을 error 1357054로 거부한다. 브라우저 웹앱은 이 헤더를
+        # 보내고도 통과한다(2026-09-30 확인). 세션 기본 헤더에 두면 토큰 추출용
         # HTML GET은 통과하고 GraphQL만 죽어서, 세션 만료처럼 보인다.
         self.session.headers.update(
             {
@@ -200,163 +338,153 @@ class ThreadsAPICrawler:
         try:
             posts = await self._crawl_impl(count, user_id)
             if not no_content:
-                self.attach_replies(posts)
+                await self.attach_replies(posts)
             return posts
         finally:
             # 크롤러 인스턴스는 1회성이다. 세션 커넥션 풀을 정리한다.
             self.session.close()
 
-    def attach_replies(self, posts: List[Post]) -> None:
+    async def attach_replies(self, posts: List[Post]) -> None:
         """타인 답글을 정본 본문 뒤에 잇는다.
 
-        답글이 있다고 보고된 게시물은 전부 조회한다(게시물당 요청 1건, 실측 1~4초).
+        답글이 있다고 보고된 게시물은 전부 조회한다. 브라우저를 한 번 띄워 게시물
+        페이지를 열고, 그 웹앱으로 게시물마다 답글 쿼리를 부른다(요청 1건에 실측 약
+        1초, 요청 사이 1초 간격). 로그인 세션으로 나가는 요청이라 계정으로 식별된다.
         `--count`를 크게 주면 그만큼 크롤이 길어진다.
         """
+        targets = [
+            (post, post_id)
+            for post in posts
+            if (post.comments or 0) >= MIN_REPLIES_FOR_FETCH
+            and (post_id := reply_post_id(post))
+        ]
+        if not targets:
+            return
+
         failures = 0
-        attempted = 0
         attached = 0
-        for post in posts:
-            if (post.comments or 0) < MIN_REPLIES_FOR_FETCH:
-                continue
-            attempted += 1
-            # HTTP 실패는 fetch_reply_section 안에서 조용히 None이 된다. 여기서 잡는 건
-            # 상류 SSR 페이로드 구조가 바뀌었을 때의 파싱 실패다. 그게 크롤 루프까지
-            # 올라가면 이 회차의 게시물 전량이 저장 0건이 된다.
-            try:
-                section = self.fetch_reply_section(post.url)
-            except Exception as exc:  # noqa: BLE001 - 답글 실패가 게시물 저장을 막지 않는다
-                failures += 1
-                typer.echo(f"   [!] Threads 답글 파싱 실패: {exc}")
-                continue
-            if section:
-                attached += 1
-                post.content_markdown = append_comment_section(
-                    post.content_markdown or post.content, section
-                )
+        try:
+            async with self._reply_fetcher([post for post, _ in targets]) as fetch:
+                for index, (post, post_id) in enumerate(targets):
+                    if index:
+                        await asyncio.sleep(REPLY_REQUEST_INTERVAL)
+                    # 요청 실패와 응답 구조 변경을 여기서 잡는다. 크롤 루프까지 올라가면
+                    # 이 회차의 게시물 전량이 저장 0건이 된다.
+                    try:
+                        section = await self._reply_section(fetch, post_id, post.author)
+                    except Exception as exc:  # noqa: BLE001 - 답글 실패가 게시물 저장을 막지 않는다
+                        failures += 1
+                        typer.echo(f"   [!] Threads 답글 수집 실패: {exc}")
+                        continue
+                    if section:
+                        attached += 1
+                        post.content_markdown = append_comment_section(
+                            post.content_markdown or post.content, section
+                        )
+        except Exception as exc:  # noqa: BLE001 - 브라우저나 웹앱을 못 띄워도 본문은 저장한다
+            typer.echo(
+                f"   [!] Threads 답글 수집 중단 ({attached}건만 붙이고 본문 저장): {exc}"
+            )
+            return
 
         if failures:
-            typer.echo(f"   [!] Threads 답글 파싱 실패 {failures}건 (본문만 저장)")
+            typer.echo(f"   [!] Threads 답글 수집 실패 {failures}건 (본문만 저장)")
 
-        # 개별 실패는 위에서 잡히지만, 상류가 페이로드를 통째로 빼면 예외 없이 전건
-        # None이 되어 조용히 넘어간다. 실제로 2026-09-08부터 2주간 그렇게 묻혔다.
-        if attempted and not attached:
+        # 개별 실패는 위에서 잡히지만, 상류가 응답 구조를 통째로 바꾸면 예외 없이 전건
+        # 빈 결과가 되어 조용히 넘어간다. 실제로 2026-09-08부터 2주간 그렇게 묻혔다.
+        if not attached:
             typer.echo(
-                f"   [!] 답글이 있다고 표시된 {attempted}건에서 답글을 하나도 못 받았습니다."
+                f"   [!] 답글이 있다고 표시된 {len(targets)}건에서 답글을 하나도 못 받았습니다."
             )
-            typer.echo("       상류 답글 페이로드 구조가 바뀌었는지 확인하세요.")
+            typer.echo("       상류 답글 응답 구조가 바뀌었는지 확인하세요.")
 
-    def fetch_reply_section(self, url: Optional[str]) -> Optional[str]:
-        """게시물 페이지의 SSR 페이로드에서 답글을 뽑아 마크다운 섹션으로 만든다.
-
-        타임라인 GraphQL 응답에는 타인 답글이 오지 않는다. 게시물 문서는 답글까지 담고
-        있고 로그인도 필요 없어서, persisted query 좌표(doc_id)를 따로 들지 않아도 된다.
-        """
-        if not url:
-            return None
-        # threads.net으로 요청하면 리다이렉트 뒤 페이로드가 빠진 셸이 온다.
-        page_url = url.replace("threads.net", "threads.com")
-
-        # 같은 URL이라도 답글 페이로드가 빠진 문서가 간헐적으로 온다(실측). 한 번 더 받아본다.
-        root_author, threads = "", []
-        for _ in range(2):
-            try:
-                response = requests.get(page_url, headers=POST_PAGE_HEADERS, timeout=25)
-                response.raise_for_status()
-            except Exception:  # noqa: BLE001 - 답글 실패가 게시물 저장을 막지 않는다
-                return None
-            root_author, threads = self._extract_reply_threads(response.text)
-            if threads:
-                break
-
+    async def _reply_section(
+        self, fetch: ReplyPageFetcher, post_id: str, root_author: str
+    ) -> Optional[str]:
+        """게시물 하나의 답글을 페이지를 넘기며 모아 마크다운 섹션으로 만든다."""
         collected: List[Comment] = []
-        for thread in threads:
-            items = thread.get("thread_items") or []
-            if not items:
-                continue
-            # 작성자가 스스로 시작한 스레드는 self-reply 연작이라 이미 본문에 담겨 있다.
-            # 대화 도중 작성자가 남의 답글에 단 답변은 depth>0이라 그대로 살아남는다.
-            starter = ((items[0].get("post") or {}).get("user") or {}).get("username")
-            if root_author and starter == root_author:
-                continue
-            for depth, item in enumerate(items):
-                post_data = item.get("post") or {}
-                text = ((post_data.get("caption") or {}) or {}).get("text") or ""
-                if not text:
-                    continue
-                user = (post_data.get("user") or {}).get("username") or "unknown"
-                taken_at = post_data.get("taken_at")
-                collected.append(
-                    Comment(
-                        author=f"@{user}",
-                        text=text,
-                        score=post_data.get("like_count"),
-                        created=(
-                            datetime.fromtimestamp(taken_at, tz=timezone.utc).strftime(
-                                "%Y-%m-%d %H:%M UTC"
-                            )
-                            if taken_at
-                            else None
-                        ),
-                        depth=min(depth, 1),
-                    )
-                )
+        after: Optional[str] = None
+        for page in range(MAX_REPLY_PAGES):
+            if page:
+                await asyncio.sleep(REPLY_REQUEST_INTERVAL)
+            cursor = None
+            for payload in await fetch(post_id, after):
+                comments, next_cursor = parse_reply_page(payload, root_author)
+                collected.extend(comments)
+                cursor = next_cursor or cursor
+            if not cursor:
+                break
+            after = cursor
 
         return render_comment_section(
             "Threads Replies", collected, max_comments=MAX_REPLIES, score_unit="like"
         )
 
-    @staticmethod
-    def _extract_reply_threads(html: str) -> tuple[str, List[Dict[str, Any]]]:
-        """문서에 심긴 JSON에서 (루트 작성자, 답글 스레드 목록)을 찾는다.
+    @contextlib.asynccontextmanager
+    async def _reply_fetcher(
+        self, posts: List[Post]
+    ) -> AsyncIterator[ReplyPageFetcher]:
+        """답글 쿼리를 부르는 함수를 내준다. 블록이 끝나면 브라우저를 닫는다.
 
-        페이로드는 `data.data.edges`에 [루트 게시물, 답글, 답글...] 순으로 담긴다.
-        같은 문서의 `relatedPosts`도 thread_items를 갖지만 그건 무관한 추천 게시물이라,
-        edges 배열만 집어 첫 항목(루트)을 버린다.
+        게시물 페이지를 하나 열어 웹앱이 Relay 환경과 답글 쿼리 모듈을 올리게 한다.
+        첫 게시물이 지워졌으면 모듈이 안 올라올 수 있어 다음 게시물로 한 번 더 연다.
         """
-        found: List[Dict[str, Any]] = []
-        root_author = ""
+        # pylint: disable-next=import-outside-toplevel
+        from playwright.async_api import async_playwright
 
-        def thread_author(thread: Dict[str, Any]) -> str:
-            items = thread.get("thread_items") or []
-            if not items:
-                return ""
-            return ((items[0].get("post") or {}).get("user") or {}).get(
-                "username"
-            ) or ""
-
-        def walk(node: Any) -> None:
-            nonlocal root_author
-            if isinstance(node, dict):
-                edges = node.get("edges")
-                if isinstance(edges, list) and len(edges) > 1:
-                    threads = [
-                        edge.get("node")
-                        for edge in edges
-                        if isinstance(edge, dict) and isinstance(edge.get("node"), dict)
-                    ]
-                    if threads and all(
-                        t.get("thread_items") is not None for t in threads
-                    ):
-                        if not root_author:
-                            root_author = thread_author(threads[0])
-                        found.extend(threads[1:])  # [0]은 본문에 이미 담긴 루트 게시물
-                        return
-                for value in node.values():
-                    walk(value)
-            elif isinstance(node, list):
-                for value in node:
-                    walk(value)
-
-        soup = BeautifulSoup(html, "html.parser")
-        for tag in soup.find_all("script", attrs={"type": "application/json"}):
-            raw = tag.string or ""
-            if "thread_items" not in raw:
-                continue
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(channel="chrome", headless=True)
             try:
-                walk(json.loads(raw))
-            except ValueError:
-                continue
-        return root_author, found
+                context = await browser.new_context(
+                    storage_state=str(self.session_path),
+                    user_agent=WEB_USER_AGENT,
+                )
+                page = await context.new_page()
+                status = "게시물 URL 없음"
+                for post in [p for p in posts if p.url][:2]:
+                    status = await self._boot_reply_page(page, post.url)
+                    if status == "ok":
+                        break
+                else:
+                    raise RuntimeError(
+                        f"웹앱 답글 쿼리를 준비하지 못했습니다 ({status})"
+                    )
+
+                async def fetch(
+                    post_id: str, after: Optional[str]
+                ) -> List[Dict[str, Any]]:
+                    return await asyncio.wait_for(
+                        page.evaluate(
+                            _FETCH_REPLIES_JS,
+                            {
+                                "postID": post_id,
+                                "after": after,
+                                "first": REPLY_PAGE_SIZE,
+                            },
+                        ),
+                        timeout=REPLY_FETCH_TIMEOUT,
+                    )
+
+                yield fetch
+            finally:
+                await browser.close()
+
+    @staticmethod
+    async def _boot_reply_page(page: Any, url: str) -> str:
+        """게시물 페이지를 열고 답글 쿼리를 부를 준비가 될 때까지 기다린다."""
+        # threads.net으로 열면 리다이렉트를 한 번 더 탄다.
+        await page.goto(
+            url.replace("threads.net", "threads.com"),
+            wait_until="domcontentloaded",
+            timeout=60000,
+        )
+        status = "timeout"
+        for _ in range(int(REPLY_BOOT_TIMEOUT * 2)):
+            status = await page.evaluate(_BOOT_REPLIES_JS, REPLIES_QUERY_MODULE)
+            if status == "ok":
+                break
+            await page.wait_for_timeout(500)
+        return status
 
     async def _crawl_impl(
         self, count: int = 5, user_id: Optional[str] = None
