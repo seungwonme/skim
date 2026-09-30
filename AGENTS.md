@@ -27,7 +27,7 @@ just dev     # desktop 앱 실행
 
 # Python 개별 도구
 uv run pytest tests -v
-uv run black . --config pyproject.toml
+uv run ruff format packages tests scripts   # 포맷터 (편집 훅과 같은 설정)
 uv run isort . --settings-path pyproject.toml
 uv run flake8
 uv run pylint packages/skim-core/src/skim_core packages/skim-cli/src/skim_cli
@@ -328,6 +328,7 @@ arXiv 메일링은 09:00 KST라 00:02 배치보다 늦고 주말에는 없다. �
 - 태스크 러너: `just` (justfile)
 - Node: husky/commitlint 훅용으로만 `pnpm` 유지 (JS/TS 소스 없음)
 - Python: `uv` workspace
+- 포맷터: `ruff format` 하나 (88자, `pyproject.toml`의 `[tool.ruff]`). 편집 훅도 같은 설정으로 돈다
 - Swift desktop: `apps/desktop`
 - Git hooks: `husky`
 - Commit message validation: `commitlint`

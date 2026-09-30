@@ -31,7 +31,7 @@ install-desktop *args:
 
 # 포매터
 format:
-    uv run black packages tests scripts --config pyproject.toml
+    uv run ruff format packages tests scripts
     uv run isort packages tests scripts --settings-path pyproject.toml
 
 # 크롤 (예: just crawl hackernews --days 1)
