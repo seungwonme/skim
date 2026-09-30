@@ -72,6 +72,7 @@ Crawl recent sources:
 
 ```bash
 uv run skim crawl all --days 1
+uv run skim crawl all --days 1 --catch-up   # daily batch: also fills missed runs (up to 7 days)
 uv run skim crawl hackernews --count 10
 uv run skim crawl reddit --subreddit python --sort hot --count 10
 ```

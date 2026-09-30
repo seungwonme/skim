@@ -35,6 +35,7 @@ uv run pylint packages/skim-core/src/skim_core packages/skim-cli/src/skim_cli
 # 크롤링
 uv run skim crawl hackernews --count 10
 uv run skim crawl all --days 1
+uv run skim crawl all --days 1 --catch-up   # 데일리: 놓친 회차까지 창을 넓힘 (최대 7일)
 uv run skim crawl hackernews geeknews --days 1 --no-content
 uv run skim crawl reddit --count 10
 uv run skim crawl reddit --subreddit python --sort hot --count 10
@@ -187,6 +188,27 @@ arXiv 메일링은 09:00 KST라 00:02 배치보다 늦고 주말에는 없다. �
 걸러야 한다 (huggingface는 `paper.submittedOnDailyAt`, `publishedAt`은 arXiv 발행일이라
 며칠에서 몇 주 밀려 있다).
 
+#### 놓친 회차 채우기 (`--catch-up`)
+
+데일리는 `crawl all --days 1 --catch-up`으로 돈다. 창이 "전날 0시부터"로 고정이라,
+맥북이 잠들어 회차를 통째로 놓치거나 한 플랫폼이 실패하면 그날 글이 다음 창에 다시
+들어오지 않았다 (#21).
+
+- feed 플랫폼마다 창을 끝까지 채운 마지막 회차의 시작 시각을 `crawl_checkpoints`에
+  남긴다. 다음 회차는 그날 0시부터 본다. 놓친 날이 없으면 `--days 1` 창과 같아서 이미
+  받은 날을 다시 덮지 않는다. GeekNews 토픽 한도처럼 요청 수가 걸린 소스를 위해서다.
+- 체크포인트는 크롤러가 예외 없이 끝나고 저장까지 마친 플랫폼만 옮긴다. 최근 14일
+  유입 이력이 있는 플랫폼이 0건이면 고장일 수 있어 옮기지 않는다(0건 회귀와 같은 기준).
+- 거슬러 보는 폭은 7일(`CATCH_UP_MAX_DAYS`)까지다. 넘으면 채우지 못하는 날수를 로그에
+  남긴다. 피드가 실어 주는 건수가 그보다 적은 소스는 7일 안이라도 다 못 채운다.
+- `--count`, `--no-content`와 함께 쓸 수 없다. 창을 본문까지 끝까지 채운 회차만
+  체크포인트를 옮길 수 있어서다. `--catch-up` 없이 돈 수동 실행은 체크포인트를 읽지도
+  옮기지도 않는다.
+- SNS(threads, x, linkedin, reddit)는 창이 아니라 최근 N건이라 대상이 아니다.
+  못 받은 날은 되찾지 못한다.
+- 체크포인트를 못 읽으면 catch-up을 끄고 기본 창으로 돈다. 빈 체크포인트로 이어 가면
+  이번 회차가 놓친 구간을 건너뛴 채 오늘로 옮겨 버린다.
+
 #### 크롤러 사이의 기능 편차
 
 새 크롤러를 만들거나 고칠 때, 다른 크롤러가 이미 하는 것을 안 하고 있지 않은지 본다.
@@ -237,8 +259,9 @@ arXiv 메일링은 09:00 KST라 00:02 배치보다 늦고 주말에는 없다. �
   별도 플랫폼 행이 생긴다. 서브피드는 `source`에 남긴다 (blogs가 쓰는 방식).
   2026-08-10에 Show/Ask HN 60행이 그렇게 갈렸다. hnrss show/ask가 실제로 저장된
   회차가 그때가 처음이라 도입 시점(#14)에는 안 드러났다.
-- **한 호스트에 물린 소스는 폴백 경로를 둔다.** 데일리는 고정 창으로 돌아 그 회차를
-  놓치면 다음 날 창에 다시 안 들어온다. 그대로 영구 유실이다. hackernews는 피드 세
+- **한 호스트에 물린 소스는 폴백 경로를 둔다.** `--catch-up`은 플랫폼이 실패한 날만
+  다음 회차에 다시 본다. 성공으로 끝난 회차 안에서 빠진 피드는 다시 보지 않으므로
+  그대로 영구 유실이다. hackernews는 피드 세
   장이 전부 hnrss.org라 502에 같이 넘어가므로, 0건인 피드를 Algolia
   `search_by_date`로 다시 채운다.
   **판정은 피드 단위여야 한다.** "전부 0건일 때만"으로 두면 한 장만 죽은 흔한
