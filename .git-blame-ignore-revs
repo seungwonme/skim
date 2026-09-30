@@ -1,0 +1,5 @@
+# 포맷만 바꾼 커밋. GitHub blame이 건너뛰고, 로컬은 아래 설정으로 건너뛴다.
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# style: ruff format을 저장소 전체에 한 번 적용한다 (88자)
+302269bc32af18e712c2d99f81541c8967bdcc45

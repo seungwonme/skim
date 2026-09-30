@@ -329,6 +329,7 @@ arXiv 메일링은 09:00 KST라 00:02 배치보다 늦고 주말에는 없다. �
 - Node: husky/commitlint 훅용으로만 `pnpm` 유지 (JS/TS 소스 없음)
 - Python: `uv` workspace
 - 포맷터: `ruff format` 하나 (88자, `pyproject.toml`의 `[tool.ruff]`). 편집 훅도 같은 설정으로 돈다
+- 포맷만 바꾼 커밋은 `.git-blame-ignore-revs`에 적는다. 저장소 전체를 다시 포맷하면 그 커밋을 추가한다
 - Swift desktop: `apps/desktop`
 - Git hooks: `husky`
 - Commit message validation: `commitlint`
