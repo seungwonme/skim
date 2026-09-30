@@ -5,6 +5,8 @@ AGENTS.md의 계약이지만 실제로는 지켜지지 않았다. try가 HTTP �
 50건이 통째로 저장 0건이 됐다.
 """
 
+import asyncio
+import contextlib
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -110,27 +112,35 @@ class LinkedInIsolationTests(unittest.TestCase):
 
 
 class ThreadsIsolationTests(unittest.TestCase):
-    def _crawler(self):
-        with patch.object(ThreadsAPICrawler, "_setup_session", return_value=None):
-            return ThreadsAPICrawler.__new__(ThreadsAPICrawler)
-
     def test_payload_parse_failure_keeps_the_body(self):
-        crawler = self._crawler()
-        posts = [_post(platform="threads", url="https://www.threads.net/@a/post/1")]
-        response = MagicMock(status_code=200, text="<html></html>")
-        response.raise_for_status.return_value = None
+        crawler = ThreadsAPICrawler.__new__(ThreadsAPICrawler)
+        posts = [
+            _post(
+                platform="threads",
+                url="https://www.threads.net/@a/post/Dd3x3EgEc9z",
+                external_id="Dd3x3EgEc9z",
+            )
+        ]
+
+        @contextlib.asynccontextmanager
+        async def fetcher(_self, _posts):
+            async def fetch(post_id, after):
+                return [{"data": {}}]
+
+            yield fetch
+
         with (
-            patch("skim_core.crawlers.api.threads.requests.get", return_value=response),
-            patch.object(
-                crawler,
-                "_extract_reply_threads",
+            patch.object(ThreadsAPICrawler, "_reply_fetcher", fetcher),
+            patch(
+                "skim_core.crawlers.api.threads.parse_reply_page",
                 side_effect=TypeError("shape changed"),
             ),
             patch("skim_core.crawlers.api.threads.typer.echo"),
         ):
-            crawler.attach_replies(posts)
+            asyncio.run(crawler.attach_replies(posts))
 
         self.assertEqual(posts[0].content, "original body")
+        self.assertIsNone(posts[0].content_markdown)
 
 
 class XIsolationTests(unittest.TestCase):

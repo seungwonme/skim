@@ -128,7 +128,7 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
 | linkedin | `## LinkedIn Comments` | 게시글당 1건 (Voyager `feed/comments`) |
 | youtube | `## YouTube Comments` | 영상당 yt-dlp 1회 |
 | producthunt | `## Product Hunt Comments` | 제품당 1건 (PH 제품 페이지) |
-| threads | `## Threads Replies` | 답글 1개 이상인 게시물 전부, 게시물당 1건 |
+| threads | `## Threads Replies` | 답글 1개 이상인 게시물 전부, 게시물당 1건(스레드 25개씩, 4쪽까지). 로그인 브라우저로 게시물 페이지를 한 번 열어 웹앱으로 부른다 |
 | lobsters | `## Lobsters Comments` | 게시물당 1건 (초당 1요청). 같은 응답의 `description_plain`이 본문 폴백 |
 | huggingface | `## Hugging Face Comments` | 논문당 1건. 페이지 SSR 페이로드(`data-props`)라 로그인 불필요 |
 
@@ -142,25 +142,31 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
   만들 때 HTTP만 감싸고 끝내지 않는다. 회귀는
   `tests/test_comment_failure_isolation.py`가 잡는다.
 
-- **threads 답글은 2026-09-08부터 수집되지 않는다.** 게시물 문서의 SSR 페이로드에서
-  답글이 빠지고 `relatedPosts`(무관한 추천 글)만 남았다. 브라우저로 같은 문서를 받아도
-  답글은 없고 화면에만 렌더된다. 되살리려면 아래의 "페이지네이션을 붙이지 않는다" 결정을
-  다시 판단해야 한다. 그때까지는 본문만 저장한다.
-- threads 답글은 타임라인 GraphQL이 주지 않는다. 위 결함 전까지는 게시물 문서의 SSR
-  페이로드가 답글까지 담고 있어서 persisted query 좌표(`doc_id`)를 새로 들지 않았다.
-  단 `threads.net`으로 요청하면 리다이렉트 뒤 페이로드가 빠진 셸이 오므로 `threads.com`으로 받는다.
-  같은 URL이라도 페이로드가 빠진 문서가 간헐적으로 와서 한 번 재시도한다.
-- threads는 작성자 self-reply 연작을 답글과 같은 `edges`에 담는다. 그 연작은 이미 본문에
+- **threads 답글은 로그인 세션으로 받고, 요청은 계정으로 식별된다.** 2026-09-08에 로그인
+  없이 받던 게시물 문서의 SSR 페이로드에서 답글이 빠졌다. 2026-08-10에는 계정 안전을 이유로
+  계정 요청을 쓰지 않기로 했지만, 로그인 없이는 답글이 오지 않게 되자 2026-09-30에 사용자가
+  계정 요청을 쓰기로 결정했다(#26). 9/8부터 9/30까지 저장된 threads 글에는 답글이 없다.
+- **답글은 웹앱의 네트워크 계층으로만 부른다.** 게시물 페이지를 한 번 열고, React fiber를
+  타고 올라가 Relay 환경을 찾은 뒤 `BarcelonaPostPageDirectRepliesRefetchQuery.graphql`
+  모듈의 `params`로 `getNetwork().execute()`를 부른다. 같은 `doc_id`, 변수, provider
+  플래그 35개, 웹앱 폼 필드를 손으로 맞춘 요청은 파이썬에서든 페이지 안 `fetch`에서든
+  오류 없이 `direct_replies: null`로 온다(2026-09-30 실측). 원인을 못 찾았으므로 손으로 만든
+  요청으로 돌아가지 않는다. 모듈 이름으로 부르므로 `doc_id`와 플래그는 웹앱이 재배포돼도
+  따라간다. 모듈이나 Relay 환경을 못 찾으면 부팅 단계에서 멈추고 본문만 저장한다.
+- 스크롤로 웹앱이 다음 쪽을 부르게 하는 방식은 쓰지 않는다. 같은 스크립트가 어떤 때는
+  요청을 보내고 어떤 때는 안 보내서 재현되지 않았다. 로그인 문서를 `fetch`로 받으면
+  답글이 빠진 다른 문서가 온다(페이지 이동으로 받은 문서에만 첫 10개 스레드가 있다).
+- 한 요청에 최상위 스레드 25개를 받는다. 웹앱은 4개씩 받지만 서버는 큰 값도 받아 준다.
+  답글 54개(스레드 17개) 게시물이 요청 1건에 끝났다. 게시물당 4쪽(스레드 100개)까지
+  넘기고 요청 사이에 1초를 둔다. 스레드 안 대화(`posts.edges`)는 응답이 준 만큼만 담는다.
+  게시물 ID는 URL의 shortcode를 64진수로 풀어 얻는다.
+- threads는 작성자 self-reply 연작을 답글 목록에 함께 담는다. 그 연작은 이미 본문에
   있으므로 스레드 시작자가 원글 작성자면 통째로 건너뛴다. 대화 중 작성자가 남긴 답변은 남는다.
 - `comments`(= `direct_reply_count`)가 0보다 커도 답글 섹션이 안 붙을 수 있다. 삭제되거나
   비공개 계정이 단 답글까지 세는 값이라, 실제 노출되는 답글이 없는 게시물이 있다
   (브라우저로 열어도 안 보인다). 이 불일치만으로 추출 실패로 판단하지 않는다.
 - 그래서 `comments`를 조회 임계로 높게 잡으면 안 된다. 반대 방향 오차도 있어서, `comments=1`인
   글에서 답글 2건이 나오기도 한다. 임계는 "0건만 거른다"로 둔다.
-- **threads 답글에 페이지네이션을 붙이지 않는다.** 문서가 한 번에 주는 만큼(실측 최대 24건)이
-  전부이고, 그 이상은 `BarcelonaPostPageRefetchableDirectQuery`를 4건씩 반복 호출해야 한다.
-  그 요청은 세션 쿠키와 `x-fb-lsd` 토큰을 요구해 **계정으로 식별된다**. 지금 방식은 로그인이
-  필요 없어 계정이 노출되지 않으므로, 답글 수집량보다 계정 안전을 우선한 결정이다(2026-08-10).
 - 상한은 댓글당 1200자다. 개수 상한(`MAX_COMMENTS`)은 플랫폼마다 다르고 threads는 없다
   (`None`이면 받은 만큼 전부). 15로 자르던 때는 문서에 24건이 와도 9건을 버렸다.
 - 댓글 수집 실패는 게시글 저장을 막지 않는다. 본문만 저장하고 경고만 남긴다.
@@ -262,7 +268,7 @@ arXiv 메일링은 09:00 KST라 00:02 배치보다 늦고 주말에는 없다. �
 
 - Feed 크롤러: `since` 유무에 따라 RSS/API 모드 자동 전환
 - API 크롤러: `data/sessions/{platform}_session.json` 세션 쿠키 재사용
-- **threads For You 타임라인만 브라우저를 태운다.** Meta가 2026-09-08부터 클라이언트
+- **threads For You 타임라인과 답글은 브라우저를 태운다.** Meta가 2026-09-08부터 클라이언트
   지문으로 거른다. 브라우저가 방금 7건을 받은 요청을 payload와 헤더까지 그대로 즉시
   재전송해도 edges가 0으로 오고 오류도 없다(2026-09-22 실측). 요청을 더 정교하게
   흉내내는 방향으로는 못 고치므로, 같은 증상을 만나면 그쪽으로 시간을 쓰지 않는다.
