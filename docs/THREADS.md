@@ -1,5 +1,9 @@
 # Threads 크롤러 구현 문서
 
+> **Historical.** 2026-08-07 GraphQL 전환(bd11504) 이전 구조를 적은 문서다. 지금은 For You 타임라인과 답글을
+> 로그인한 브라우저로 받고, 사용자 프로필 피드만 requests로 받는다. 현재 동작은
+> `AGENTS.md`의 댓글 수집, 크롤러 절과 `crawlers/api/threads.py` 모듈 docstring을 따른다.
+
 ## 아키텍처
 
 ```
