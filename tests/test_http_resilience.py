@@ -109,9 +109,7 @@ class CrawlerSessionTests(unittest.TestCase):
         from skim_core.crawlers.feed import arxiv
 
         with (
-            patch.object(
-                arxiv._SESSION, "get", side_effect=RequestException("503")
-            ),
+            patch.object(arxiv._SESSION, "get", side_effect=RequestException("503")),
             patch("skim_core.crawlers.feed.arxiv.typer.echo") as echo,
         ):
             self.assertIsNone(arxiv._fetch_category("cs.AI"))

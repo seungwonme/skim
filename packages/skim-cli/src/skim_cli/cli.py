@@ -533,9 +533,7 @@ def dedupe(
             f"지울 중복 {result['removed']}건. 실제로 지우려면 --apply"
         )
         return
-    typer.echo(
-        f"{platform}: URL {result['groups']}개, 중복 {result['removed']}건 삭제"
-    )
+    typer.echo(f"{platform}: URL {result['groups']}개, 중복 {result['removed']}건 삭제")
 
 
 @app.command()

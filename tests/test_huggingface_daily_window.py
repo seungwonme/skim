@@ -168,9 +168,7 @@ class HuggingFaceCommentTests(unittest.TestCase):
         # numComments가 목록 응답에 이미 있어 판정 비용이 0이다.
         crawler = HuggingFaceCrawler()
         items = [{"url": "https://huggingface.co/papers/1", "num_comments": 0}]
-        with patch.object(
-            huggingface, "fetch_comment_section"
-        ) as fetch:
+        with patch.object(huggingface, "fetch_comment_section") as fetch:
             crawler._attach_comments(items)
         fetch.assert_not_called()
 

@@ -158,7 +158,9 @@ class RedditAPICrawlerTests(unittest.TestCase):
             make_response(
                 url="https://www.reddit.com/r/python/hot/?solution=seed42seed42&js_challenge=1&token=token-42"
             ),
-            make_response(json_data=listing, content_type="application/json; charset=UTF-8"),
+            make_response(
+                json_data=listing, content_type="application/json; charset=UTF-8"
+            ),
         ]
         self.crawler.session.get = Mock(side_effect=responses)
 
@@ -166,7 +168,9 @@ class RedditAPICrawlerTests(unittest.TestCase):
 
         self.assertEqual(len(posts), 1)
         self.assertEqual(posts[0].external_id, "abc123")
-        request_urls = [call.args[0] for call in self.crawler.session.get.call_args_list]
+        request_urls = [
+            call.args[0] for call in self.crawler.session.get.call_args_list
+        ]
         self.assertEqual(
             request_urls,
             [
@@ -204,7 +208,9 @@ class RedditAPICrawlerTests(unittest.TestCase):
         self.assertEqual(posts[0].external_id, "abc123")
         self.assertEqual(posts[0].author, "aiden")
         self.assertEqual(posts[0].content, "Body from RSS")
-        request_urls = [call.args[0] for call in self.crawler.session.get.call_args_list]
+        request_urls = [
+            call.args[0] for call in self.crawler.session.get.call_args_list
+        ]
         self.assertEqual(
             request_urls,
             [

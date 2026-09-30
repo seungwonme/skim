@@ -36,9 +36,13 @@ class DropKnownItemsTests(unittest.TestCase):
         self.assertEqual([i["external_id"] for i in by_url], ["c"])
 
     def test_other_platforms_and_db_errors_leave_items_alone(self):
-        self.assertEqual(drop_known_items("youtube", self.items, "url", self.db), self.items)
+        self.assertEqual(
+            drop_known_items("youtube", self.items, "url", self.db), self.items
+        )
         no_tables = Path(tempfile.mkdtemp()) / "empty.db"
-        self.assertEqual(drop_known_items("producthunt", self.items, "url", no_tables), self.items)
+        self.assertEqual(
+            drop_known_items("producthunt", self.items, "url", no_tables), self.items
+        )
 
 
 if __name__ == "__main__":

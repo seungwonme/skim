@@ -109,7 +109,9 @@ def normalize_tracked_channels() -> dict:
     return {"promoted": promoted, "merged": merged, "unresolved": unresolved}
 
 
-def list_channel_videos(channel_id: str, channel_name: str, years: int = 1) -> List[Post]:
+def list_channel_videos(
+    channel_id: str, channel_name: str, years: int = 1
+) -> List[Post]:
     """yt-dlp flat-playlist로 채널 /videos 탭에서 최근 N년 영상 목록을 가져온다."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=365 * years)
     result = subprocess.run(
@@ -130,7 +132,9 @@ def list_channel_videos(channel_id: str, channel_name: str, years: int = 1) -> L
         check=False,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"{channel_name}: enumerate 실패 - {result.stderr.strip()[:200]}")
+        raise RuntimeError(
+            f"{channel_name}: enumerate 실패 - {result.stderr.strip()[:200]}"
+        )
 
     posts: List[Post] = []
     for line in result.stdout.strip().splitlines():
@@ -227,5 +231,7 @@ def transcribe_video(url_or_id: str) -> bool:
     )
     conn.commit()
     conn.close()
-    typer.echo(f"전사 완료: {data['word_count']} words ({data.get('subtitle_lang', '')})")
+    typer.echo(
+        f"전사 완료: {data['word_count']} words ({data.get('subtitle_lang', '')})"
+    )
     return cur.rowcount > 0

@@ -40,10 +40,14 @@ def _rows(count, url_template=WITH_ID):
 def _run(argv, rows, **fetch_kwargs):
     """main()을 돌리고 (fetch_metrics mock, sleep mock)을 돌려준다."""
     with ExitStack() as stack:
-        stack.enter_context(patch.object(sys, "argv", ["backfill_feed_metrics.py", *argv]))
+        stack.enter_context(
+            patch.object(sys, "argv", ["backfill_feed_metrics.py", *argv])
+        )
         stack.enter_context(patch.object(backfill, "get_connection"))
         stack.enter_context(patch.object(backfill, "fetch_targets", return_value=rows))
-        fetch = stack.enter_context(patch.object(backfill, "fetch_metrics", **fetch_kwargs))
+        fetch = stack.enter_context(
+            patch.object(backfill, "fetch_metrics", **fetch_kwargs)
+        )
         sleep = stack.enter_context(patch.object(backfill.time, "sleep"))
         backfill.main()
     return fetch, sleep

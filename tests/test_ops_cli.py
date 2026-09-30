@@ -160,7 +160,9 @@ class OpsCliTests(unittest.TestCase):
         self._insert_geeknews(
             12,
             content_markdown="RSS 요약 조각이다...\n\n---\n\n## Original Article\n\n원문",
-            extra=json.dumps({"content_status": "partial", "enrichment_method": "defuddle"}),
+            extra=json.dumps(
+                {"content_status": "partial", "enrichment_method": "defuddle"}
+            ),
         )
 
         result = self.runner.invoke(

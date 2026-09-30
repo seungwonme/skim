@@ -31,16 +31,38 @@ def test_word_count_filled_from_body() -> None:
     init_db(tmp)
     posts = [
         # API형: 본문이 content -> 단어 수 계산
-        Post(platform="linkedin", author="a", content="one two three four five",
-             timestamp=_TS, external_id="linkedin1"),
-        Post(platform="reddit", author="b", content="alpha beta gamma",
-             timestamp=_TS, external_id="reddit1"),
+        Post(
+            platform="linkedin",
+            author="a",
+            content="one two three four five",
+            timestamp=_TS,
+            external_id="linkedin1",
+        ),
+        Post(
+            platform="reddit",
+            author="b",
+            content="alpha beta gamma",
+            timestamp=_TS,
+            external_id="reddit1",
+        ),
         # Feed형 본문 없음(제목만) -> content로 세지 않는다
-        Post(platform="hackernews", author="c", content="just a title",
-             content_markdown="", timestamp=_TS, external_id="hackernews1"),
+        Post(
+            platform="hackernews",
+            author="c",
+            content="just a title",
+            content_markdown="",
+            timestamp=_TS,
+            external_id="hackernews1",
+        ),
         # Feed형 본문 있음 -> content_markdown 기준
-        Post(platform="geeknews", author="d", content="title",
-             content_markdown="body has four words", timestamp=_TS, external_id="geeknews1"),
+        Post(
+            platform="geeknews",
+            author="d",
+            content="title",
+            content_markdown="body has four words",
+            timestamp=_TS,
+            external_id="geeknews1",
+        ),
     ]
     save_posts(posts, platform="feed", db_path=tmp)
 
@@ -53,7 +75,14 @@ def test_word_count_filled_from_body() -> None:
 def test_existing_word_count_preserved() -> None:
     tmp = Path(tempfile.mktemp(suffix=".db"))
     init_db(tmp)
-    post = Post(platform="arxiv", author="a", content="t", content_markdown="a b c",
-                word_count=999, timestamp=_TS, external_id="arxiv1")
+    post = Post(
+        platform="arxiv",
+        author="a",
+        content="t",
+        content_markdown="a b c",
+        word_count=999,
+        timestamp=_TS,
+        external_id="arxiv1",
+    )
     save_posts([post], platform="arxiv", db_path=tmp)
     assert _wc("arxiv", tmp) == 999

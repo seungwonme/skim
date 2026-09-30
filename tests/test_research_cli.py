@@ -76,7 +76,10 @@ class ResearchCliTests(unittest.TestCase):
         # CLI 가 default DB_PATH 를 사용하므로 patch
         self._patches = [
             patch("skim_core.db.DB_PATH", self.db),
-            patch("skim_core.research.search.get_connection", lambda *_a, **_k: _open(self.db)),
+            patch(
+                "skim_core.research.search.get_connection",
+                lambda *_a, **_k: _open(self.db),
+            ),
         ]
         for p in self._patches:
             p.start()
@@ -103,7 +106,15 @@ class ResearchCliTests(unittest.TestCase):
         # 7 권위 필드
         self.assertEqual(
             set(payload.keys()),
-            {"topic", "tokens", "date_range", "sources_requested", "posts", "stats", "warnings"},
+            {
+                "topic",
+                "tokens",
+                "date_range",
+                "sources_requested",
+                "posts",
+                "stats",
+                "warnings",
+            },
         )
         self.assertEqual(payload["topic"], "nvidia")
         self.assertEqual(payload["stats"]["total"], 1)
@@ -123,7 +134,9 @@ class ResearchCliTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.stderr)
         payload = json.loads(result.stdout)
         self.assertEqual(payload["posts"][0]["extra"], "not json")
-        self.assertTrue(any("extra json parse failed" in w for w in payload["warnings"]))
+        self.assertTrue(
+            any("extra json parse failed" in w for w in payload["warnings"])
+        )
 
     def test_cli_empty_topic_exits_2(self):
         result = self.runner.invoke(app, ["research", "   "])
@@ -133,7 +146,9 @@ class ResearchCliTests(unittest.TestCase):
         # 공백만 → topic.strip() True 통과하도록 ' a ' 같은 토큰 0개 케이스: 실제는 strip 후 빈 토큰
         # 우리 CLI 는 strip() False 면 exit 2. 토큰 0개는 거의 발생 안 함.
         # 회귀 보호용으로 stopword-only 토큰을 모사 — 빈 텍스트 검색 결과 0건만 확인.
-        result = self.runner.invoke(app, ["research", "nonexistenttoken12345", "--days", "30"])
+        result = self.runner.invoke(
+            app, ["research", "nonexistenttoken12345", "--days", "30"]
+        )
         self.assertEqual(result.exit_code, 0, result.stderr)
         payload = json.loads(result.stdout)
         self.assertEqual(payload["stats"]["total"], 0)
@@ -150,7 +165,9 @@ class ResearchCliTests(unittest.TestCase):
         self.assertEqual(payload["posts"], [])
 
     def test_cli_emits_stats_to_stderr(self):
-        _insert(self.db, external_id="se", content="Nvidia x", timestamp=RECENT_TIMESTAMP)
+        _insert(
+            self.db, external_id="se", content="Nvidia x", timestamp=RECENT_TIMESTAMP
+        )
         result = self.runner.invoke(app, ["research", "nvidia", "--days", "30"])
         self.assertEqual(result.exit_code, 0, result.stderr)
         self.assertIn("[skim research stats]", result.stderr)

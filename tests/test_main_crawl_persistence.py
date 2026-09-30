@@ -93,8 +93,12 @@ class CrawlPersistenceTests(unittest.TestCase):
         save_run_mock.assert_called_once_with()
         save_posts.assert_called_once_with(self.sample_posts, "threads")
         update_run_progress_mock.assert_any_call(99, "threads", "threads 크롤링 시작")
-        update_run_progress_mock.assert_any_call(99, "threads", "threads 처리 완료: 1개 DB 반영")
-        finish_run_mock.assert_called_once_with(99, "success", 1, "전체 플랫폼 처리 완료")
+        update_run_progress_mock.assert_any_call(
+            99, "threads", "threads 처리 완료: 1개 DB 반영"
+        )
+        finish_run_mock.assert_called_once_with(
+            99, "success", 1, "전체 플랫폼 처리 완료"
+        )
         save_posts_to_file_mock.assert_called_once()
         self.assertTrue(
             any(
@@ -145,8 +149,12 @@ class CrawlPersistenceTests(unittest.TestCase):
         save_run_mock.assert_called_once_with()
         save_posts.assert_called_once_with(self.sample_posts, "reddit")
         update_run_progress_mock.assert_any_call(100, "reddit", "reddit 크롤링 시작")
-        update_run_progress_mock.assert_any_call(100, "reddit", "reddit 처리 완료: 1개 DB 반영")
-        finish_run_mock.assert_called_once_with(100, "success", 1, "전체 플랫폼 처리 완료")
+        update_run_progress_mock.assert_any_call(
+            100, "reddit", "reddit 처리 완료: 1개 DB 반영"
+        )
+        finish_run_mock.assert_called_once_with(
+            100, "success", 1, "전체 플랫폼 처리 완료"
+        )
         save_posts_to_file_mock.assert_called_once()
         self.assertTrue(
             any(
@@ -175,8 +183,12 @@ class CrawlPersistenceTests(unittest.TestCase):
         save_posts_to_file_mock,
         typer_echo_mock,
     ):
-        first = Post(platform="hackernews", author="hn", content="first", timestamp="2026-04-08")
-        second = Post(platform="hackernews", author="hn", content="second", timestamp="2026-04-08")
+        first = Post(
+            platform="hackernews", author="hn", content="first", timestamp="2026-04-08"
+        )
+        second = Post(
+            platform="hackernews", author="hn", content="second", timestamp="2026-04-08"
+        )
         run_single_crawler.return_value = [first, second]
         save_posts.return_value = 1
 
@@ -195,8 +207,12 @@ class CrawlPersistenceTests(unittest.TestCase):
         save_posts.assert_called_once_with([first], "hackernews")
         save_posts_to_file_mock.assert_called_once()
         self.assertEqual(save_posts_to_file_mock.call_args.args[0], [first])
-        update_run_progress_mock.assert_any_call(101, "hackernews", "hackernews 크롤링 시작")
-        finish_run_mock.assert_called_once_with(101, "success", 1, "전체 플랫폼 처리 완료")
+        update_run_progress_mock.assert_any_call(
+            101, "hackernews", "hackernews 크롤링 시작"
+        )
+        finish_run_mock.assert_called_once_with(
+            101, "success", 1, "전체 플랫폼 처리 완료"
+        )
         self.assertTrue(typer_echo_mock.called)
 
     @patch("skim_cli.cli.typer.echo")
@@ -237,7 +253,9 @@ class CrawlPersistenceTests(unittest.TestCase):
         save_run_mock.assert_called_once_with()
         save_posts.assert_called_once_with(self.sample_posts, "reddit")
         save_posts_to_file_mock.assert_called_once()
-        update_run_progress_mock.assert_any_call(102, "threads", "threads 크롤링 실패: boom")
+        update_run_progress_mock.assert_any_call(
+            102, "threads", "threads 크롤링 실패: boom"
+        )
         finish_run_mock.assert_called_once_with(
             102,
             "failed",

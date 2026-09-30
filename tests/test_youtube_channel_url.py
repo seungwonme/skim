@@ -37,7 +37,9 @@ class YouTubeChannelURLTests(unittest.TestCase):
         ) as run:
             list_channel_videos("@aiDotEngineer", "@aiDotEngineer", years=1)
 
-        self.assertIn("https://www.youtube.com/@aiDotEngineer/videos", run.call_args.args[0])
+        self.assertIn(
+            "https://www.youtube.com/@aiDotEngineer/videos", run.call_args.args[0]
+        )
 
     def test_enumerate_failure_raises_instead_of_returning_empty(self):
         with patch(

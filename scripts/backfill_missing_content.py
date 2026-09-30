@@ -125,7 +125,9 @@ def run_batch(rows: List[Dict], delay: float = 0.0) -> List[Dict]:
     papers = [r for r in rows if r["platform"] in PAPER_PLATFORMS]
     hn_rows = [r for r in rows if r["platform"] == HN_PLATFORM]
     others = [
-        r for r in rows if r["platform"] not in PAPER_PLATFORMS and r["platform"] != HN_PLATFORM
+        r
+        for r in rows
+        if r["platform"] not in PAPER_PLATFORMS and r["platform"] != HN_PLATFORM
     ]
 
     enriched: List[Dict] = enrich_hn_rows(hn_rows, delay) if hn_rows else []
@@ -235,7 +237,9 @@ def main() -> int:
         )
 
     conn.close()
-    print(f"[backfill] 완료: {filled}/{len(rows)}건 채움 (나머지는 원문 소실/추출 불가)")
+    print(
+        f"[backfill] 완료: {filled}/{len(rows)}건 채움 (나머지는 원문 소실/추출 불가)"
+    )
     return 0
 
 

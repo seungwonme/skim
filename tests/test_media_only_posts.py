@@ -43,7 +43,9 @@ class ThreadsMediaOnlyTests(unittest.TestCase):
 
     def test_text_post_has_no_fallback_marker(self):
         crawler = self._crawler()
-        post = crawler._parse_thread({"thread_items": [_threads_item("real body", IMG)]})
+        post = crawler._parse_thread(
+            {"thread_items": [_threads_item("real body", IMG)]}
+        )
 
         self.assertEqual(post.content, "real body")
         self.assertIsNone(getattr(post, "content_status", None))

@@ -122,7 +122,8 @@ def _load_topic_budget() -> dict:
 
 def _within_window(stamp: Any, now: float) -> bool:
     return (
-        isinstance(stamp, (int, float)) and 0 <= now - stamp < TOPIC_BUDGET_WINDOW_SECONDS
+        isinstance(stamp, (int, float))
+        and 0 <= now - stamp < TOPIC_BUDGET_WINDOW_SECONDS
     )
 
 

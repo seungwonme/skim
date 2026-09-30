@@ -4,7 +4,12 @@ import sqlite3
 import unittest
 from pathlib import Path
 
-from skim_core.db import RESEARCH_RUNS_CREATE_SQL, _ensure_column, _migrate_research_runs, init_db
+from skim_core.db import (
+    RESEARCH_RUNS_CREATE_SQL,
+    _ensure_column,
+    _migrate_research_runs,
+    init_db,
+)
 
 
 class EnsureColumnTests(unittest.TestCase):
@@ -104,7 +109,8 @@ class MigrateResearchRunsTests(unittest.TestCase):
         init_db(self.db)
         conn = sqlite3.connect(str(self.db))
         tables = {
-            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
         self.assertIn("research_runs", tables)
         ver = conn.execute("PRAGMA user_version").fetchone()[0]

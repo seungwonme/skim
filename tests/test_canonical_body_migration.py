@@ -25,7 +25,16 @@ def _seed_legacy(db_path: Path) -> None:
             # API형: 본문이 content에만, content_markdown 비어있음
             ("reddit", "r1", "u1", None, "one two three four", "", None, _TS),
             # Feed형: content == title (중복), 본문은 content_markdown
-            ("geeknews", "g1", "u2", "A Great Title", "A Great Title", "full body here", 3, _TS),
+            (
+                "geeknews",
+                "g1",
+                "u2",
+                "A Great Title",
+                "A Great Title",
+                "full body here",
+                3,
+                _TS,
+            ),
         ],
     )
     conn.commit()
@@ -72,9 +81,17 @@ def test_save_posts_produces_canonical_body() -> None:
     tmp = Path(tempfile.mktemp(suffix=".db"))
     init_db(tmp)
     save_posts(
-        [Post(platform="linkedin", author="a", content="alpha beta gamma",
-              timestamp=_TS, external_id="l1")],
-        platform="linkedin", db_path=tmp,
+        [
+            Post(
+                platform="linkedin",
+                author="a",
+                content="alpha beta gamma",
+                timestamp=_TS,
+                external_id="l1",
+            )
+        ],
+        platform="linkedin",
+        db_path=tmp,
     )
     conn = get_connection(tmp)
     row = conn.execute(

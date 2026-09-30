@@ -23,7 +23,9 @@ from skim_core.paths import workspace_root
 from skim_core.timestamp import epoch_to_iso, to_utc_iso
 
 
-def detect_and_normalize(raw: Optional[str], platform: str) -> tuple[Optional[str], str]:
+def detect_and_normalize(
+    raw: Optional[str], platform: str
+) -> tuple[Optional[str], str]:
     """raw timestamp 를 분류해 (정규화 결과, 사유) 반환.
 
     relative_ko 는 의도적으로 자동 변환하지 않는다 (data-loss 방지):
@@ -63,7 +65,8 @@ def normalize_db(db_path: Path, *, commit: bool) -> dict:
         if new_value is None:
             stats["failed"] += 1
             print(
-                f"FAIL id={row['id']} platform={row['platform']!s} " f"raw={raw!r} reason={reason}"
+                f"FAIL id={row['id']} platform={row['platform']!s} "
+                f"raw={raw!r} reason={reason}"
             )
             continue
         if new_value == raw:
@@ -84,9 +87,15 @@ def normalize_db(db_path: Path, *, commit: bool) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--commit", action="store_true", help="실제 UPDATE 실행 (기본은 dry-run)")
-    parser.add_argument("--dry-run", action="store_true", help="명시적 no-op (기본 동작과 동일)")
-    parser.add_argument("--db", type=Path, help="대상 DB 경로 (기본: workspace data/skim.db)")
+    parser.add_argument(
+        "--commit", action="store_true", help="실제 UPDATE 실행 (기본은 dry-run)"
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="명시적 no-op (기본 동작과 동일)"
+    )
+    parser.add_argument(
+        "--db", type=Path, help="대상 DB 경로 (기본: workspace data/skim.db)"
+    )
     args = parser.parse_args()
 
     db_path = args.db or (workspace_root() / "data" / "skim.db")

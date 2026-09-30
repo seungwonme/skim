@@ -134,24 +134,51 @@ class SearchPostsTests(unittest.TestCase):
         self.assertEqual(rows[0]["platform"], "reddit")
 
     def test_search_date_range_utc(self):
-        _insert(self.db, external_id="new", content="Nvidia", timestamp="2026-04-15T00:00:00+00:00")
-        _insert(self.db, external_id="old", content="Nvidia", timestamp="2025-01-01T00:00:00+00:00")
+        _insert(
+            self.db,
+            external_id="new",
+            content="Nvidia",
+            timestamp="2026-04-15T00:00:00+00:00",
+        )
+        _insert(
+            self.db,
+            external_id="old",
+            content="Nvidia",
+            timestamp="2025-01-01T00:00:00+00:00",
+        )
         rows, _, _ = search_posts("nvidia", self.SINCE, None, 10, db_path=self.db)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["external_id"], "new")
 
     def test_search_rejects_non_utc_since_iso(self):
         with self.assertRaises(ValueError):
-            search_posts("nvidia", "2026-04-01T00:00:00+09:00", None, 10, db_path=self.db)
+            search_posts(
+                "nvidia", "2026-04-01T00:00:00+09:00", None, 10, db_path=self.db
+            )
 
     def test_search_rejects_naive_since_iso(self):
         with self.assertRaises(ValueError):
             search_posts("nvidia", "2026-04-01T00:00:00", None, 10, db_path=self.db)
 
     def test_search_timestamp_string_lexicographic_ordering(self):
-        _insert(self.db, external_id="a", content="nvidia", timestamp="2026-04-15T00:00:00+00:00")
-        _insert(self.db, external_id="b", content="nvidia", timestamp="2026-04-10T00:00:00+00:00")
-        _insert(self.db, external_id="c", content="nvidia", timestamp="2026-04-20T00:00:00+00:00")
+        _insert(
+            self.db,
+            external_id="a",
+            content="nvidia",
+            timestamp="2026-04-15T00:00:00+00:00",
+        )
+        _insert(
+            self.db,
+            external_id="b",
+            content="nvidia",
+            timestamp="2026-04-10T00:00:00+00:00",
+        )
+        _insert(
+            self.db,
+            external_id="c",
+            content="nvidia",
+            timestamp="2026-04-20T00:00:00+00:00",
+        )
         rows, _, _ = search_posts("nvidia", self.SINCE, None, 10, db_path=self.db)
         order = [r["external_id"] for r in rows]
         self.assertEqual(order, ["c", "a", "b"])
@@ -163,14 +190,14 @@ class SearchPostsTests(unittest.TestCase):
                 external_id=f"hn{i}",
                 platform="hackernews",
                 content=f"nvidia {i}",
-                timestamp=f"2026-04-{10+i:02d}T00:00:00+00:00",
+                timestamp=f"2026-04-{10 + i:02d}T00:00:00+00:00",
             )
             _insert(
                 self.db,
                 external_id=f"rd{i}",
                 platform="reddit",
                 content=f"nvidia {i}",
-                timestamp=f"2026-04-{10+i:02d}T00:00:00+00:00",
+                timestamp=f"2026-04-{10 + i:02d}T00:00:00+00:00",
             )
         rows, _, _ = search_posts("nvidia", self.SINCE, None, 2, db_path=self.db)
         per_platform: dict[str, int] = {}
@@ -181,7 +208,9 @@ class SearchPostsTests(unittest.TestCase):
 
     def test_search_like_escape_percent(self):
         _insert(self.db, external_id="p1", content="literal 50% off promo")
-        _insert(self.db, external_id="p2", content="zero 50 off promo")  # 50과 off 사이 % 없음
+        _insert(
+            self.db, external_id="p2", content="zero 50 off promo"
+        )  # 50과 off 사이 % 없음
         rows, _, _ = search_posts("50%", self.SINCE, None, 10, db_path=self.db)
         ids = sorted(r["external_id"] for r in rows)
         self.assertEqual(ids, ["p1"])
@@ -231,7 +260,9 @@ class SearchPostsTests(unittest.TestCase):
     def test_search_accepts_z_suffix(self):
         _insert(self.db, external_id="z", content="nvidia")
         # 'Z' suffix 도 받아서 +00:00 으로 정규화
-        rows, _, _ = search_posts("nvidia", "2026-04-01T00:00:00Z", None, 10, db_path=self.db)
+        rows, _, _ = search_posts(
+            "nvidia", "2026-04-01T00:00:00Z", None, 10, db_path=self.db
+        )
         self.assertEqual(len(rows), 1)
 
     def test_search_per_platform_limit_window_function(self):
@@ -243,7 +274,7 @@ class SearchPostsTests(unittest.TestCase):
                 external_id=f"rd{i}",
                 platform="reddit",
                 content=f"nvidia {i}",
-                timestamp=f"2026-04-{20-i:02d}T00:00:00+00:00",
+                timestamp=f"2026-04-{20 - i:02d}T00:00:00+00:00",
             )
         for i in range(2):
             _insert(
@@ -251,7 +282,7 @@ class SearchPostsTests(unittest.TestCase):
                 external_id=f"hn{i}",
                 platform="hackernews",
                 content=f"nvidia {i}",
-                timestamp=f"2026-04-{10-i:02d}T00:00:00+00:00",
+                timestamp=f"2026-04-{10 - i:02d}T00:00:00+00:00",
             )
         rows, _, _ = search_posts("nvidia", self.SINCE, None, 2, db_path=self.db)
         by_p: dict[str, int] = {}
@@ -263,7 +294,9 @@ class SearchPostsTests(unittest.TestCase):
         _insert(self.db, external_id="bad", content="nvidia", timestamp="garbage")
         # WHERE 단계에서 'garbage' >= since 가 False 일 수 있어, 직접 timestamp 무효지만
         # 사전순 비교상 'garbage' > '2026-...' 가능 (g > 2). 어쨌든 warning 발행.
-        rows, _, warnings = search_posts("nvidia", self.SINCE, None, 10, db_path=self.db)
+        rows, _, warnings = search_posts(
+            "nvidia", self.SINCE, None, 10, db_path=self.db
+        )
         if rows:
             self.assertTrue(any("unparseable_timestamp" in w for w in warnings))
 

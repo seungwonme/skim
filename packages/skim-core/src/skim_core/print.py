@@ -187,7 +187,9 @@ def print_post_preview(post, platform: str) -> None:
         return
 
     context = _logging_context.get_context_info()
-    typer.echo(f"\n📄 [{context.get('operation_id', 'unknown')}] 첫 번째 게시글 미리보기:")
+    typer.echo(
+        f"\n📄 [{context.get('operation_id', 'unknown')}] 첫 번째 게시글 미리보기:"
+    )
     typer.echo(f"   📝 작성자: {post.author}")
     preview = post.title or post.content_markdown or post.content or ""
     typer.echo(f"   📄 내용: {preview[:100]}...")
@@ -195,7 +197,9 @@ def print_post_preview(post, platform: str) -> None:
 
     # 플랫폼별 추가 정보
     if hasattr(post, "likes") and post.likes:
-        emoji = "❤️" if platform == "threads" else "👍" if platform == "linkedin" else "🤍"
+        emoji = (
+            "❤️" if platform == "threads" else "👍" if platform == "linkedin" else "🤍"
+        )
         typer.echo(f"   {emoji} 좋아요: {post.likes}")
 
     if hasattr(post, "comments") and post.comments:
@@ -234,7 +238,9 @@ def print_no_posts_error(platform: str, debug: bool = False) -> None:
     """게시글 없음 에러 출력"""
     context = _logging_context.get_context_info()
 
-    typer.echo(f"❌ [{context.get('operation_id', 'unknown')}] 크롤링된 게시글이 없습니다.")
+    typer.echo(
+        f"❌ [{context.get('operation_id', 'unknown')}] 크롤링된 게시글이 없습니다."
+    )
 
     if debug:
         print_error_debug_info(platform, "No posts found")
@@ -282,5 +288,7 @@ def print_debug(count: int, debug: bool, platform: str = "unknown") -> None:
     Deprecated: log_crawl_operation 데코레이터 사용 권장
     """
     if debug:
-        typer.echo(f"🐛 디버그 모드로 {platform.upper()} {count}개 게시글 크롤링을 시작합니다...")
+        typer.echo(
+            f"🐛 디버그 모드로 {platform.upper()} {count}개 게시글 크롤링을 시작합니다..."
+        )
         print_debug_mode_info(platform)
