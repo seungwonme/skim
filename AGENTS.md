@@ -337,6 +337,8 @@ arXiv 메일링은 09:00 KST라 00:02 배치보다 늦고 주말에는 없다. �
 - Git hooks: `husky`. pre-commit `just lint`, commit-msg `commitlint`, pre-push `just test && just build`
 - 훅은 체크아웃마다 `pnpm install`로 붙는다. 새 worktree에는 `.husky/_`가 없어 훅이 오류 없이
   건너뛰어진다. worktree를 만들면 먼저 `pnpm install`을 돌린다. CI는 PR 커밋 메시지를 다시 검사한다
+- 훅 안에서 다른 git 저장소를 다루는 명령(SwiftPM 의존성 checkout 등)을 부르기 전에 `GIT_DIR`을 지운다.
+  git이 훅에 넘기는 이 값이 worktree에서는 절대 경로라, 그 명령까지 이 저장소를 본다
 - Commit message validation: `commitlint` (`commitlint.config.cjs`, config-conventional).
   한국어 제목을 대문자로 시작하는 영어 단어로 열면 subject-case에 걸린다(`GeekNews 한도를...`,
   `README를...`). 한국어나 소문자로 시작하게 쓴다
