@@ -280,6 +280,9 @@ arXiv 메일링은 09:00 KST라 00:02 배치보다 늦고 주말에는 없다. �
   `canonical_body()`는 정본 본문 판정의 단일 소스다. 저장과 결손 집계가 함께 써야 한다
   (따로 판정하던 때 API형 4종이 정상 저장돼도 매일 "전량 실패"로 찍혔다).
   소비 상태(읽음/보관)는 `feedback` 테이블을 쓴다. `posts`에 컬럼을 더하지 않는다.
+  기본 경로는 부를 때 `skim_core.db.DB_PATH`에서 읽는다. `from skim_core.db import DB_PATH`로
+  들여오면 테스트가 바꾼 경로를 따르지 않는다. 메인 체크아웃에서 그 경로는 운영 DB다 (#32).
+  테스트는 `tests/conftest.py`가 이 경로를 `tmp_path`로 돌리고, 작업공간 `data/`에 닿으면 실패시킨다.
 - `packages/skim-core/src/skim_core/enrichment.py`: `bunx defuddle`, `yt-dlp`, transcript 정리
 - `packages/skim-core/src/skim_core/comments.py`: 플랫폼 중립 `Comment`와 본문 댓글 섹션 합성
 - `packages/skim-core/src/skim_core/feed_utils.py`: RSS/Atom 파싱, KST 변환. `FEED_HEADERS`의 Chrome 버전은 news.hada.io가 UA 문자열 단위 요청량으로 토픽 페이지를 막을 때 걸린다. 버전을 올리는 건 임시방편이고, 차단은 쓰지 않으면 몇십 분에 풀리므로 물러나는 쪽이 정답이다 (geeknews 크롤러의 간격·서킷브레이커). `CHALLENGE_MARKER`는 2026-09 차단의 형태였던 Turnstile 브라우저 확인 페이지의 표지다
