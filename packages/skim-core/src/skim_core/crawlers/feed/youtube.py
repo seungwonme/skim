@@ -14,7 +14,7 @@ from typing import Any, List, Optional, Tuple
 from ...db import drop_known_items, get_connection
 from ...enrichment import enrich_with_content
 from ...feed_config import YOUTUBE_CHANNELS, youtube_videos_url
-from ...feed_utils import fetch_feed
+from ...feed_utils import fetch_feed, finish_feed_items
 from ...models import Post
 from ...youtube_history import normalize_tracked_channels
 
@@ -209,15 +209,10 @@ class YouTubeCrawler:
 
         print(f"  -> 총 {len(all_items)}개 영상 (롱폼만)")
 
-        if not all_items:
-            return []
-
-        all_items.sort(key=lambda x: x.get("published", ""), reverse=True)
-        # CLI가 마지막에 posts[:count]로 자르므로, 버려질 항목을 enrichment하지 않는다.
-        if options.get("count") is not None:
-            all_items = all_items[: options["count"]]
-
-        if not no_content:
-            enrich_with_content(all_items)
-
-        return [_item_to_post(item) for item in all_items]
+        return finish_feed_items(
+            all_items,
+            _item_to_post,
+            enrich=enrich_with_content,
+            count=options.get("count"),
+            no_content=no_content,
+        )

@@ -17,11 +17,11 @@ from urllib.parse import urlparse
 import requests
 from bs4 import BeautifulSoup
 
-from ...enrichment import enrich_with_content
+from ...enrichment import _fetch_rendered_html, enrich_with_content
 from ...feed_config import AI_LABS_SOURCES
 from ...feed_utils import (
-    USER_AGENT,
     fetch_feed,
+    finish_feed_items,
     is_within_range,
     make_retrying_session,
 )
@@ -78,34 +78,6 @@ def _parse_iso8601(text: str) -> Optional[datetime]:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
-
-
-def _fetch_html_rendered(url: str, timeout_ms: int = 30000) -> Optional[str]:
-    """Playwright로 JS 렌더링 후 최종 HTML 반환.
-
-    `networkidle`은 analytics/tracking 핑으로 끝나지 않는 페이지(OpenAI 등)에서
-    타임아웃되므로 `load` + 짧은 hydration 대기로 대체한다.
-    """
-    try:
-        # pylint: disable=import-outside-toplevel
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        return None
-
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            try:
-                context = browser.new_context(user_agent=USER_AGENT)
-                page = context.new_page()
-                page.goto(url, wait_until="load", timeout=timeout_ms)
-                page.wait_for_timeout(1500)
-                return page.content()
-            finally:
-                browser.close()
-    except Exception as e:  # pylint: disable=broad-except
-        print(f"  [!] playwright 렌더 실패 ({url[:60]}...): {e}")
-        return None
 
 
 def _parse_meta_from_html(html: str) -> Dict[str, Optional[str]]:
@@ -224,7 +196,7 @@ def _fetch_article_metadata(url: str) -> Dict[str, Optional[str]]:
         return baseline
 
     # 3) 마지막 수단: Playwright 렌더링 (expensive). sitemap 커버리지 밖 URL 전용.
-    rendered = _fetch_html_rendered(url)
+    rendered = _fetch_rendered_html(url)
     if rendered:
         rendered_meta = _parse_meta_from_html(rendered)
         if rendered_meta.get("published"):
@@ -523,18 +495,12 @@ class AILabsCrawler:
         if debug:
             print(f"  -> 중복제거 후 {len(all_items)}개 글")
 
-        if not all_items:
-            return []
-
-        all_items.sort(key=lambda x: x.get("published", ""), reverse=True)
         # 소스별 limit(=count)은 과수집 방지용이고, count는 전역 상한이다.
         # 소스 9개면 최대 9*count개가 모이므로 여기서 한 번 더 자른다.
-        # CLI가 마지막에 posts[:count]로 자르므로 이 절단이 없으면 버려질 항목까지
-        # 원문 추출을 돈다.
-        if options.get("count") is not None:
-            all_items = all_items[: options["count"]]
-
-        if not no_content:
-            enrich_with_content(all_items)
-
-        return [_item_to_post(item) for item in all_items]
+        return finish_feed_items(
+            all_items,
+            _item_to_post,
+            enrich=enrich_with_content,
+            count=options.get("count"),
+            no_content=no_content,
+        )
