@@ -627,61 +627,24 @@ def backup(
         raise typer.Exit(1)
 
 
-@app.command()
-def doctor(
-    platform: Optional[str] = typer.Option(
-        None, "--platform", "-p", help="특정 플랫폼만 점검"
-    ),
-    db: Optional[Path] = typer.Option(None, "--db", help="SQLite DB 경로"),
-    emit: str = typer.Option("summary", "--emit", help="summary|json"),
-    strict: bool = typer.Option(
-        False, "--strict", help="warning이 하나라도 있으면 exit 1 (cron 연동용)"
-    ),
-):
-    """DB, 수집 run, session 상태를 점검합니다."""
-    _validate_platform(platform)
-    if emit not in {"summary", "json"}:
-        typer.echo(
-            "[skim] invalid --emit value. choose from ['json', 'summary']", err=True
-        )
-        raise typer.Exit(2)
+def _doctor_sessions(session_dir: Path, platform: Optional[str]) -> List[dict]:
+    return [
+        {
+            "platform": name,
+            "exists": (session_dir / f"{name}_session.json").exists(),
+            "path": str(session_dir / f"{name}_session.json"),
+        }
+        for name in sorted(REGISTRY)
+        if not platform or name == platform
+    ]
 
-    db_path = _db_or_default(db)
-    session_dir = _session_dir_for(db_path)
-    report: dict = {
-        "db": str(db_path),
-        "db_exists": db_path.exists(),
-        "platform": platform,
-        "platforms": [],
-        "sessions": [],
-        "runs": [],
-        "source_health": [],
-        "warnings": [],
-    }
 
-    for name in sorted(REGISTRY):
-        session_path = session_dir / f"{name}_session.json"
-        if platform and name != platform:
-            continue
-        report["sessions"].append(
-            {
-                "platform": name,
-                "exists": session_path.exists(),
-                "path": str(session_path),
-            }
-        )
-
-    if not db_path.exists():
-        report["warnings"].append(
-            "missing database; run `uv run skim crawl all --days 1`"
-        )
-        _emit_doctor(report, emit)
-        return
-
+def _doctor_read_db(report: dict, db_path: Path, platform: Optional[str]) -> None:
+    """플랫폼별 건수, 최근 run, 최근 본문 결손을 report에 채운다."""
+    platform_filter = "WHERE platform = ?" if platform else ""
+    params = [platform] if platform else []
+    conn = get_connection(db_path)
     try:
-        conn = get_connection(db_path)
-        platform_filter = "WHERE platform = ?" if platform else ""
-        params = [platform] if platform else []
         report["platforms"] = [
             dict(row)
             for row in conn.execute(
@@ -729,16 +692,19 @@ def doctor(
                 params,
             ).fetchall()
         ]
+    finally:
         conn.close()
-        report["warnings"].extend(_fragment_body_warnings(report["recent_thin"]))
-    except Exception as exc:  # pragma: no cover - defensive report path
-        report["warnings"].append(f"database check failed: {exc}")
 
+
+def _check_extractor(report: dict) -> None:
     report["extractor"] = _playwright_status()
     if not report["extractor"]["ok"]:
         report["warnings"].append(
             f"playwright unavailable: {report['extractor']['detail']}"
         )
+
+
+def _check_source_health(report: dict, db_path: Path, platform: Optional[str]) -> None:
     try:
         health = scan_source_health(db_path)
     except Exception as exc:  # pragma: no cover - defensive report path
@@ -747,33 +713,92 @@ def doctor(
     if platform:
         health = [issue for issue in health if issue["platform"] == platform]
     report["source_health"] = health
-    for issue in health:
-        report["warnings"].append(f"{issue['source']}: {issue['detail']}")
+    report["warnings"].extend(
+        f"{issue['source']}: {issue['detail']}" for issue in health
+    )
 
+
+def _check_tools(report: dict) -> None:
     # 외부 CLI 의존: 없으면 본문/자막 추출이 통째로 죽는데 크롤은 성공으로 끝난다.
     # launchd는 셸 프로필을 안 읽어 PATH가 달라지므로 크론에서 특히 잘 사라진다.
     report["tools"] = {
         name: shutil.which(name) or "" for name in ("yt-dlp", "bunx", "uv")
     }
-    for name, found in report["tools"].items():
-        if not found:
-            report["warnings"].append(f"{name} not on PATH")
+    report["warnings"].extend(
+        f"{name} not on PATH" for name, found in report["tools"].items() if not found
+    )
 
-    report["warnings"].extend(_geeknews_topic_warnings())
 
+def _check_integrity(report: dict, db_path: Path) -> None:
     if report["db_exists"]:
         integrity = check_integrity(db_path)
         report["integrity"] = integrity
         if integrity != "ok":
             report["warnings"].append(f"database integrity: {integrity}")
 
+
+def _attention_warnings(report: dict, platform: Optional[str]) -> List[str]:
+    warnings = []
     if platform and not report["platforms"]:
-        report["warnings"].append(f"no posts found for {platform}")
+        warnings.append(f"no posts found for {platform}")
     if any(
         run["status"] in {"failed", "interrupted", "running", "degraded"}
         for run in report["runs"][:3]
     ):
-        report["warnings"].append("recent runs need attention")
+        warnings.append("recent runs need attention")
+    return warnings
+
+
+@app.command()
+def doctor(
+    platform: Optional[str] = typer.Option(
+        None, "--platform", "-p", help="특정 플랫폼만 점검"
+    ),
+    db: Optional[Path] = typer.Option(None, "--db", help="SQLite DB 경로"),
+    emit: str = typer.Option("summary", "--emit", help="summary|json"),
+    strict: bool = typer.Option(
+        False, "--strict", help="warning이 하나라도 있으면 exit 1 (cron 연동용)"
+    ),
+):
+    """DB, 수집 run, session 상태를 점검합니다."""
+    _validate_platform(platform)
+    if emit not in {"summary", "json"}:
+        typer.echo(
+            "[skim] invalid --emit value. choose from ['json', 'summary']", err=True
+        )
+        raise typer.Exit(2)
+
+    db_path = _db_or_default(db)
+    report: dict = {
+        "db": str(db_path),
+        "db_exists": db_path.exists(),
+        "platform": platform,
+        "platforms": [],
+        "sessions": _doctor_sessions(_session_dir_for(db_path), platform),
+        "runs": [],
+        "source_health": [],
+        "warnings": [],
+    }
+
+    if not db_path.exists():
+        report["warnings"].append(
+            "missing database; run `uv run skim crawl all --days 1`"
+        )
+        _emit_doctor(report, emit)
+        return
+
+    try:
+        _doctor_read_db(report, db_path, platform)
+        report["warnings"].extend(_fragment_body_warnings(report["recent_thin"]))
+    except Exception as exc:  # pragma: no cover - defensive report path
+        report["warnings"].append(f"database check failed: {exc}")
+
+    _check_extractor(report)
+    _check_source_health(report, db_path, platform)
+    _check_tools(report)
+    report["warnings"].extend(_geeknews_topic_warnings())
+    _check_integrity(report, db_path)
+    report["warnings"].extend(_attention_warnings(report, platform))
     _emit_doctor(report, emit)
     if strict and report["warnings"]:
         raise typer.Exit(1)
@@ -810,12 +835,7 @@ def _playwright_status() -> dict:
     return {"ok": True, "detail": "chromium headless 실행 가능"}
 
 
-def _emit_doctor(report: dict, emit: str) -> None:
-    if emit == "json":
-        typer.echo(json.dumps(report, ensure_ascii=False, indent=2))
-        return
-
-    typer.echo(f"db: {report['db']} ({'ok' if report['db_exists'] else 'missing'})")
+def _echo_platform_rows(report: dict) -> None:
     if report["platforms"]:
         typer.echo("platforms:")
         for row in report["platforms"]:
@@ -824,17 +844,23 @@ def _emit_doctor(report: dict, emit: str) -> None:
                 f"with_text={row['with_text']} missing_text={row['missing_text']} "
                 f"latest={row['latest_crawl']}"
             )
-    thin_rows = [row for row in report.get("recent_thin", []) if row["thin"]]
-    if thin_rows:
-        typer.echo(f"recent missing body (last {RECENT_THIN_LOOKBACK_DAYS}d):")
-        for row in thin_rows:
-            typer.echo(f"  {row['platform']}: {row['thin']}/{row['total']}")
-    for key, label in (("fragment", "feed fragment only"), ("partial", "partial body")):
-        rows = [row for row in report.get("recent_thin", []) if row.get(key)]
+
+
+def _echo_recent_bodies(report: dict) -> None:
+    recent = report.get("recent_thin", [])
+    for key, label in (
+        ("thin", "missing body"),
+        ("fragment", "feed fragment only"),
+        ("partial", "partial body"),
+    ):
+        rows = [row for row in recent if row.get(key)]
         if rows:
             typer.echo(f"recent {label} (last {RECENT_THIN_LOOKBACK_DAYS}d):")
             for row in rows:
                 typer.echo(f"  {row['platform']}: {row[key]}/{row['total']}")
+
+
+def _echo_environment(report: dict) -> None:
     if report.get("extractor"):
         state = "ok" if report["extractor"]["ok"] else "unavailable"
         typer.echo(f"extractor: playwright {state} - {report['extractor']['detail']}")
@@ -846,6 +872,9 @@ def _emit_doctor(report: dict, emit: str) -> None:
     if report["sessions"]:
         present = [s["platform"] for s in report["sessions"] if s["exists"]]
         typer.echo(f"sessions: {', '.join(present) if present else 'none'}")
+
+
+def _echo_runs(report: dict) -> None:
     if report["runs"]:
         typer.echo("recent runs:")
         for row in report["runs"][:5]:
@@ -853,6 +882,18 @@ def _emit_doctor(report: dict, emit: str) -> None:
                 f"  #{row['id']} {row['status']} current={row['current_platform']} "
                 f"started={row['started_at']} summary={row['summary']}"
             )
+
+
+def _emit_doctor(report: dict, emit: str) -> None:
+    if emit == "json":
+        typer.echo(json.dumps(report, ensure_ascii=False, indent=2))
+        return
+
+    typer.echo(f"db: {report['db']} ({'ok' if report['db_exists'] else 'missing'})")
+    _echo_platform_rows(report)
+    _echo_recent_bodies(report)
+    _echo_environment(report)
+    _echo_runs(report)
     for warning in report["warnings"]:
         typer.echo(f"warning: {warning}")
 
