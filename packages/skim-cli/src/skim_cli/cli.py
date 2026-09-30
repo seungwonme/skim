@@ -5,11 +5,12 @@ import csv
 import json
 import re
 import shutil
+import sqlite3
 import sys
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Annotated, List, Optional
 from urllib.parse import urlparse
 
 import typer
@@ -30,8 +31,10 @@ from skim_core.db import (
     get_connection,
     init_db,
     list_tracked_sources,
+    load_crawl_checkpoints,
     migrate_canonical_body,
     platforms_with_recent_posts,
+    save_crawl_checkpoint,
     save_posts,
     save_run,
     set_post_state,
@@ -87,6 +90,10 @@ def min_lookback_days(platform: str, now: datetime) -> int:
 
 # 이 기간 안에 유입 이력이 있던 플랫폼이 0건이면 회귀로 본다.
 REGRESSION_LOOKBACK_DAYS = 14
+
+# `crawl --catch-up`이 거슬러 올라가는 상한(일). 피드는 대개 최근 수십 건만 실어서
+# 이보다 넓혀도 더 나오지 않고, 창이 넓을수록 이미 받은 글까지 다시 enrichment한다.
+CATCH_UP_MAX_DAYS = 7
 
 # doctor가 본문 결손을 보는 창. 이보다 길게 잡으면 이미 고친 옛 버그의 잔재가
 # 섞여 지금 고장났는지 알 수 없다.
@@ -234,6 +241,75 @@ class _CrawlTally:
     thin: dict = field(default_factory=dict)
 
 
+def _day_start(moment: datetime) -> datetime:
+    return moment.astimezone(KST).replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+@dataclass
+class _CatchUp:
+    """`--catch-up`: feed 플랫폼마다 마지막으로 창을 끝까지 채운 회차 이후를 창에 넣는다.
+
+    데일리는 매일 "전날 0시부터"만 본다. 한 회차를 놓치면 그날 글은 다음 회차 창에
+    다시 들어오지 않아 영구 유실된다 (#21). 체크포인트는 창을 끝까지 채운 회차의
+    시작 시각이고, 다음 회차는 그날 0시부터 본다. 회차를 놓치지 않은 날은 기존 창과
+    같아서 이미 받은 날을 다시 덮지 않는다.
+    """
+
+    now: datetime
+    # 플랫폼 -> 체크포인트
+    checkpoints: dict
+    # 최근 유입 이력이 있는 플랫폼. 0건 회귀 판정과 같은 기준이다.
+    recent: set
+
+    def since(self, platform: str, default: datetime) -> datetime:
+        last = self.checkpoints.get(platform)
+        if last is None:
+            return default
+        start = _day_start(last)
+        floor = _day_start(self.now - timedelta(days=CATCH_UP_MAX_DAYS))
+        if start < floor:
+            typer.echo(
+                f"  [!] 마지막으로 창을 채운 날이 {start:%Y-%m-%d}입니다. "
+                f"{CATCH_UP_MAX_DAYS}일 상한 밖의 {(floor - start).days}일은 채우지 못합니다"
+            )
+            start = floor
+        if start >= default:
+            return default
+        typer.echo(f"  -> 놓친 회차를 채우려고 {start:%Y-%m-%d} 0시부터 봅니다")
+        return start
+
+    def settle(self, platform: str, collected: bool, run_id: int) -> None:
+        """창을 끝까지 채웠으면 체크포인트를 이번 회차 시작 시각으로 옮긴다."""
+        if platform in SNS_PLATFORMS:
+            return
+        # 평소 들어오던 소스의 0건은 고장일 수 있다. 옮기지 않고 다음 회차가 다시 덮게 둔다.
+        if not collected and platform in self.recent:
+            return
+        try:
+            save_crawl_checkpoint(platform, self.now, run_id)
+        except sqlite3.Error as exc:
+            # 못 옮기면 다음 회차가 같은 구간을 한 번 더 볼 뿐이다. 수집을 멈출 이유가 없다.
+            typer.echo(f"  [!] {platform} 체크포인트 기록 실패: {exc}")
+
+
+def _load_catch_up(now: datetime) -> Optional[_CatchUp]:
+    """체크포인트를 못 읽으면 catch-up을 끈다.
+
+    빈 체크포인트로 이어 가면 이번 회차가 체크포인트를 오늘로 옮겨, 놓친 구간을
+    영영 건너뛰게 된다.
+    """
+    try:
+        checkpoints = load_crawl_checkpoints()
+    except (sqlite3.Error, ValueError) as exc:
+        typer.echo(f"[!] 체크포인트를 읽지 못해 --catch-up 없이 수집합니다: {exc}")
+        return None
+    return _CatchUp(
+        now=now,
+        checkpoints=checkpoints,
+        recent=platforms_with_recent_posts(REGRESSION_LOOKBACK_DAYS),
+    )
+
+
 def _resolve_crawl_targets(platforms: Optional[List[str]]) -> List[str]:
     """`all`을 풀고, 모르는 플랫폼이 있으면 종료한다."""
     if not platforms or "all" in platforms:
@@ -246,7 +322,12 @@ def _resolve_crawl_targets(platforms: Optional[List[str]]) -> List[str]:
     return list(platforms)
 
 
-def _crawl_options(platform: str, now: datetime, flags: _CrawlFlags) -> dict:
+def _crawl_options(
+    platform: str,
+    now: datetime,
+    flags: _CrawlFlags,
+    catch_up: Optional[_CatchUp] = None,
+) -> dict:
     """SNS는 개수, 피드는 기간 기준으로 크롤러 옵션을 만든다."""
     options: dict = {"debug": flags.debug, "no_content": flags.no_content}
     if platform in SNS_PLATFORMS:
@@ -257,9 +338,10 @@ def _crawl_options(platform: str, now: datetime, flags: _CrawlFlags) -> dict:
         days = flags.days if flags.days is not None else 1
         # 발행일이 밀린 소스는 사용자가 창을 좁혀도 최소 폭을 보장한다.
         days = max(days, min_lookback_days(platform, now))
-        options["since"] = (now - timedelta(days=days)).replace(
+        since = (now - timedelta(days=days)).replace(
             hour=0, minute=0, second=0, microsecond=0
         )
+        options["since"] = catch_up.since(platform, since) if catch_up else since
         if flags.count is not None:
             options["count"] = flags.count
 
@@ -280,6 +362,7 @@ def _crawl_platform(
     flags: _CrawlFlags,
     filepath: Optional[str],
     tally: _CrawlTally,
+    catch_up: Optional[_CatchUp] = None,
 ) -> bool:
     """플랫폼 하나를 크롤해 DB와 JSON 파일에 저장한다. 저장까지 갔으면 True."""
     try:
@@ -302,6 +385,8 @@ def _crawl_platform(
         tally.empty.append(platform)
         update_run_progress(run_id, platform, f"{platform} 수집된 게시글 없음")
         typer.echo("  -> 수집된 게시글 없음")
+        if catch_up:
+            catch_up.settle(platform, False, run_id)
         return False
 
     typer.echo(f"  -> {len(posts)}개 수집")
@@ -328,6 +413,9 @@ def _crawl_platform(
         filepath = DATA_DIR / platform / f"{timestamp}.json"
     save_posts_to_file(posts, filepath)
     typer.echo(f"  -> 파일: {filepath}")
+    # 저장이 끝난 뒤에 옮긴다. 저장 중에 죽으면 다음 회차가 이 구간을 다시 본다.
+    if catch_up:
+        catch_up.settle(platform, True, run_id)
 
     update_run_progress(run_id, platform, f"{platform} 처리 완료: {saved}개 DB 반영")
     return True
@@ -413,6 +501,17 @@ def crawl(
         None, "--subreddit", help="reddit 전용 subreddit slug (예: python)"
     ),
     sort: str = typer.Option("hot", "--sort", help="reddit 전용 정렬값 (hot, new)"),
+    # Annotated로 두어야 함수로 직접 부를 때 기본값이 OptionInfo(참)가 아니라 False다.
+    catch_up: Annotated[
+        bool,
+        typer.Option(
+            "--catch-up",
+            help=(
+                "feed 플랫폼은 마지막으로 창을 끝까지 채운 회차 이후까지 창을 넓힌다 "
+                f"(최대 {CATCH_UP_MAX_DAYS}일). 데일리 배치용"
+            ),
+        ),
+    ] = False,
 ):
     """하나 이상의 플랫폼에서 게시글을 크롤링합니다.
 
@@ -421,7 +520,14 @@ def crawl(
         uv run skim crawl all --days 1 --no-content
         uv run skim crawl threads --user-id 314216 --count 5
         uv run skim crawl hackernews geeknews --days 1
+        uv run skim crawl all --days 1 --catch-up
     """
+    if catch_up and (count is not None or no_content):
+        # 창을 본문까지 끝까지 채운 회차만 체크포인트를 옮길 수 있다.
+        typer.echo(
+            "--catch-up은 --count, --no-content와 함께 쓸 수 없습니다.", err=True
+        )
+        raise typer.Exit(2)
     targets = _resolve_crawl_targets(platforms)
     flags = _CrawlFlags(
         count=count,
@@ -438,6 +544,7 @@ def crawl(
     init_db()
     run_id = save_run()
     now = datetime.now(KST)
+    catch = _load_catch_up(now) if catch_up else None
     tally = _CrawlTally()
     active_platform: Optional[str] = None
 
@@ -448,11 +555,12 @@ def crawl(
             typer.echo(f"[{platform.upper()}] 크롤링 시작...")
             stored = _crawl_platform(
                 platform,
-                _crawl_options(platform, now, flags),
+                _crawl_options(platform, now, flags, catch),
                 run_id=run_id,
                 flags=flags,
                 filepath=filepath,
                 tally=tally,
+                catch_up=catch,
             )
             if stored and platform != targets[-1]:
                 typer.echo()

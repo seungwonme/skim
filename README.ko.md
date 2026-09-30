@@ -72,6 +72,7 @@ uv run skim platforms
 
 ```bash
 uv run skim crawl all --days 1
+uv run skim crawl all --days 1 --catch-up   # 데일리 배치: 놓친 회차까지 채운다 (최대 7일)
 uv run skim crawl hackernews --count 10
 uv run skim crawl reddit --subreddit python --sort hot --count 10
 ```
