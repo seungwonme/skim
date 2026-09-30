@@ -88,16 +88,15 @@ pylint가 읽지 못합니다. 윗줄에 `# pylint: disable-next=...`로 씁니�
 
 ### Git hooks
 
-`husky`가 커밋 전에 `just lint`(ruff 포맷 확인, flake8, pylint)를, 푸시 전에 `just test && just build`를 돌립니다.
+`husky`가 커밋 전에 `just lint`(ruff 포맷 확인, flake8, pylint)를, 커밋 메시지에 commitlint를,
+푸시 전에 `just test && just build`를 돌립니다.
+
+훅은 체크아웃마다 `pnpm install`을 돌려야 붙습니다. 새 worktree에는 훅 디렉터리(`.husky/_`)가 없어
+커밋과 푸시가 오류 없이 훅을 건너뜁니다. worktree를 만들면 먼저 `pnpm install`을 돌리면 됩니다.
+CI는 PR에 들어온 커밋 메시지를 commitlint로 다시 검사합니다.
 
 ```shell
-pip install pre-commit
-# or
-uv add pre-commit
-
-pre-commit install
-# or
-uv run pre-commit install
+pnpm install   # .husky/_를 만들고 core.hooksPath를 건다
 ```
 
 ## Comment Convention
