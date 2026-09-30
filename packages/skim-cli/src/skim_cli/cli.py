@@ -6,7 +6,7 @@ import json
 import re
 import shutil
 import sys
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
@@ -209,8 +209,188 @@ async def run_single_crawler(platform: str, options: dict) -> List[Post]:
 # === Commands ===
 
 
+@dataclass(frozen=True)
+class _CrawlFlags:
+    """crawl 명령의 옵션 중 플랫폼마다 크롤러 옵션을 만들 때 쓰는 값."""
+
+    count: Optional[int]
+    days: Optional[int]
+    debug: bool
+    no_content: bool
+    user_id: Optional[str]
+    subreddit: Optional[str]
+    sort: str
+
+
+@dataclass
+class _CrawlTally:
+    """crawl 한 회차의 플랫폼별 결과."""
+
+    total_saved: int = 0
+    failed: List[str] = field(default_factory=list)
+    completed: List[str] = field(default_factory=list)
+    empty: List[str] = field(default_factory=list)
+    # 플랫폼 -> (본문이 빈 글 수, 수집한 글 수)
+    thin: dict = field(default_factory=dict)
+
+
+def _resolve_crawl_targets(platforms: Optional[List[str]]) -> List[str]:
+    """`all`을 풀고, 모르는 플랫폼이 있으면 종료한다."""
+    if not platforms or "all" in platforms:
+        return list(REGISTRY.keys())
+    for name in platforms:
+        if name not in REGISTRY:
+            typer.echo(f"알 수 없는 플랫폼: {name}")
+            typer.echo(f"지원 플랫폼: {platform_help()}")
+            raise typer.Exit(1)
+    return list(platforms)
+
+
+def _crawl_options(platform: str, now: datetime, flags: _CrawlFlags) -> dict:
+    """SNS는 개수, 피드는 기간 기준으로 크롤러 옵션을 만든다."""
+    options: dict = {"debug": flags.debug, "no_content": flags.no_content}
+    if platform in SNS_PLATFORMS:
+        # SNS: count 기반 (기본 50)
+        options["count"] = flags.count if flags.count is not None else SNS_DEFAULT_COUNT
+    else:
+        # Feed: since 기반 (기본 전날 0시부터)
+        days = flags.days if flags.days is not None else 1
+        # 발행일이 밀린 소스는 사용자가 창을 좁혀도 최소 폭을 보장한다.
+        days = max(days, min_lookback_days(platform, now))
+        options["since"] = (now - timedelta(days=days)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        if flags.count is not None:
+            options["count"] = flags.count
+
+    if flags.user_id:
+        options["user_id"] = flags.user_id
+    if platform == "reddit":
+        if flags.subreddit:
+            options["subreddit"] = flags.subreddit
+        options["sort"] = flags.sort
+    return options
+
+
+def _crawl_platform(
+    platform: str,
+    options: dict,
+    *,
+    run_id: int,
+    flags: _CrawlFlags,
+    filepath: Optional[str],
+    tally: _CrawlTally,
+) -> bool:
+    """플랫폼 하나를 크롤해 DB와 JSON 파일에 저장한다. 저장까지 갔으면 True."""
+    try:
+        posts = asyncio.run(run_single_crawler(platform, options))
+    except Exception as e:
+        tally.failed.append(platform)
+        update_run_progress(run_id, platform, f"{platform} 크롤링 실패: {e}")
+        typer.echo(f"  [!] {platform} 크롤링 실패: {e}")
+        if flags.debug:
+            import traceback  # pylint: disable=import-outside-toplevel
+
+            traceback.print_exc()
+        return False
+
+    if flags.count is not None:
+        posts = posts[: flags.count]
+
+    tally.completed.append(platform)
+    if not posts:
+        tally.empty.append(platform)
+        update_run_progress(run_id, platform, f"{platform} 수집된 게시글 없음")
+        typer.echo("  -> 수집된 게시글 없음")
+        return False
+
+    typer.echo(f"  -> {len(posts)}개 수집")
+
+    # 개별 항목의 enrichment 실패는 로그 한 줄로 흘러가고 크롤은 성공으로
+    # 끝난다. playwright 미설치처럼 전 항목에 영향을 주는 고장도 그래서
+    # 며칠씩 묻힌다. 플랫폼별로 세어 마지막에 한 번에 보여준다.
+    # save_posts와 같은 판정 함수를 써야 한다. API형 4종은 본문이 content로
+    # 와서 저장 직전에 승격되므로, 승격 전 content_markdown만 보면 정상
+    # 저장된 회차가 전량 실패로 잡힌다.
+    thin = sum(1 for p in posts if not canonical_body(p, platform))
+    if thin:
+        tally.thin[platform] = (thin, len(posts))
+
+    # DB 저장
+    saved = save_posts(posts, platform)
+    tally.total_saved += saved
+    if saved:
+        typer.echo(f"  -> DB 반영: {saved}개 (신규/보강)")
+
+    # JSON 파일 저장
+    if filepath is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filepath = DATA_DIR / platform / f"{timestamp}.json"
+    save_posts_to_file(posts, filepath)
+    typer.echo(f"  -> 파일: {filepath}")
+
+    update_run_progress(run_id, platform, f"{platform} 처리 완료: {saved}개 DB 반영")
+    return True
+
+
+def _report_crawl_warnings(tally: _CrawlTally) -> List[str]:
+    """0건 회귀와 본문 추출 실패를 알린다. 회귀한 플랫폼을 돌려준다."""
+    # 크롤러가 깨져도 빈 리스트는 예외가 아니라 정상 종료로 보인다. 평소 들어오던
+    # 소스가 0건이면 회귀로 보고 드러낸다. 원래 저빈도인 소스까지 잡지 않도록
+    # 최근 유입 이력이 있는 플랫폼만 대상으로 한다.
+    regressed = (
+        sorted(set(tally.empty) & platforms_with_recent_posts(REGRESSION_LOOKBACK_DAYS))
+        if tally.empty
+        else []
+    )
+    if regressed:
+        typer.echo(
+            f"\n[!] 최근 {REGRESSION_LOOKBACK_DAYS}일간 수집되던 플랫폼이 0건입니다: "
+            f"{', '.join(regressed)}"
+        )
+
+    if tally.thin:
+        detail = ", ".join(
+            f"{name} {miss}/{total}"
+            for name, (miss, total) in sorted(tally.thin.items())
+        )
+        typer.echo(f"\n[!] 본문 추출 실패: {detail}")
+        typer.echo("    반복되면 `uv run skim doctor`로 추출 환경을 점검하세요.")
+    return regressed
+
+
+def _finish_crawl(run_id: int, tally: _CrawlTally, regressed: List[str]) -> None:
+    """run 상태를 닫는다. 실패한 플랫폼이 있으면 exit 1."""
+    if tally.failed:
+        summary = f"실패 플랫폼: {', '.join(tally.failed)}"
+        if tally.completed:
+            summary += f"; 완료 플랫폼: {', '.join(tally.completed)}"
+        if regressed:
+            summary += f"; 0건 회귀: {', '.join(regressed)}"
+        finish_run(run_id, "failed", tally.total_saved, summary)
+        typer.echo(
+            f"\n완료: 총 {tally.total_saved}개 저장 "
+            f"(run #{run_id}, 실패: {', '.join(tally.failed)})"
+        )
+        # cron/모니터링이 실패를 감지할 수 있게 비정상 종료 코드를 반환한다.
+        raise typer.Exit(1)
+
+    if regressed:
+        # 종료 코드는 0으로 둔다. 0건이 정상인 날에 파이프라인 전체를 세우지 않되,
+        # runs.status로 남겨 `skim doctor`와 모니터링이 집어낼 수 있게 한다.
+        finish_run(
+            run_id,
+            "degraded",
+            tally.total_saved,
+            f"전체 플랫폼 처리 완료 (0건 회귀: {', '.join(regressed)})",
+        )
+    else:
+        finish_run(run_id, "success", tally.total_saved, "전체 플랫폼 처리 완료")
+    typer.echo(f"\n완료: 총 {tally.total_saved}개 저장 (run #{run_id})")
+
+
 @app.command()
-def crawl(  # noqa: C901 — CLI 진입점으로 플랫폼별 분기가 불가피
+def crawl(
     platforms: List[str] = typer.Argument(
         None,
         help=f"크롤링할 플랫폼 ({platform_help(include_all=True)})",
@@ -242,177 +422,50 @@ def crawl(  # noqa: C901 — CLI 진입점으로 플랫폼별 분기가 불가�
         uv run skim crawl threads --user-id 314216 --count 5
         uv run skim crawl hackernews geeknews --days 1
     """
-    if not platforms:
-        platforms = ["all"]
-
-    # 'all' 확장
-    if "all" in platforms:
-        targets = list(REGISTRY.keys())
-    else:
-        targets = []
-        for p in platforms:
-            if p not in REGISTRY:
-                typer.echo(f"알 수 없는 플랫폼: {p}")
-                typer.echo(f"지원 플랫폼: {platform_help()}")
-                raise typer.Exit(1)
-            targets.append(p)
+    targets = _resolve_crawl_targets(platforms)
+    flags = _CrawlFlags(
+        count=count,
+        days=days,
+        debug=debug,
+        no_content=no_content,
+        user_id=user_id,
+        subreddit=subreddit,
+        sort=sort,
+    )
+    # -o는 플랫폼이 하나일 때만 쓴다. 여럿이면 플랫폼별 기본 경로에 나눠 저장한다.
+    filepath = output if output and len(targets) == 1 else None
 
     init_db()
     run_id = save_run()
-    total_saved = 0
     now = datetime.now(KST)
+    tally = _CrawlTally()
     active_platform: Optional[str] = None
-    failed_platforms: list[str] = []
-    completed_platforms: list[str] = []
-    empty_platforms: list[str] = []
-    thin_platforms: dict[str, tuple[int, int]] = {}
 
     try:
         for platform in targets:
             active_platform = platform
             update_run_progress(run_id, platform, f"{platform} 크롤링 시작")
             typer.echo(f"[{platform.upper()}] 크롤링 시작...")
-
-            is_sns = platform in SNS_PLATFORMS
-            options: dict = {
-                "debug": debug,
-                "no_content": no_content,
-            }
-
-            if is_sns:
-                # SNS: count 기반 (기본 50)
-                options["count"] = count if count is not None else SNS_DEFAULT_COUNT
-            else:
-                # Feed: since 기반 (기본 전날 0시부터)
-                d = days if days is not None else 1
-                # 발행일이 밀린 소스는 사용자가 창을 좁혀도 최소 폭을 보장한다.
-                d = max(d, min_lookback_days(platform, now))
-                since = (now - timedelta(days=d)).replace(
-                    hour=0, minute=0, second=0, microsecond=0
-                )
-                options["since"] = since
-                if count is not None:
-                    options["count"] = count
-
-            if user_id:
-                options["user_id"] = user_id
-            if platform == "reddit":
-                if subreddit:
-                    options["subreddit"] = subreddit
-                options["sort"] = sort
-
-            try:
-                posts = asyncio.run(run_single_crawler(platform, options))
-            except Exception as e:
-                failed_platforms.append(platform)
-                update_run_progress(run_id, platform, f"{platform} 크롤링 실패: {e}")
-                typer.echo(f"  [!] {platform} 크롤링 실패: {e}")
-                if debug:
-                    import traceback  # pylint: disable=import-outside-toplevel
-
-                    traceback.print_exc()
-                continue
-
-            if count is not None:
-                posts = posts[:count]
-
-            completed_platforms.append(platform)
-            if not posts:
-                empty_platforms.append(platform)
-                update_run_progress(run_id, platform, f"{platform} 수집된 게시글 없음")
-                typer.echo("  -> 수집된 게시글 없음")
-                continue
-
-            typer.echo(f"  -> {len(posts)}개 수집")
-
-            # 개별 항목의 enrichment 실패는 로그 한 줄로 흘러가고 크롤은 성공으로
-            # 끝난다. playwright 미설치처럼 전 항목에 영향을 주는 고장도 그래서
-            # 며칠씩 묻힌다. 플랫폼별로 세어 마지막에 한 번에 보여준다.
-            # save_posts와 같은 판정 함수를 써야 한다. API형 4종은 본문이 content로
-            # 와서 저장 직전에 승격되므로, 승격 전 content_markdown만 보면 정상
-            # 저장된 회차가 전량 실패로 잡힌다.
-            thin = sum(1 for p in posts if not canonical_body(p, platform))
-            if thin:
-                thin_platforms[platform] = (thin, len(posts))
-
-            # DB 저장
-            saved = save_posts(posts, platform)
-            total_saved += saved
-            if saved:
-                typer.echo(f"  -> DB 반영: {saved}개 (신규/보강)")
-
-            # JSON 파일 저장
-            if output and len(targets) == 1:
-                filepath = output
-            else:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                filepath = DATA_DIR / platform / f"{timestamp}.json"
-            save_posts_to_file(posts, filepath)
-            typer.echo(f"  -> 파일: {filepath}")
-
-            update_run_progress(
-                run_id, platform, f"{platform} 처리 완료: {saved}개 DB 반영"
+            stored = _crawl_platform(
+                platform,
+                _crawl_options(platform, now, flags),
+                run_id=run_id,
+                flags=flags,
+                filepath=filepath,
+                tally=tally,
             )
-
-            if platform != targets[-1]:
+            if stored and platform != targets[-1]:
                 typer.echo()
     except Exception as e:
         summary = (
             f"예상치 못한 오류로 중단"
             f"{f' (플랫폼: {active_platform})' if active_platform else ''}: {e}"
         )
-        finish_run(run_id, "failed", total_saved, summary)
+        finish_run(run_id, "failed", tally.total_saved, summary)
         raise
 
-    # 크롤러가 깨져도 빈 리스트는 예외가 아니라 정상 종료로 보인다. 평소 들어오던
-    # 소스가 0건이면 회귀로 보고 드러낸다. 원래 저빈도인 소스까지 잡지 않도록
-    # 최근 유입 이력이 있는 플랫폼만 대상으로 한다.
-    regressed = (
-        sorted(
-            set(empty_platforms) & platforms_with_recent_posts(REGRESSION_LOOKBACK_DAYS)
-        )
-        if empty_platforms
-        else []
-    )
-    if regressed:
-        typer.echo(
-            f"\n[!] 최근 {REGRESSION_LOOKBACK_DAYS}일간 수집되던 플랫폼이 0건입니다: "
-            f"{', '.join(regressed)}"
-        )
-
-    if thin_platforms:
-        detail = ", ".join(
-            f"{name} {miss}/{total}"
-            for name, (miss, total) in sorted(thin_platforms.items())
-        )
-        typer.echo(f"\n[!] 본문 추출 실패: {detail}")
-        typer.echo("    반복되면 `uv run skim doctor`로 추출 환경을 점검하세요.")
-
-    if failed_platforms:
-        summary = f"실패 플랫폼: {', '.join(failed_platforms)}"
-        if completed_platforms:
-            summary += f"; 완료 플랫폼: {', '.join(completed_platforms)}"
-        if regressed:
-            summary += f"; 0건 회귀: {', '.join(regressed)}"
-        finish_run(run_id, "failed", total_saved, summary)
-        typer.echo(
-            f"\n완료: 총 {total_saved}개 저장 (run #{run_id}, 실패: {', '.join(failed_platforms)})"
-        )
-        # cron/모니터링이 실패를 감지할 수 있게 비정상 종료 코드를 반환한다.
-        raise typer.Exit(1)
-
-    if regressed:
-        # 종료 코드는 0으로 둔다. 0건이 정상인 날에 파이프라인 전체를 세우지 않되,
-        # runs.status로 남겨 `skim doctor`와 모니터링이 집어낼 수 있게 한다.
-        finish_run(
-            run_id,
-            "degraded",
-            total_saved,
-            f"전체 플랫폼 처리 완료 (0건 회귀: {', '.join(regressed)})",
-        )
-    else:
-        finish_run(run_id, "success", total_saved, "전체 플랫폼 처리 완료")
-    typer.echo(f"\n완료: 총 {total_saved}개 저장 (run #{run_id})")
+    regressed = _report_crawl_warnings(tally)
+    _finish_crawl(run_id, tally, regressed)
 
 
 @app.command()
