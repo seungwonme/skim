@@ -65,7 +65,7 @@ uv run skim mark 12 34 --state read                         # 소비 상태
 uv run skim backup --keep 3     # 온라인 백업 + quick_check
 uv run skim doctor --strict     # warning 있으면 exit 1
 uv run python scripts/backfill_geeknews_topics.py --dry-run    # GN 요약, 댓글이 빠진 행 수
-uv run python scripts/backfill_geeknews_topics.py --limit 200 --wait-minutes 480  # 한도를 기다리며 채움
+uv run python scripts/backfill_geeknews_topics.py --limit 100  # 남은 토픽 한도만큼 채움
 
 # 기타
 uv run skim platforms           # 지원 플랫폼 목록
@@ -197,6 +197,9 @@ arXiv 메일링은 09:00 KST라 00:02 배치보다 늦고 주말에는 없다. �
 - **링크 게시물은 원문 URL을 보존하고 추출한다.** 제목만 남기면 소비자가 원문으로 갈
   방법이 없다. 애그리게이터(hackernews/lobsters/everyto/reddit)는 `_enrich_article_item`의
   3단 사다리를 타되 `min_words`를 낮춘다. 짧은 릴리스 노트도 정당한 본문이다.
+  원문이 PDF면 HTML 추출기는 늘 실패하므로 `_pdf_fallback`으로 넘어간다. GeekNews는
+  원문을 `geeknews.extract_original`로 따로 추출해서 이게 빠져 있었다 (2026-07 이후
+  PDF 원문 6건 중 5건 failed).
 - **상류가 주는 고유 id를 버리지 않는다.** 없으면 `db.py`가 URL로 병합해서, 같은 URL의
   서로 다른 글이 통째로 사라진다 (producthunt 재런치). 반대로 id 체계를 바꾸면 같은 글이
   두 행으로 갈라지므로(ailabs 182행) 전환할 때는 백필이 함께 가야 한다.
@@ -210,17 +213,20 @@ arXiv 메일링은 09:00 KST라 00:02 배치보다 늦고 주말에는 없다. �
   `content_status="partial"`을 단다.
 - **요청량으로 막히는 호스트는 요청을 한 모듈에 모으고 한도를 센다.** news.hada.io는
   토픽 페이지를 (IP, UA) 단위 요청 수로 막는다. 간격은 상관없다: 1초 간격 33건
-  (2026-09-22), 3초 간격 31건(2026-09-29 21:24)에서 똑같이 막혔고, 21:50과 22:30에도
-  막혀 있었다. 2026-09에는 enrichment.py가 같은 토픽 페이지를 글마다 두 번씩 따로
-  열어 매 회차 24요청쯤에서 막히고, 9월 저장분 1,082건 중 959건이 RSS 요약 조각만
-  남았다 (#29).
+  (2026-09-22), 3초 간격 31건(2026-09-29 21:24)에서 똑같이 막혔다. 풀리는 시간은
+  들쭉날쭉하다: 2026-09-29 00:14 차단은 10분 안에 풀렸고, 21:24 차단은 다음 날
+  00:33에도 그대로였다 (#33). 2026-09에는 enrichment.py가 같은 토픽 페이지를 글마다
+  두 번씩 따로 열어 매 회차 24요청쯤에서 막히고, 9월 저장분 1,082건 중 959건이 RSS
+  요약 조각만 남았다 (#29).
   지금은 원문 링크와 지표를 브라우저 확인이 걸리지 않는 `/newest` 목록에서 받고,
   토픽 페이지는 `geeknews.fetch_topic`만 연다. 크롤, 백필, 수동 실행이 20시간 창에
   25건(`TOPIC_BUDGET`)을 `data/geeknews_topic_budget.json`으로 나눠 쓰고, 한도가
   모자라면 원문 링크 없는 자체 글, 댓글 많은 글부터 받는다. 한 번 막히면 차단 시각을
   그 파일에 적어 창이 지날 때까지 어느 프로세스도 요청하지 않는다. 막힌 뒤의 요청은
-  차단을 연장한다. 다른 모듈과 테스트에서 news.hada.io를 부르지 않는다 (테스트는
-  `conftest.py`가 한도 파일을 격리하고, doctor 테스트는 `probe_user_agent`를 막는다).
+  차단을 연장할 수 있다. 멈출 때는 차단인지 한도 소진인지, 다시 요청하는 시각, 차단
+  종류(403, Forbidden, 브라우저 확인)를 로그에 남긴다 (`topic_pause_reason`). 다른
+  모듈과 테스트에서 news.hada.io를 부르지 않는다 (테스트는 `conftest.py`가 한도
+  파일을 격리하고, doctor 테스트는 `probe_user_agent`를 막는다).
   하루 글 수(50건 안팎)가 한도보다 많아 GN 요약과 댓글이 빠진 `partial` 행은 매일
   생긴다. 원문은 붙어 있으므로 doctor는 보여만 준다. doctor 경고는 두 가지다: 원문조차
   없는 "피드 요약 조각뿐인 본문"이 최근 7일 20%를 넘을 때, 그리고 한도 파일에 차단이

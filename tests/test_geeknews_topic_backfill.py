@@ -1,15 +1,18 @@
 """GeekNews 토픽 백필 검증 (#29).
 
 2026-08-29 ~ 09-28 차단 기간에 GeekNews 행 1,114건이 RSS 요약 조각만 남았다.
-백필은 크롤러와 같은 토픽 요청 경로(간격, 서킷브레이커)로 이 행들을 하루 100건씩
-채운다. 여기서는 대상 선정, 행 갱신, 멈춤 조건을 실제 스키마의 임시 DB로 본다.
+백필은 크롤러와 같은 토픽 요청 경로(간격, 한도, 서킷브레이커)로 이 행들을 채운다.
+여기서는 대상 선정, 행 갱신, 멈춤 조건을 실제 스키마의 임시 DB로 본다.
 """
 
 import importlib.util
+import io
 import json
 import sys
 import tempfile
+import time
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -304,6 +307,56 @@ class RunTests(_DbCase):
             self.assertEqual(backfill.main(), 0)
 
         fetch.assert_not_called()
+
+    def test_blocked_start_says_it_was_blocked(self):
+        # 2026-09-30 데일리: 크롤이 00:33에 막혔는데 백필은 "한도를 다 썼습니다"라고 찍었다.
+        self._fill(3)
+        blocked_at = time.time() - 60
+        geeknews.TOPIC_BUDGET_FILE.write_text(
+            json.dumps({"requests": [blocked_at], "blocked_at": blocked_at}),
+            encoding="utf-8",
+        )
+        out = io.StringIO()
+        with (
+            patch.object(sys, "argv", ["backfill_geeknews_topics.py"]),
+            patch.object(
+                backfill, "get_connection", return_value=get_connection(self.db)
+            ),
+            patch.object(backfill, "fetch_topic") as fetch,
+            redirect_stdout(out),
+        ):
+            self.assertEqual(backfill.main(), 0)
+
+        fetch.assert_not_called()
+        self.assertIn("남은 토픽 요청 한도 0건", out.getvalue())
+        self.assertIn("막혀", out.getvalue())
+        self.assertNotIn("다 썼습니다", out.getvalue())
+
+    def test_budget_spent_mid_run_is_not_reported_as_a_block(self):
+        self._fill(3)
+        geeknews.TOPIC_BUDGET_FILE.write_text(
+            json.dumps({"requests": [time.time() - 60] * (geeknews.TOPIC_BUDGET - 1)}),
+            encoding="utf-8",
+        )
+
+        def fetch(_topic_id):
+            geeknews._spend_topic_budget(time.time())
+            return TOPIC, "ok"
+
+        out = io.StringIO()
+        with (
+            patch.object(backfill, "fetch_topic", side_effect=fetch),
+            patch.object(backfill.time, "sleep"),
+            patch.object(
+                geeknews, "extract_original", return_value=(ARTICLE, "defuddle", None)
+            ),
+            redirect_stdout(out),
+        ):
+            stats = backfill.run(self.conn, backfill.fetch_targets(self.conn), delay=1)
+
+        self.assertEqual(stats["filled"], 1)
+        self.assertIn(f"한도({geeknews.TOPIC_BUDGET}건)를 다 썼습니다", out.getvalue())
+        self.assertNotIn("막혀", out.getvalue())
 
 
 if __name__ == "__main__":
