@@ -7,7 +7,11 @@
 """
 
 import asyncio
+import io
+import json
+import time
 import unittest
+from contextlib import redirect_stdout
 from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 
@@ -199,8 +203,8 @@ class CrawlRequestBudgetTests(_Isolated):
         # 저장 순서는 피드 순서 그대로다.
         self.assertEqual([i["title"] for i in result], ["링크 글", "Show GN", "토론 글"])
 
-    def test_crawl_stops_at_the_hourly_budget_and_keeps_originals(self):
-        # 크롤과 백필이 한 시간에 쓰는 토픽 요청을 합쳐 한도 아래로 둔다. 한도를 넘긴
+    def test_crawl_stops_at_the_budget_and_keeps_originals(self):
+        # 크롤과 백필이 20시간 창에 쓰는 토픽 요청을 합쳐 한도 아래로 둔다. 한도를 넘긴
         # 글은 요청하지 않고, 목록에서 받은 원문 링크로 원문만 붙인다.
         count = geeknews.TOPIC_BUDGET + 5
         posts, topic_urls = self._crawl(
@@ -214,6 +218,26 @@ class CrawlRequestBudgetTests(_Isolated):
         self.assertEqual(len(partial), 5)
         for post in partial:
             self.assertIn("## Original Article", post.content_markdown)
+
+    def test_spent_budget_is_logged_as_spent_not_blocked(self):
+        # 예전 문구는 "한도를 다 썼거나 막혔습니다"라서 로그로는 어느 쪽인지 몰랐다.
+        stamps = [time.time() - 60] * geeknews.TOPIC_BUDGET
+        geeknews.TOPIC_BUDGET_FILE.write_text(
+            json.dumps({"requests": stamps}), encoding="utf-8"
+        )
+        out = io.StringIO()
+        with (
+            patch.object(geeknews.requests, "get") as get,
+            patch.object(
+                geeknews, "extract_original", return_value=(ARTICLE, "defuddle", None)
+            ),
+            redirect_stdout(out),
+        ):
+            geeknews.enrich_geeknews_items(self._items(2))
+
+        get.assert_not_called()
+        self.assertIn(f"한도({geeknews.TOPIC_BUDGET}건)를 다 썼습니다", out.getvalue())
+        self.assertNotIn("막혀", out.getvalue())
 
     def test_generic_enrichment_does_not_open_topic_pages(self):
         # enrich_with_content가 토픽 페이지를 열면 간격과 서킷브레이커를 우회한다.

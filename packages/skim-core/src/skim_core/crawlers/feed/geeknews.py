@@ -37,11 +37,11 @@ MAX_COMMENTS = 15
 
 # news.hada.io는 토픽 페이지를 (IP, UA) 단위 요청 수로 막는다. 간격은 상관없다:
 # 1초 간격 33건(2026-09-22), 3초 간격 31건(2026-09-29)에서 똑같이 막혔다. 3초 간격으로
-# 360건을 버틴 2026-08 기록은 브라우저 확인이 생기기 전 값이다. 한 번 막히면 오래
-# 간다: 2026-09-29 21:24에 막힌 뒤 21:50, 22:30에도 막혀 있었다. 9월 말 데일리도
-# 매일 밤 24요청 안팎에서 막혔다. 창 길이는 모르지만 한 시간보다 길다.
-# 그래서 요청 수를 하루(20시간 창) 한도 아래로 둔다. 창을 24시간보다 조금 짧게 잡아
-# 매일 밤 크롤이 새 한도로 시작한다. 간격은 한 번에 몰리지 않게 하는 정도다.
+# 360건을 버틴 2026-08 기록은 브라우저 확인이 생기기 전 값이다. 9월 말 데일리도
+# 매일 밤 24요청 안팎에서 막혔다. 막힌 뒤 풀리는 시간은 들쭉날쭉하다: 2026-09-29
+# 00:14에 막힌 것은 10분 안에 풀렸고, 같은 날 21:24에 막힌 것은 다음 날 00:33에도
+# 막혀 있었다 (#33). 그래서 요청 수를 하루(20시간 창) 한도 아래로 둔다. 창을 24시간보다
+# 조금 짧게 잡아 매일 밤 크롤이 새 한도로 시작한다. 간격은 한 번에 몰리지 않게 하는 정도다.
 TOPIC_REQUEST_INTERVAL_SECONDS = 3.0
 TOPIC_BUDGET = 25
 TOPIC_BUDGET_WINDOW_SECONDS = 20 * 3600
@@ -84,13 +84,26 @@ def reset_topic_throttle() -> None:
 # 봇 차단이므로 풀지 않고, 차단으로 인식해 물러난다 (표지는 feed_utils.CHALLENGE_MARKER).
 
 
-def _is_blocked(resp: requests.Response) -> bool:
-    """차단 응답인지 본다. 403, 200+"Forbidden", 200+브라우저 확인 세 가지다."""
+def _block_kind(resp: requests.Response) -> Optional[str]:
+    """차단 응답의 종류. 403, 200+"Forbidden", 200+브라우저 확인 세 가지이고 아니면 None.
+
+    종류를 로그에 남긴다. 10분 만에 풀린 차단과 3시간 넘게 간 차단(2026-09-29)이
+    어느 종류였는지 지금 로그로는 가릴 수 없다 (#33).
+    """
     if resp.status_code == 403:
-        return True
+        return "403"
     if resp.status_code != 200:
-        return False
-    return resp.text.strip().startswith("Forbidden") or CHALLENGE_MARKER in resp.text
+        return None
+    if CHALLENGE_MARKER in resp.text:
+        return "브라우저 확인"
+    if resp.text.strip().startswith("Forbidden"):
+        return "Forbidden"
+    return None
+
+
+def _is_blocked(resp: requests.Response) -> bool:
+    """차단 응답인지 본다."""
+    return _block_kind(resp) is not None
 
 
 def topic_blocked() -> bool:
@@ -137,6 +150,32 @@ def topic_budget_left(now: Optional[float] = None) -> int:
     if _within_window(state.get("blocked_at"), now):
         return 0
     return max(0, TOPIC_BUDGET - len(_recent_topic_requests(state, now)))
+
+
+def _clock(stamp: float) -> str:
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(stamp))
+
+
+def topic_pause_reason(now: Optional[float] = None) -> str:
+    """토픽 요청을 보내지 않는 이유와 다시 보내는 시각. 로그에서 차단과 한도 소진을 가른다.
+
+    2026-09-30 데일리의 백필은 차단 때문에 멈췄는데 "한도를 다 썼습니다"라고 찍었다.
+    """
+    now = time.time() if now is None else now
+    state = _load_topic_budget()
+    blocked_at = state.get("blocked_at")
+    if _within_window(blocked_at, now):
+        return (
+            f"토픽 페이지가 {_clock(blocked_at)}에 막혀 "
+            f"{_clock(blocked_at + TOPIC_BUDGET_WINDOW_SECONDS)}까지 요청하지 않습니다."
+        )
+    recent = _recent_topic_requests(state, now)
+    if len(recent) >= TOPIC_BUDGET:
+        return (
+            f"토픽 요청 한도({TOPIC_BUDGET}건)를 다 썼습니다. "
+            f"{_clock(min(recent) + TOPIC_BUDGET_WINDOW_SECONDS)}부터 다시 요청합니다."
+        )
+    return "이 실행에서는 토픽 요청을 멈췄습니다."
 
 
 def _spend_topic_budget(now: float, blocked: bool = False) -> None:
@@ -346,12 +385,12 @@ def fetch_topic(topic_id: Optional[str]) -> Tuple[Optional[TopicPage], str]:
             headers=FEED_HEADERS,
             timeout=10,
         )
-        if _is_blocked(resp):
+        kind = _block_kind(resp)
+        if kind:
             _consecutive_blocks += 1
             _spend_topic_budget(time.time(), blocked=True)
             typer.echo(
-                "   [!] GeekNews가 요청을 막았습니다. 남은 토픽 요청은 한도 창이 지날 "
-                "때까지 보내지 않습니다 (두드리면 차단이 길어집니다)."
+                f"   [!] GeekNews가 요청을 막았습니다({kind}). {topic_pause_reason()}"
             )
             return None, "blocked"
         # 지워진 글은 404("아마도 글이 지워진거 같습니다!")로 온다 (2026-09-29 확인).
@@ -517,8 +556,7 @@ def enrich_geeknews_items(items: List[dict]) -> List[dict]:
         if outcome == "budget" and not out_of_budget:
             out_of_budget = True
             print(
-                f"   [!] GeekNews 토픽 요청 한도({TOPIC_BUDGET}건)를 다 썼거나 막혔습니다. "
-                "남은 글은 원문만 붙여 partial로 저장합니다."
+                f"   [!] {topic_pause_reason()} 남은 글은 원문만 붙여 partial로 저장합니다."
             )
         enrich_geeknews_item(item, topic)
     partial = sum(1 for it in items if it.get("content_status") == "partial")

@@ -17,8 +17,9 @@
 
 크롤러와 같은 함수(fetch_topic, enrich_geeknews_item)를 부르고, 토픽 요청 한도
 (20시간 창에 25건)도 크롤과 파일로 나눠 쓴다. news.hada.io는 30건 안팎에서 막고,
-한 번 막히면 한 시간이 지나도 풀리지 않았다. 그래서 한도가 없으면 요청하지 않고,
-한 번이라도 막히면 바로 멈춘다. 다음 실행이 남은 행을 이어서 채운다.
+막힌 뒤 풀리기까지 10분이 걸린 적도, 3시간 넘게 걸린 적도 있다 (#33). 그래서 한도가
+없으면 요청하지 않고, 한 번이라도 막히면 바로 멈춘다. 다음 실행이 남은 행을 이어서
+채운다. 멈춘 이유(차단인지 한도 소진인지)와 다시 요청하는 시각은 로그에 남긴다.
 
 데일리는 크롤 뒤에 돌아 크롤이 쓰고 남은 한도만 쓴다. 하루 글이 한도보다 많은 날은
 요청 없이 끝난다. 쌓인 결손을 토픽 페이지로 다 채울 수는 없다 (#29 후속 이슈).
@@ -44,6 +45,7 @@ from skim_core.crawlers.feed.geeknews import (
     saved_original_from,
     topic_budget_left,
     topic_id_from_url,
+    topic_pause_reason,
 )
 from skim_core.db import get_connection
 
@@ -208,12 +210,14 @@ def run(conn, targets: List[Dict], delay: float) -> Dict[str, int]:
     marks: List[Dict] = []
     streak = 0
     for i, row in enumerate(targets, 1):
-        if topic_budget_left() <= 0:
-            print("토픽 요청 한도를 다 썼습니다. 남은 행은 다음 실행이 채웁니다.")
-            break
-        topic, outcome = fetch_topic(topic_id_from_url(row["url"]))
+        topic, outcome = None, "budget"
+        if topic_budget_left() > 0:
+            topic, outcome = fetch_topic(topic_id_from_url(row["url"]))
         if outcome in ("blocked", "skipped", "budget"):
-            print("GeekNews가 막았습니다. 남은 행은 다음 실행이 채웁니다.")
+            # 막힌 경우는 fetch_topic이 종류와 시각을 이미 찍었다.
+            if outcome != "blocked":
+                print(topic_pause_reason())
+            print("남은 행은 다음 실행이 채웁니다.")
             break
         if topic is None:
             if outcome in ("gone", "empty"):
@@ -265,11 +269,14 @@ def main() -> int:
         by_priority = {
             p: sum(1 for t in targets if t["priority"] == p) for p in (1, 2, 3)
         }
+        left = topic_budget_left()
         print(
             f"대상 {len(targets)}건 (본문 {by_priority[1]}, 댓글 {by_priority[2]}, "
-            f"지표 {by_priority[3]}), 남은 토픽 요청 한도 {topic_budget_left()}건"
+            f"지표 {by_priority[3]}), 남은 토픽 요청 한도 {left}건"
         )
-        if args.dry_run or not targets:
+        if not left:
+            print(topic_pause_reason())
+        if args.dry_run or not targets or not left:
             return 0
         stats = run(conn, targets, args.delay)
     finally:

@@ -146,6 +146,69 @@ class GeekNewsThrottleTests(unittest.TestCase):
         self.assertEqual(get.call_count, geeknews.MAX_CONSECUTIVE_BLOCKS)
 
 
+def _clock(stamp):
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(stamp))
+
+
+class PauseReasonTests(unittest.TestCase):
+    """로그가 차단과 한도 소진을 가르고, 다시 요청하는 시각을 적는다.
+
+    2026-09-30 데일리의 백필은 차단 때문에 멈췄는데 "한도를 다 썼습니다"라고 찍었다.
+    """
+
+    def setUp(self):
+        geeknews.reset_topic_throttle()
+        self.addCleanup(geeknews.reset_topic_throttle)
+
+    def _write(self, **state):
+        geeknews.TOPIC_BUDGET_FILE.write_text(json.dumps(state), encoding="utf-8")
+
+    def test_block_names_when_it_happened_and_when_requests_resume(self):
+        now = time.time()
+        self._write(requests=[now - 60], blocked_at=now - 60)
+
+        reason = geeknews.topic_pause_reason(now)
+
+        resume = now - 60 + geeknews.TOPIC_BUDGET_WINDOW_SECONDS
+        self.assertIn("막혀", reason)
+        self.assertIn(_clock(now - 60), reason)
+        self.assertIn(_clock(resume), reason)
+
+    def test_spent_budget_is_not_reported_as_a_block(self):
+        now = time.time()
+        self._write(requests=[now - 600 + i for i in range(geeknews.TOPIC_BUDGET)])
+
+        reason = geeknews.topic_pause_reason(now)
+
+        self.assertIn(f"한도({geeknews.TOPIC_BUDGET}건)를 다 썼습니다", reason)
+        self.assertNotIn("막혀", reason)
+        # 가장 오래된 요청이 창을 벗어나는 시각부터 다시 보낼 수 있다.
+        resume = now - 600 + geeknews.TOPIC_BUDGET_WINDOW_SECONDS
+        self.assertIn(_clock(resume), reason)
+
+    def test_block_log_names_the_kind_of_block(self):
+        # 10분 만에 풀린 차단과 3시간 넘게 간 차단(2026-09-29)이 어느 종류였는지
+        # 로그로 가리려고 남긴다.
+        challenge = f"<html>{geeknews.CHALLENGE_MARKER}</html>"
+        cases = [
+            (_resp(403), "(403)"),
+            (_resp(200, "Forbidden"), "(Forbidden)"),
+            (_resp(200, challenge), "(브라우저 확인)"),
+        ]
+        for response, kind in cases:
+            geeknews.reset_topic_throttle()
+            geeknews.TOPIC_BUDGET_FILE.unlink(missing_ok=True)
+            with (
+                patch.object(geeknews.requests, "get", return_value=response),
+                patch.object(geeknews.time, "sleep"),
+                patch.object(geeknews.typer, "echo") as echo,
+            ):
+                self.assertEqual(geeknews.fetch_topic("1"), (None, "blocked"))
+            message = echo.call_args[0][0]
+            self.assertIn(kind, message)
+            self.assertIn("까지 요청하지 않습니다", message)
+
+
 class MetricsIndexTests(unittest.TestCase):
     """지표는 /newest 목록에서 받는다. 글마다 토픽 페이지를 열던 때는 회차당 50건을
     요청했고 그 물량이 차단을 불렀다."""
