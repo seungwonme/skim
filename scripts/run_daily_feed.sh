@@ -50,8 +50,9 @@ echo "======= start $(date '+%Y-%m-%d %H:%M:%S') =======" >>"$LOG"
 
 # 맥북이 배터리로 잠들어 있으면 launchd가 00:02에 깨우긴 하는데(DarkWake) Wi-Fi가
 # 붙기 전에 요청이 나가 전 플랫폼이 DNS 실패로 끝난다. 2026-09-04 회차가 11개
-# 플랫폼 0건으로 그렇게 죽었고, 고정 창이라 그날 분은 다음 회차에도 안 들어온다.
-# 이름이 풀릴 때까지 기다리되, 영영 안 붙는 날은 실패를 기록하고 나간다.
+# 플랫폼 0건으로 그렇게 죽었다. 놓친 날은 다음 회차의 --catch-up이 채운다(최대
+# 7일). 그래도 헛도는 회차를 줄이려고 이름이 풀릴 때까지 기다리고, 영영 안 붙는
+# 날은 실패를 기록하고 나간다.
 for _ in $(seq 1 60); do
     nslookup -timeout=5 news.ycombinator.com >/dev/null 2>&1 && break
     sleep 10
@@ -73,9 +74,11 @@ uv run skim backup --keep 3 >>"$LOG" 2>&1 || echo "[!] 백업 실패" >>"$LOG"
 # --days 1을 유지한다. 발행일이 밀리는 소스(arxiv, huggingface)는 CLI의
 # min_lookback_days()가 창을 알아서 넓히므로, 여기서 전역으로 넓히면 이미
 # 저장된 항목까지 매일 다시 enrichment하게 된다.
+# --catch-up은 회차를 놓쳤거나 그 플랫폼이 실패한 다음 날에만, 마지막으로 창을
+# 끝까지 채운 날까지 창을 넓힌다 (#21). 평소에는 --days 1과 같은 창이다.
 # set -e 아래에서는 실패 즉시 죽어 종료 코드를 기록하지 못하므로 직접 받는다.
 status=0
-uv run skim crawl all --days 1 >>"$LOG" 2>&1 || status=$?
+uv run skim crawl all --days 1 --catch-up >>"$LOG" 2>&1 || status=$?
 
 # 크롤이 실패해도 백필은 돌린다. 둘은 서로 독립이다.
 backfill_status=0
