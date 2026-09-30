@@ -8,7 +8,8 @@ import json
 import sqlite3
 from pathlib import Path
 
-from skim_core.db import DB_PATH, get_connection, init_db
+import skim_core.db
+from skim_core.db import get_connection, init_db
 from skim_core.feed_config import YOUTUBE_CHANNELS
 
 
@@ -109,7 +110,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--db",
         type=Path,
-        default=DB_PATH,
+        default=None,
         help="SQLite database path. Defaults to data/skim.db.",
     )
     parser.add_argument(
@@ -124,7 +125,8 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
 
-    result = preview_import(args.db) if args.preview else run_import(args.db)
+    db_path = args.db or skim_core.db.DB_PATH
+    result = preview_import(db_path) if args.preview else run_import(db_path)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
