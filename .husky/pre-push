@@ -1,2 +1,6 @@
 #!/usr/bin/env sh
+# git은 훅에 GIT_DIR 같은 저장소 위치를 넘긴다. worktree에서는 이 값이 절대 경로라,
+# swift test가 의존성 저장소(Down)에서 부르는 git까지 이 저장소를 보고 checkout에 실패한다.
+# 훅 안에서 다른 저장소를 다루는 명령을 돌리면 이 값을 지우라는 게 githooks 문서의 안내다.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 just test && just build
