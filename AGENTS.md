@@ -68,6 +68,7 @@ uv run skim backup --keep 3     # 온라인 백업 + quick_check
 uv run skim doctor --strict     # warning 있으면 exit 1
 uv run python scripts/backfill_geeknews_topics.py --dry-run    # GN 요약, 댓글이 빠진 행 수
 uv run python scripts/backfill_geeknews_topics.py --limit 100  # 남은 토픽 한도만큼 채움
+uv run python scripts/backfill_github_releases.py --dry-run   # GitHub 릴리스 노트, PDF 본문 재수집 대상 (#46)
 
 # 기타
 uv run skim platforms           # 지원 플랫폼 목록
@@ -229,6 +230,15 @@ arXiv 메일링은 09:00 KST라 00:02 배치보다 늦고 주말에는 없다. �
   원문이 PDF면 HTML 추출기는 늘 실패하므로 `_pdf_fallback`으로 넘어간다. GeekNews는
   원문을 `geeknews.extract_original`로 따로 추출해서 이게 빠져 있었다 (2026-07 이후
   PDF 원문 6건 중 5건 failed).
+- **GitHub 페이지는 작성자가 쓴 부분만 본문으로 센다.** 릴리스 페이지를 페이지째
+  추출하면 로그인 안내와 저장소 머리말 같은 화면 문구가 노트를 감싸고, 패치 릴리스의
+  짧은 노트(30단어 안팎)는 60단어 게이트에 걸려 빈 본문이 됐다 (#46). 릴리스 링크는
+  노트 영역(`.markdown-body`)만 받고 단어 수로 거르지 않는다. 저장소의 릴리스 피드를
+  구독한 blogs는 피드 본문이 노트 그 자체라 페이지를 열지 않는다. 애그리게이터의 피드
+  본문은 그 사이트의 설명이라 노트로 쓰지 않는다. 게이트는 GitHub 화면 문구를 빼고
+  센다. 화면 문구도 60단어를 넘겨서, GitHub PDF 링크(`blob/.../*.pdf`)가 화면 문구로
+  게이트를 통과해 PDF 폴백까지 못 갔다. PDF 폴백은 blob 주소를 raw 주소로 바꿔 받는다.
+  GeekNews 원문은 defuddle을 먼저 보는 별도 경로라 릴리스 노트 경로를 타지 않는다.
 - **상류가 주는 고유 id를 버리지 않는다.** 없으면 `db.py`가 URL로 병합해서, 같은 URL의
   서로 다른 글이 통째로 사라진다 (producthunt 재런치). 반대로 id 체계를 바꾸면 같은 글이
   두 행으로 갈라지므로(ailabs 182행) 전환할 때는 백필이 함께 가야 한다.

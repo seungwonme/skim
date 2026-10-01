@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import requests
+from bs4 import BeautifulSoup
 
 try:
     import trafilatura  # pylint: disable=import-error
@@ -206,6 +207,29 @@ _PLACEHOLDER_ANY = re.compile(
     re.IGNORECASE,
 )
 
+# GitHub 페이지의 화면 문구. 로그인 안내, 저장소 머리말, 알림/포크/스타 버튼이다.
+# 60단어를 넘기도 해서 단어 수 게이트가 본문으로 세면 화면 문구만 받은 글이
+# 통과한다. GitHub PDF 링크 4건이 그렇게 PDF 폴백까지 못 가고 화면 문구만
+# 저장됐다 (#46). 게이트는 이걸 빼고 센다. 저장하는 본문은 건드리지 않는다.
+_GITHUB_CHROME = re.compile(
+    r"You (?:signed in with|signed out in|switched accounts on) another tab or window\."
+    r"\s*Reload to refresh your session\.|"
+    r"Dismiss alert|"
+    r"\{\{ message \}\}|"
+    r"You must be signed in to change notification settings|"
+    r"^[ \t]*/ \*\*\[[^\]\n]+\]\(https://github\.com/[^)\s]+\)\*\*[^\n]*$|"
+    r"\[(?:Notifications|Fork[^\]\n]*|Star[^\]\n]*)\]\(https://github\.com/login[^)\s]*\)",
+    re.MULTILINE,
+)
+_GITHUB_CHROME_HINTS = ("another tab or window", "github.com/login")
+
+# 릴리스 페이지에서 작성자가 쓴 부분은 노트 영역(`.markdown-body`)뿐이다.
+_GITHUB_RELEASE_URL = re.compile(
+    r"^https?://github\.com/[^/]+/[^/]+/releases/tag/[^/?#]+"
+)
+# blob 주소는 파일이 아니라 보기 페이지다. 파일은 같은 경로의 raw 주소에 있다.
+_GITHUB_BLOB_URL = re.compile(r"^(https?://github\.com/[^/]+/[^/]+)/blob/(.+)$")
+
 
 def _trafilatura_extract(html: str, url: str) -> Optional[dict]:
     """trafilatura로 HTML → markdown 본문 추출. subprocess 없이 Python 내부 처리."""
@@ -257,6 +281,12 @@ def _looks_like_placeholder_content(content: str) -> bool:
     )
 
 
+def _words_outside_github_chrome(content: str) -> int:
+    """GitHub 화면 문구를 뺀 단어 수. 글머리표처럼 기호만 남은 토큰은 세지 않는다."""
+    stripped = _GITHUB_CHROME.sub(" ", content)
+    return sum(1 for token in stripped.split() if any(ch.isalnum() for ch in token))
+
+
 def _is_content_usable(data: Optional[dict], title: str, min_words: int = 60) -> bool:
     """defuddle 결과가 실제 본문으로 쓸만한지 판정."""
     if not data:
@@ -267,6 +297,8 @@ def _is_content_usable(data: Optional[dict], title: str, min_words: int = 60) ->
     if _looks_like_placeholder_content(content):
         return False
     word_count = data.get("word_count") or len(content.split())
+    if any(hint in content for hint in _GITHUB_CHROME_HINTS):
+        word_count = _words_outside_github_chrome(content)
     if word_count < min_words:
         return False
     title_clean = (title or "").strip()
@@ -598,11 +630,58 @@ def _apply_youtube_summary_fallback(item: dict) -> bool:
     return True
 
 
+def is_github_release_url(url: str) -> bool:
+    """GitHub 릴리스 한 건의 페이지인지."""
+    return bool(_GITHUB_RELEASE_URL.match(url or ""))
+
+
+def github_raw_url(url: str) -> Optional[str]:
+    """GitHub blob 주소(보기 페이지)를 파일을 내려받는 raw 주소로 바꾼다."""
+    match = _GITHUB_BLOB_URL.match(url or "")
+    if not match:
+        return None
+    return f"{match.group(1)}/raw/{match.group(2)}"
+
+
+def extract_github_release_notes(url: str) -> Optional[dict]:
+    """릴리스 페이지에서 노트 영역(`.markdown-body`)만 마크다운으로 받는다.
+
+    페이지째 추출하면 로그인 안내, 저장소 머리말, 커밋 서명 안내가 노트를 감싼다.
+    노트 영역이 없으면(노트를 안 쓴 릴리스, 마크업 변경) None이다.
+    """
+    html = _http_fetch_html(url)
+    if not html:
+        return None
+    node = BeautifulSoup(html, "html.parser").select_one(".markdown-body")
+    if node is None:
+        return None
+    return _trafilatura_extract(str(node), url)
+
+
+def _github_release_notes(item: dict, url: str) -> tuple[Optional[dict], str]:
+    """GitHub 릴리스 노트를 받는다 (#46). (data, method)를 돌려준다.
+
+    저장소의 릴리스 피드를 구독한 경우(blogs) 피드 본문이 노트 그 자체라 페이지를
+    열지 않는다. 애그리게이터의 피드 본문은 그 사이트의 설명이라 쓰지 않는다.
+    패치 릴리스의 노트는 30단어 안팎이라 기사용 60단어 게이트에 걸려 빈 본문이
+    됐다. 노트는 한 줄이어도 정당한 본문이라 단어 수로 거르지 않는다.
+    """
+    title = item.get("title", "")
+    if (item.get("platform") or "").startswith("blogs"):
+        feed_data = _extract_feed_content_html(item)
+        if _is_content_usable(feed_data, title, min_words=1):
+            return feed_data, "feed-content"
+    page_data = extract_github_release_notes(url)
+    if _is_content_usable(page_data, title, min_words=1):
+        return page_data, "github-release"
+    return None, "failed"
+
+
 def _pdf_fallback(url: str, min_words: int = 60) -> Optional[dict]:
     """링크가 PDF면 PDF 추출을 시도한다. HTML 추출기는 PDF에서 늘 실패한다."""
     if not url or ".pdf" not in url.lower():
         return None
-    data = extract_pdf_text(url, min_words=min_words)
+    data = extract_pdf_text(github_raw_url(url) or url, min_words=min_words)
     return data or None
 
 
@@ -620,6 +699,14 @@ def _enrich_article_item(item: dict, url: str, min_words: int = 60) -> Optional[
     failed로 떨어진다.
     """
     target_url = item.get("enrich_url") or url
+    if is_github_release_url(target_url):
+        # 페이지째 추출로 넘어가지 않는다. 노트가 없으면 화면 문구만 받아 온다.
+        data, method = _github_release_notes(item, target_url)
+        if data is None:
+            item.setdefault("enrichment_error", "release notes not found")
+        item["enrichment_method"] = method
+        print(f"    -> method={method}")
+        return data
     data, method, error = _extract_article_or_feed_content(item, target_url)
     if error:
         item["enrichment_error"] = error
