@@ -240,10 +240,11 @@ _GITHUB_BLOB_URL = re.compile(r"^(https?://github\.com/[^/]+/[^/]+)/blob/(.+)$")
 def _fragment_config():
     """trafilatura는 250자보다 짧은 추출 결과를 버린다(MIN_EXTRACTED_SIZE).
 
-    페이지째 추출할 때 메뉴만 잡힌 결과를 거르는 값이라, 본문만 떼어 낸 조각(피드
-    본문, 릴리스 노트 영역)에는 맞지 않는다. 한 줄짜리 Claude Code 노트("Bug fixes
-    and reliability improvements") 11건이 이 값에 걸려 못 들어왔다 (#46). 조각에도
-    단어 수 게이트는 그대로 걸린다.
+    페이지째 추출할 때 메뉴만 잡힌 결과를 거르는 값이라, 노트만 떼어 낸 조각(노트
+    영역, 릴리스 피드 본문)에는 맞지 않는다. 한 줄짜리 Claude Code 노트("Bug fixes
+    and reliability improvements") 11건이 이 값에 걸려 못 들어왔다 (#46).
+    기사 폴백의 피드 본문은 그대로 둔다. 그쪽은 60단어 게이트가 따로 거르고,
+    짧아서 문제가 된 것은 릴리스 노트뿐이다.
     """
     config = use_config()
     config.set("DEFAULT", "MIN_EXTRACTED_SIZE", "1")
@@ -412,11 +413,11 @@ def extract_article_content(
     return fallback, best_method, f"{thin_reason_1}; {thin_reason_2}"
 
 
-def _extract_feed_content_html(item: dict) -> Optional[dict]:
+def _extract_feed_content_html(item: dict, fragment: bool = False) -> Optional[dict]:
     html = (item.get("content_html") or "").strip()
     if not html:
         return None
-    return _trafilatura_extract(html, item.get("url", ""), fragment=True)
+    return _trafilatura_extract(html, item.get("url", ""), fragment=fragment)
 
 
 def _extract_article_or_feed_content(
@@ -704,7 +705,7 @@ def _github_release_notes(item: dict, url: str) -> tuple[Optional[dict], str]:
     """
     title = item.get("title", "")
     if (item.get("platform") or "").startswith("blogs"):
-        feed_data = _extract_feed_content_html(item)
+        feed_data = _extract_feed_content_html(item, fragment=True)
         if _is_content_usable(feed_data, title, min_words=1):
             return feed_data, "feed-content"
     page_data = extract_github_release_notes(url)
