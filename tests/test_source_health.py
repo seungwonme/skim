@@ -85,6 +85,30 @@ def test_detects_word_count_collapse(db_path):
     assert issues[0]["kind"] == "word_count_collapse"
 
 
+def test_a_few_long_posts_do_not_set_the_baseline(db_path):
+    """분량은 중앙값으로 비교한다. 평균은 긴 글 몇 건에 끌려간다.
+
+    LangChain Releases가 그랬다. 기준선 창의 알파 릴리스 노트 3건(4,276~5,041단어)이
+    평균을 483단어로 끌어올려, 평소처럼 30단어 안팎인 패치 노트가 회귀로 잡혔다 (#46).
+    """
+    _insert(db_path, "blogs", "blogs/Releases", 60, "노트 " * 40, 40, n=20)
+    _insert(db_path, "blogs", "blogs/Releases", 60, "노트 " * 4500, 4500, n=3)
+    _insert(db_path, "blogs", "blogs/Releases", 3, "노트 " * 35, 35, n=20)
+
+    assert scan_source_health(db_path) == []
+
+
+def test_collapse_hidden_by_a_few_long_posts_is_caught(db_path):
+    """반대로 긴 글 몇 건이 최근 창의 평균을 받쳐 붕괴를 가리지 못하게 한다."""
+    _insert(db_path, "blogs", "blogs/Mixed", 60, "본문 " * 2000, 2000, n=20)
+    _insert(db_path, "blogs", "blogs/Mixed", 3, "메뉴 바로가기", 30, n=15)
+    _insert(db_path, "blogs", "blogs/Mixed", 3, "본문 " * 5000, 5000, n=5)
+
+    issues = scan_source_health(db_path)
+    assert [i["kind"] for i in issues] == ["word_count_collapse"]
+    assert (issues[0]["baseline"], issues[0]["recent"]) == (2000, 30)
+
+
 def test_social_platforms_skip_word_count_check(db_path):
     """레딧 본문 길이는 사용자가 쓰는 대로라 분량 변동이 회귀가 아니다."""
     _insert(db_path, "reddit", "r/nextjs", 60, "긴 글 " * 150, 150, n=20)
