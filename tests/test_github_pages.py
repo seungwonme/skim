@@ -4,6 +4,9 @@
 노트를 감싸고(Claude Code, LangChain 릴리스 72건), 패치 릴리스의 짧은 노트는 60단어
 게이트에 걸려 빈 본문이 됐다(9건). 화면 문구도 60단어를 넘겨 게이트를 통과했고,
 GitHub PDF 링크 4건은 그 때문에 PDF 폴백까지 못 가고 화면 문구만 저장됐다.
+
+2026-10-01 백필에서 두 가지가 더 드러났다. 노트 영역이 250자보다 짧으면
+trafilatura가 버렸고(11건), PDF 보기 페이지는 메뉴째 추출돼 게이트를 통과했다(2건).
 """
 
 import unittest
@@ -15,6 +18,7 @@ from skim_core.enrichment import (
     enrich_with_content,
     extract_github_release_notes,
     github_raw_url,
+    is_github_pdf_url,
     is_github_release_url,
 )
 
@@ -49,6 +53,12 @@ RELEASE_PAGE = (
     f"<div data-test-selector='body-content' class='markdown-body my-3'>{NOTES_HTML}"
     "</div></body></html>"
 )
+# Claude Code v2.1.272의 노트 전문. trafilatura의 250자 최소 길이에 걸리던 길이다.
+SHORT_NOTES_HTML = (
+    "<h2>What's changed</h2><ul><li>Bug fixes and reliability improvements</li></ul>"
+)
+CLAUDE_RELEASE_URL = "https://github.com/anthropics/claude-code/releases/tag/v2.1.272"
+PDF_URL = "https://github.com/deepseek-ai/DeepSpec/blob/main/DSpark_paper.pdf"
 
 
 def _usable(body: str, min_words: int) -> bool:
@@ -94,6 +104,19 @@ class GithubUrlTests(unittest.TestCase):
         self.assertIsNone(github_raw_url("https://github.com/deepseek-ai/DeepSpec"))
         self.assertIsNone(github_raw_url("https://example.com/blob/main/a.pdf"))
 
+    def test_pdf_url(self):
+        self.assertTrue(is_github_pdf_url(PDF_URL))
+        self.assertTrue(
+            is_github_pdf_url(
+                "https://github.com/Votuko/steins-gate-mechanics/blob/main/"
+                "The%20Mechanics%20of%20Steins%20Gate%20v1.0.3.PDF?raw=true"
+            )
+        )
+        self.assertFalse(
+            is_github_pdf_url("https://github.com/a/b/blob/main/README.md")
+        )
+        self.assertFalse(is_github_pdf_url("https://example.com/paper.pdf"))
+
 
 class ReleaseNotesTests(unittest.TestCase):
     def test_notes_are_read_from_the_markdown_body_only(self):
@@ -109,6 +132,35 @@ class ReleaseNotesTests(unittest.TestCase):
         self.assertNotIn("another tab or window", body)
         self.assertNotIn("verified signature", body)
         self.assertNotIn("Notifications", body)
+
+    def test_short_notes_are_kept(self):
+        # 노트 영역은 이미 본문만 떼어 낸 조각이다. 페이지용 최소 길이를 걸면
+        # 한 줄짜리 패치 노트가 통째로 빠진다 (2026-10-01 백필에서 11건).
+        page = f"<html><body><div class='markdown-body'>{SHORT_NOTES_HTML}</div></body></html>"
+
+        with patch("skim_core.enrichment._http_fetch_html", return_value=page):
+            data = extract_github_release_notes(CLAUDE_RELEASE_URL)
+
+        self.assertIn(
+            "Bug fixes and reliability improvements", data["content_markdown"]
+        )
+
+    def test_short_subscribed_feed_notes_are_kept(self):
+        item = {
+            "platform": "blogs/Claude Code Releases",
+            "title": "v2.1.272",
+            "url": CLAUDE_RELEASE_URL,
+            "content_html": SHORT_NOTES_HTML,
+        }
+
+        with patch("skim_core.enrichment._http_fetch_html") as fetch:
+            enrich_with_content([item])
+
+        fetch.assert_not_called()
+        self.assertIn(
+            "Bug fixes and reliability improvements", item["content_markdown"]
+        )
+        self.assertEqual(item["enrichment_method"], "feed-content")
 
     def test_page_without_notes_returns_none(self):
         with patch(
@@ -185,16 +237,14 @@ class GithubPdfTests(unittest.TestCase):
             "https://github.com/MoonshotAI/Kimi-K3/raw/main/k3_tech_report.pdf",
         )
 
-    def test_chrome_only_viewer_page_falls_through_to_the_pdf(self):
-        url = "https://github.com/deepseek-ai/DeepSpec/blob/main/DSpark_paper.pdf"
-        item = {"platform": "hackernews", "title": "DeepSpec [pdf]", "url": url}
+    def test_viewer_page_is_never_extracted(self):
+        # 보기 페이지는 PDF를 iframe으로 띄워 HTML에 본문이 없다. 추출하면 GitHub 메뉴
+        # 381단어가 게이트를 통과해 PDF 대신 저장됐다 (Steins Gate, 2026-10-01).
+        item = {"platform": "hackernews", "title": "DeepSpec [pdf]", "url": PDF_URL}
         paper = " ".join(f"paper{i}" for i in range(150))
 
         with (
-            patch(
-                "skim_core.enrichment.extract_article_content",
-                return_value=({"content_markdown": TAB_CHROME}, "trafilatura", None),
-            ),
+            patch("skim_core.enrichment.extract_article_content") as ladder,
             patch(
                 "skim_core.enrichment.extract_pdf_text",
                 return_value={"content_markdown": paper, "word_count": 150},
@@ -202,9 +252,27 @@ class GithubPdfTests(unittest.TestCase):
         ):
             enrich_with_content([item])
 
-        pdf.assert_called_once()
+        ladder.assert_not_called()
+        self.assertEqual(
+            pdf.call_args.args[0],
+            "https://github.com/deepseek-ai/DeepSpec/raw/main/DSpark_paper.pdf",
+        )
         self.assertEqual(item["enrichment_method"], "pdf")
         self.assertEqual(item["content_markdown"], paper)
+
+    def test_pdf_gone_from_the_repo_is_marked_failed(self):
+        item = {"platform": "hackernews", "title": "DeepSpec [pdf]", "url": PDF_URL}
+
+        with (
+            patch("skim_core.enrichment.extract_article_content") as ladder,
+            patch("skim_core.enrichment.extract_pdf_text", return_value=None),
+        ):
+            enrich_with_content([item])
+
+        ladder.assert_not_called()
+        self.assertEqual(item["content_markdown"], "")
+        self.assertEqual(item["enrichment_method"], "failed")
+        self.assertEqual(item["enrichment_error"], "github pdf not found")
 
 
 if __name__ == "__main__":

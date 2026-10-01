@@ -47,6 +47,15 @@ RELEASE_PAGE = (
     "</div></body></html>"
 )
 PAPER = " ".join(f"paper{i}" for i in range(150))
+# 보기 페이지를 메뉴째 추출한 형태(2026-10-01 Steins Gate 행). 마크다운 링크 없이
+# 줄마다 메뉴 항목이 나열되고, 로그인 안내도 줄이 끊겨 있다.
+NAV_CHROME = (
+    "Skip to content\nNavigation Menu\nSign in\nAppearance settings\n"
+    + "\n".join(f"Menu item {i}" for i in range(100))
+    + "\nYou signed in with another tab or window.\nReload\nto refresh your session.\n"
+    "Dismiss alert\nVotuko\n/\nsteins-gate-mechanics\nPublic\n"
+    "Download raw file\nLoading\nViewer requires iframe."
+)
 
 
 class _DbCase(unittest.TestCase):
@@ -126,12 +135,19 @@ class TargetTests(_DbCase):
             {"original_url": RELEASE},
         )
         hn_pdf = self._insert("hackernews", PDF, CHROME)
+        # 메뉴 문구는 단어 수 게이트를 넘기지만 보기 페이지의 흔적이 남는다.
+        hn_menu_pdf = self._insert(
+            "hackernews", PDF, NAV_CHROME, {"enrichment_method": "trafilatura"}
+        )
         self._insert("hackernews", PDF, PAPER, {"enrichment_method": "trafilatura"})
         self._insert(
             "geeknews", "https://news.hada.io/topic?id=1", CHROME, {"original_url": PDF}
         )
 
-        self.assertEqual(self._target_ids(), {chrome_notes, empty, hn_release, hn_pdf})
+        self.assertEqual(
+            self._target_ids(),
+            {chrome_notes, empty, hn_release, hn_pdf, hn_menu_pdf},
+        )
 
     def test_hn_rows_take_the_aggregator_path(self):
         row = {
@@ -201,21 +217,65 @@ class BackfillTests(_DbCase):
             json.loads(row["extra"]), {"points": 10, "enrichment_method": "pdf"}
         )
 
-    def test_rows_that_cannot_be_refetched_stay_as_they_were(self):
-        row_id = self._insert("hackernews", PDF, CHROME)
+    def test_pdf_row_extracted_from_the_viewer_menu_gets_the_raw_file(self):
+        row_id = self._insert(
+            "hackernews", PDF, NAV_CHROME, {"enrichment_method": "trafilatura"}
+        )
+
+        filled, _ = self._run()
+
+        self.assertEqual(filled, 1)
+        self.assertEqual(self._row(row_id)["content_markdown"], PAPER)
+
+    def test_release_rows_that_cannot_be_refetched_stay_as_they_were(self):
+        body = f"{CHROME}\n\nnotes"
+        row_id = self._insert(
+            "blogs", RELEASE, body, {"enrichment_method": "defuddle"}, "blogs/LC"
+        )
         rows = backfill.fetch_targets(self.conn)
 
-        with (
-            patch(
-                "skim_core.enrichment.extract_article_content",
-                return_value=({"content_markdown": CHROME}, "trafilatura", None),
-            ),
-            patch("skim_core.enrichment.extract_pdf_text", return_value=None),
-        ):
+        with patch("skim_core.enrichment._http_fetch_html", return_value=None):
             filled = backfill.backfill(self.conn, rows, delay=0)
 
         self.assertEqual(filled, 0)
-        self.assertEqual(self._row(row_id)["content_markdown"], CHROME)
+        self.assertEqual(self._row(row_id)["content_markdown"], body)
+
+    def test_pdf_gone_from_the_repo_leaves_no_menu_behind(self):
+        # 저장소에서 지워진 PDF(DeepSpec). 남은 본문은 보기 페이지의 메뉴뿐이다.
+        row_id = self._insert(
+            "hackernews", PDF, NAV_CHROME, {"enrichment_method": "playwright"}
+        )
+
+        with patch("skim_core.enrichment.extract_pdf_text", return_value=None):
+            first = backfill.backfill(
+                self.conn, backfill.fetch_targets(self.conn), delay=0
+            )
+            again = backfill.backfill(
+                self.conn, backfill.fetch_targets(self.conn), delay=0
+            )
+
+        self.assertEqual((first, again), (1, 0))
+        row = self._row(row_id)
+        self.assertEqual(row["content_markdown"], "")
+        self.assertEqual(row["word_count"], 0)
+        self.assertEqual(
+            json.loads(row["extra"]),
+            {"enrichment_method": "failed", "enrichment_error": "github pdf not found"},
+        )
+
+    def test_pdf_row_without_page_chrome_is_not_cleared(self):
+        # 화면 문구가 아닌 본문(제출자 설명 등)은 PDF를 못 받아도 지우지 않는다.
+        row_id = self._insert(
+            "lobsters", PDF, "Interesting paper.", {"enrichment_method": "failed"}
+        )
+
+        with patch("skim_core.enrichment.extract_pdf_text", return_value=None):
+            filled = backfill.backfill(
+                self.conn, backfill.fetch_targets(self.conn), delay=0
+            )
+
+        self.assertEqual(filled, 0)
+        self.assertEqual(self._row(row_id)["content_markdown"], "Interesting paper.")
 
     def test_rerun_finds_nothing_left(self):
         self._insert(
