@@ -171,3 +171,4 @@ cython_debug/
 data/
 .env.backup
 .omc/
+.gstack/
