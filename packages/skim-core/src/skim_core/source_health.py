@@ -15,9 +15,11 @@ producthunt는 제품 태그라인이 본문의 최저선이고 팟캐스트 페
 
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Optional
+from statistics import median
+from typing import Dict, List, Optional, Tuple
 
 from .db import get_connection
 
@@ -40,7 +42,10 @@ BODY_RATE_DROP = 0.30
 # 소스 성격에 따른 오탐이 없다 (짧은 태그라인도 본문은 있는 것으로 센다).
 LOW_BODY_RATE = 0.50
 
-# 평균 단어 수가 기준선의 이 비율 아래로 내려가면 회귀로 본다.
+# 단어 수 중앙값이 기준선의 이 비율 아래로 내려가면 회귀로 본다.
+# 평균은 긴 글 몇 건에 끌려간다. LangChain Releases는 기준선 창의 알파 릴리스
+# 노트 3건(4,276~5,041단어)이 평균을 483단어로 올려, 평소처럼 30단어 안팎인 패치
+# 노트가 회귀로 잡혔다 (#46). 반대로 최근 창의 긴 글 몇 건이 붕괴를 가릴 수도 있다.
 WORD_COUNT_RATIO = 0.40
 
 # 분량 검사는 **추출기를 거치는 플랫폼에만** 적용한다.
@@ -67,6 +72,29 @@ def _iso_days_ago(days: int) -> str:
     return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
 
+def _word_counts(
+    conn, recent_cut: str, base_cut: str
+) -> Dict[Tuple[str, str], Tuple[List[int], List[int]]]:
+    """소스별 (최근 창 단어 수 목록, 기준선 창 단어 수 목록). 중앙값을 내려고 모은다."""
+    counts: Dict[Tuple[str, str], Tuple[List[int], List[int]]] = defaultdict(
+        lambda: ([], [])
+    )
+    for row in conn.execute(
+        """
+        SELECT platform,
+               COALESCE(NULLIF(source, ''), platform) AS src,
+               timestamp >= ? AS is_recent,
+               word_count
+        FROM posts
+        WHERE timestamp >= ? AND word_count IS NOT NULL
+        """,
+        (recent_cut, base_cut),
+    ):
+        recent, base = counts[(row["platform"], row["src"])]
+        (recent if row["is_recent"] else base).append(row["word_count"])
+    return counts
+
+
 def scan_source_health(
     db_path: Optional[Path] = None,
     *,
@@ -86,28 +114,16 @@ def scan_source_health(
                    SUM(CASE WHEN timestamp >= ? THEN 1 ELSE 0 END) AS recent_n,
                    SUM(CASE WHEN timestamp >= ? AND {_BODY_SQL} != '' THEN 1 ELSE 0 END)
                        AS recent_ok,
-                   AVG(CASE WHEN timestamp >= ? THEN word_count END) AS recent_words,
                    SUM(CASE WHEN timestamp < ? AND timestamp >= ? THEN 1 ELSE 0 END) AS base_n,
                    SUM(CASE WHEN timestamp < ? AND timestamp >= ? AND {_BODY_SQL} != ''
-                            THEN 1 ELSE 0 END) AS base_ok,
-                   AVG(CASE WHEN timestamp < ? AND timestamp >= ? THEN word_count END)
-                       AS base_words
+                            THEN 1 ELSE 0 END) AS base_ok
             FROM posts
             WHERE timestamp IS NOT NULL AND timestamp != ''
             GROUP BY platform, src
             """,
-            (
-                recent_cut,
-                recent_cut,
-                recent_cut,
-                recent_cut,
-                base_cut,
-                recent_cut,
-                base_cut,
-                recent_cut,
-                base_cut,
-            ),
+            (recent_cut, recent_cut, recent_cut, base_cut, recent_cut, base_cut),
         ).fetchall()
+        word_counts = _word_counts(conn, recent_cut, base_cut)
     finally:
         conn.close()
 
@@ -165,8 +181,9 @@ def scan_source_health(
         ):
             continue
 
-        recent_words = row["recent_words"]
-        base_words = row["base_words"]
+        recent_list, base_list = word_counts[(row["platform"], row["src"])]
+        recent_words = median(recent_list) if recent_list else None
+        base_words = median(base_list) if base_list else None
         if recent_words and base_words and recent_words < base_words * WORD_COUNT_RATIO:
             issues.append(
                 {
@@ -177,7 +194,7 @@ def scan_source_health(
                     "baseline": round(base_words, 1),
                     "recent_posts": recent_n,
                     "detail": (
-                        f"평균 본문 {base_words:.0f}단어 -> {recent_words:.0f}단어 "
+                        f"본문 중앙값 {base_words:.0f}단어 -> {recent_words:.0f}단어 "
                         f"(최근 {recent_n}건)"
                     ),
                 }
