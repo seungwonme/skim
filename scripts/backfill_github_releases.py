@@ -10,10 +10,12 @@
   - 애그리게이터 행 -> 댓글 섹션이 없는 행만 다룬다. 본문을 통째로 바꾸므로
     댓글이 붙은 행을 건드리면 댓글이 사라진다.
       * 릴리스 링크 -> 노트 영역
-      * PDF 링크이고 본문이 화면 문구뿐 -> raw 주소의 PDF
+      * PDF 링크이고 본문이 보기 페이지를 추출한 것(화면 문구가 남는다)이거나
+        쓸 수 없음 -> raw 주소의 PDF
 geeknews는 본문 형식(GN 요약, 원문, 댓글)이 달라 대상에서 뺀다.
 
-다시 받지 못한 행(저장소에서 지워진 PDF 등)은 그대로 둔다. 재실행해도 안전하다.
+다시 받지 못한 행은 그대로 둔다. 단 PDF가 저장소에서 지워진 행은 본문이 보기
+페이지의 화면 문구뿐이라 비운다. 재실행해도 안전하다.
 바꾼 행은 enrichment_method가 github-release, feed-content, pdf가 되어 대상에서 빠진다.
 
 사용:
@@ -34,7 +36,8 @@ from skim_core.enrichment import (
     _AGGREGATOR_PLATFORMS,
     _is_content_usable,
     enrich_with_content,
-    github_raw_url,
+    has_github_chrome,
+    is_github_pdf_url,
     is_github_release_url,
 )
 
@@ -80,8 +83,11 @@ def is_target(row) -> bool:
         return False
     if is_github_release_url(link):
         return True
-    is_pdf = github_raw_url(link) is not None and ".pdf" in link.lower()
-    return is_pdf and not _is_content_usable(
+    if not is_github_pdf_url(link):
+        return False
+    # 보기 페이지에는 PDF 본문이 없다. 화면 문구는 형태가 여럿이라(마크다운 링크,
+    # 메뉴 줄 나열) 단어 수 게이트만으로는 못 거른다. 흔적이 있으면 다시 받는다.
+    return has_github_chrome(body) or not _is_content_usable(
         {"content_markdown": body}, row["title"] or "", min_words=3
     )
 
@@ -115,13 +121,23 @@ def to_item(row: Dict) -> Dict:
 
 
 def updated_row(row: Dict, item: Dict) -> Optional[Dict]:
-    """다시 받은 본문으로 바꿀 값. 못 받았으면 None (행은 그대로 둔다)."""
+    """다시 받은 본문으로 바꿀 값. 바꿀 게 없으면 None (행은 그대로 둔다)."""
     body = (item.get("content_markdown") or "").strip()
-    if not body:
-        return None
     extra = _extra(row)
-    extra["enrichment_method"] = item.get("enrichment_method")
-    extra.pop("enrichment_error", None)
+    if body:
+        extra["enrichment_method"] = item.get("enrichment_method")
+        extra.pop("enrichment_error", None)
+    elif is_github_pdf_url(link_of(row)) and has_github_chrome(
+        row["content_markdown"] or ""
+    ):
+        # PDF가 저장소에서 지워졌다. 남은 본문은 보기 페이지의 화면 문구뿐이라,
+        # 두면 소비자가 GitHub 메뉴를 논문 본문으로 읽는다.
+        extra["enrichment_method"] = "failed"
+        extra["enrichment_error"] = (
+            item.get("enrichment_error") or "github pdf not found"
+        )
+    else:
+        return None
     return {
         "id": row["id"],
         "content_markdown": body,

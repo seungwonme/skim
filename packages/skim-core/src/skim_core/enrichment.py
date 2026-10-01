@@ -11,14 +11,19 @@ import signal
 import subprocess
 import tempfile
 import threading
+from functools import lru_cache
 from pathlib import Path
 from typing import List, Optional
+from urllib.parse import urlsplit
 
 import requests
 from bs4 import BeautifulSoup
 
 try:
     import trafilatura  # pylint: disable=import-error
+
+    # pylint: disable-next=import-error
+    from trafilatura.settings import use_config
 except ImportError:  # pragma: no cover — optional dependency
     trafilatura = None  # type: ignore[assignment]
 
@@ -231,10 +236,28 @@ _GITHUB_RELEASE_URL = re.compile(
 _GITHUB_BLOB_URL = re.compile(r"^(https?://github\.com/[^/]+/[^/]+)/blob/(.+)$")
 
 
-def _trafilatura_extract(html: str, url: str) -> Optional[dict]:
-    """trafilatura로 HTML → markdown 본문 추출. subprocess 없이 Python 내부 처리."""
+@lru_cache(maxsize=1)
+def _fragment_config():
+    """trafilatura는 250자보다 짧은 추출 결과를 버린다(MIN_EXTRACTED_SIZE).
+
+    페이지째 추출할 때 메뉴만 잡힌 결과를 거르는 값이라, 본문만 떼어 낸 조각(피드
+    본문, 릴리스 노트 영역)에는 맞지 않는다. 한 줄짜리 Claude Code 노트("Bug fixes
+    and reliability improvements") 11건이 이 값에 걸려 못 들어왔다 (#46). 조각에도
+    단어 수 게이트는 그대로 걸린다.
+    """
+    config = use_config()
+    config.set("DEFAULT", "MIN_EXTRACTED_SIZE", "1")
+    return config
+
+
+def _trafilatura_extract(html: str, url: str, fragment: bool = False) -> Optional[dict]:
+    """trafilatura로 HTML → markdown 본문 추출. subprocess 없이 Python 내부 처리.
+
+    fragment는 이미 본문만 떼어 낸 HTML이다. 짧은 결과도 버리지 않는다.
+    """
     if trafilatura is None:
         return None
+    options = {"config": _fragment_config()} if fragment else {}
     try:
         md = trafilatura.extract(
             html,
@@ -243,6 +266,7 @@ def _trafilatura_extract(html: str, url: str) -> Optional[dict]:
             include_comments=False,
             include_tables=True,
             no_fallback=False,
+            **options,
         )
     except Exception as e:  # pylint: disable=broad-except
         print(f"    [!] trafilatura 실패 ({url[:60]}...): {e}")
@@ -281,6 +305,11 @@ def _looks_like_placeholder_content(content: str) -> bool:
     )
 
 
+def has_github_chrome(content: str) -> bool:
+    """GitHub 보기 페이지를 추출한 흔적(로그인 안내, 저장소 머리말)이 있는지."""
+    return any(hint in content for hint in _GITHUB_CHROME_HINTS)
+
+
 def _words_outside_github_chrome(content: str) -> int:
     """GitHub 화면 문구를 뺀 단어 수. 글머리표처럼 기호만 남은 토큰은 세지 않는다."""
     stripped = _GITHUB_CHROME.sub(" ", content)
@@ -297,7 +326,7 @@ def _is_content_usable(data: Optional[dict], title: str, min_words: int = 60) ->
     if _looks_like_placeholder_content(content):
         return False
     word_count = data.get("word_count") or len(content.split())
-    if any(hint in content for hint in _GITHUB_CHROME_HINTS):
+    if has_github_chrome(content):
         word_count = _words_outside_github_chrome(content)
     if word_count < min_words:
         return False
@@ -387,7 +416,7 @@ def _extract_feed_content_html(item: dict) -> Optional[dict]:
     html = (item.get("content_html") or "").strip()
     if not html:
         return None
-    return _trafilatura_extract(html, item.get("url", ""))
+    return _trafilatura_extract(html, item.get("url", ""), fragment=True)
 
 
 def _extract_article_or_feed_content(
@@ -643,6 +672,13 @@ def github_raw_url(url: str) -> Optional[str]:
     return f"{match.group(1)}/raw/{match.group(2)}"
 
 
+def is_github_pdf_url(url: str) -> bool:
+    """저장소 안 PDF의 보기 페이지(blob)인지."""
+    if github_raw_url(url) is None:
+        return False
+    return urlsplit(url).path.lower().endswith(".pdf")
+
+
 def extract_github_release_notes(url: str) -> Optional[dict]:
     """릴리스 페이지에서 노트 영역(`.markdown-body`)만 마크다운으로 받는다.
 
@@ -655,7 +691,7 @@ def extract_github_release_notes(url: str) -> Optional[dict]:
     node = BeautifulSoup(html, "html.parser").select_one(".markdown-body")
     if node is None:
         return None
-    return _trafilatura_extract(str(node), url)
+    return _trafilatura_extract(str(node), url, fragment=True)
 
 
 def _github_release_notes(item: dict, url: str) -> tuple[Optional[dict], str]:
@@ -685,6 +721,25 @@ def _pdf_fallback(url: str, min_words: int = 60) -> Optional[dict]:
     return data or None
 
 
+def _github_content(
+    item: dict, url: str, min_words: int
+) -> Optional[tuple[Optional[dict], str, str]]:
+    """GitHub 릴리스와 PDF 링크는 보기 페이지를 추출하지 않는다 (#46).
+
+    (data, method, 못 받았을 때의 오류)를 돌려준다. 다른 링크면 None이다.
+    페이지째 추출하면 로그인 안내와 메뉴 문구가 본문 자리를 차지한다. 릴리스는 노트
+    영역만 본다. PDF 보기 페이지는 파일을 iframe으로 띄워 HTML에 본문이 없어서,
+    메뉴 문구 381단어가 게이트를 통과해 PDF 대신 저장됐다(Steins Gate). raw만 본다.
+    """
+    if is_github_release_url(url):
+        data, method = _github_release_notes(item, url)
+        return data, method, "release notes not found"
+    if is_github_pdf_url(url):
+        data = _pdf_fallback(url, min_words=min_words)
+        return data, ("pdf" if data else "failed"), "github pdf not found"
+    return None
+
+
 def _enrich_article_item(item: dict, url: str, min_words: int = 60) -> Optional[dict]:
     """기사형 소스 공통 본문 추출 (trafilatura 기반, defuddle hang 회피).
 
@@ -699,11 +754,12 @@ def _enrich_article_item(item: dict, url: str, min_words: int = 60) -> Optional[
     failed로 떨어진다.
     """
     target_url = item.get("enrich_url") or url
-    if is_github_release_url(target_url):
-        # 페이지째 추출로 넘어가지 않는다. 노트가 없으면 화면 문구만 받아 온다.
-        data, method = _github_release_notes(item, target_url)
+    github = _github_content(item, target_url, min_words)
+    if github is not None:
+        # 페이지째 추출로 넘어가지 않는다. 넘어가면 화면 문구만 받아 온다.
+        data, method, missing = github
         if data is None:
-            item.setdefault("enrichment_error", "release notes not found")
+            item.setdefault("enrichment_error", missing)
         item["enrichment_method"] = method
         print(f"    -> method={method}")
         return data
