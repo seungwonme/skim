@@ -14,9 +14,9 @@ import os
 import socket
 import sqlite3
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List, NamedTuple, Optional
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 from .paths import DATA_DIR
@@ -961,7 +961,8 @@ def finish_run(
 def platforms_with_recent_posts(days: int, db_path: Optional[Path] = None) -> set[str]:
     """최근 `days`일 안에 게시글이 들어온 적 있는 플랫폼 집합.
 
-    평소 수집되던 소스가 0건으로 떨어진 것을 회귀로 판정할 때 쓴다.
+    `crawl --catch-up`이 0건인 플랫폼의 체크포인트를 옮길지 정할 때 쓴다.
+    0건 회귀 경고는 `platform_post_cadence`로 판정한다.
     """
     conn = None
     try:
@@ -976,12 +977,71 @@ def platforms_with_recent_posts(days: int, db_path: Optional[Path] = None) -> se
         ).fetchall()
     except (sqlite3.Error, OSError) as exc:
         # 조용히 비활성화하면 이 기능이 막으려던 침묵을 그대로 재현한다.
-        print(f"[skim] 0건 회귀 판정 생략 (DB 조회 실패: {exc})", file=sys.stderr)
+        print(f"[skim] 최근 유입 이력 조회 생략 (DB 조회 실패: {exc})", file=sys.stderr)
         return set()
     finally:
         if conn is not None:
             conn.close()
     return {row[0] for row in rows}
+
+
+class PostCadence(NamedTuple):
+    """플랫폼 한 곳의 게시 간격 요약. 단위는 일이다."""
+
+    silent_days: float  # 마지막 글 이후 지난 시간
+    max_gap_days: float  # 창 안에서 가장 길었던 글 사이 간격
+    long_gaps: tuple[float, ...]  # 하루를 넘긴 글 사이 간격들. 긴 것부터
+
+
+def platform_post_cadence(
+    days: int, now: Optional[datetime] = None, db_path: Optional[Path] = None
+) -> dict[str, PostCadence]:
+    """최근 `days`일의 게시 시각으로 잰 플랫폼별 게시 간격.
+
+    0건이 고장인지, 원래 뜸한 소스의 조용한 날인지 가르는 데 쓴다 (#47).
+    수집 시각이 아니라 게시 시각을 본다. 미래로 찍힌 행(시간대가 어긋난 행)이
+    마지막 글로 잡히면 침묵을 못 재므로 뺀다. 글이 두 건 미만이라 간격이 없는
+    플랫폼은 결과에 없다. 하루를 넘긴 간격은 개수가 아니라 값으로 돌려준다.
+    회차가 보는 창의 길이가 플랫폼마다 달라서(producthunt 7일, arxiv 2~4일)
+    그 창보다 긴 공백이 몇 번인지는 부르는 쪽이 센다.
+    """
+    moment = (now or datetime.now(timezone.utc)).isoformat()
+    conn = None
+    try:
+        conn = get_connection(db_path)
+        rows = conn.execute(
+            """
+            SELECT platform,
+                   julianday(:now) - MAX(t) AS silent_days,
+                   MAX(gap) AS max_gap_days,
+                   json_group_array(gap) FILTER (WHERE gap > 1.0) AS long_gaps
+            FROM (
+                SELECT platform, t,
+                       t - LAG(t) OVER (PARTITION BY platform ORDER BY t) AS gap
+                FROM (
+                    SELECT platform, julianday(timestamp) AS t FROM posts
+                    WHERE julianday(timestamp)
+                          BETWEEN julianday(:now, :window) AND julianday(:now)
+                )
+            )
+            GROUP BY platform
+            HAVING COUNT(gap) > 0
+            """,
+            {"now": moment, "window": f"-{int(days)} days"},
+        ).fetchall()
+    except (sqlite3.Error, OSError) as exc:
+        # 조용히 비활성화하면 이 기능이 막으려던 침묵을 그대로 재현한다.
+        print(f"[skim] 0건 회귀 판정 생략 (DB 조회 실패: {exc})", file=sys.stderr)
+        return {}
+    finally:
+        if conn is not None:
+            conn.close()
+    return {
+        row[0]: PostCadence(
+            row[1], row[2], tuple(sorted(json.loads(row[3]), reverse=True))
+        )
+        for row in rows
+    }
 
 
 def load_crawl_checkpoints(db_path: Optional[Path] = None) -> dict[str, datetime]:

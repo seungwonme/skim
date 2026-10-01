@@ -10,7 +10,7 @@ import sys
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Annotated, List, Optional
+from typing import Annotated, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import typer
@@ -21,6 +21,7 @@ from skim_core.crawlers.auth.cdp import login as cdp_login
 from skim_core.crawlers.feed.geeknews import last_topic_block
 from skim_core.db import (
     POST_STATES,
+    PostCadence,
     backfill_blank_authors,
     backfill_canonical_urls,
     backup_db,
@@ -33,6 +34,7 @@ from skim_core.db import (
     list_tracked_sources,
     load_crawl_checkpoints,
     migrate_canonical_body,
+    platform_post_cadence,
     platforms_with_recent_posts,
     save_crawl_checkpoint,
     save_posts,
@@ -88,8 +90,21 @@ def min_lookback_days(platform: str, now: datetime) -> int:
     return MIN_LOOKBACK_DAYS.get(platform, 0)
 
 
-# 이 기간 안에 유입 이력이 있던 플랫폼이 0건이면 회귀로 본다.
-REGRESSION_LOOKBACK_DAYS = 14
+# `--catch-up`은 이 기간 안에 유입 이력이 있던 플랫폼이 0건이면 체크포인트를 옮기지
+# 않는다. 0건 회귀 경고보다 넓게 잡는다. 고장을 조용한 날로 잘못 보고 옮기면 그
+# 구간을 다시 보지 못하지만, 조용한 날에 안 옮기면 창이 하루 넓어질 뿐이다.
+CATCH_UP_HOLD_DAYS = 14
+
+# 0건 회귀 경고는 플랫폼마다 이 기간의 게시 간격으로 판정한다 (#47). 2~4일에 한 편
+# 올라오는 everyto의 공백 분포를 담을 만큼 길게 잡는다.
+CADENCE_LOOKBACK_DAYS = 60
+
+# 매일 들어오는 소스에도 회차를 놓친 날의 하루 넘는 공백이 남는다. 운영 DB
+# (2026-10-01) 실측으로 hackernews, blogs, youtube에 그런 공백이 1~2개 있었다.
+# 이번 회차가 본 창보다 긴 공백이 이 수 이하인 플랫폼은 그 창이 빈 적이 없던
+# 소스로 보고 0건을 바로 회귀로 본다. 넘는 플랫폼(everyto, ailabs, 2일 창인 수~금의
+# arxiv)은 원래 창이 비는 날이 있는 소스다.
+MISSED_RUN_ALLOWANCE = 2
 
 # `crawl --catch-up`이 거슬러 올라가는 상한(일). 피드는 대개 최근 수십 건만 실어서
 # 이보다 넓혀도 더 나오지 않고, 창이 넓을수록 이미 받은 글까지 다시 enrichment한다.
@@ -236,13 +251,22 @@ class _CrawlTally:
     total_saved: int = 0
     failed: List[str] = field(default_factory=list)
     completed: List[str] = field(default_factory=list)
-    empty: List[str] = field(default_factory=list)
+    # 0건으로 끝난 플랫폼 -> 크롤러가 본 창의 길이(일). 최근 N건을 받는 SNS는 None
+    empty: dict = field(default_factory=dict)
     # 플랫폼 -> (본문이 빈 글 수, 수집한 글 수)
     thin: dict = field(default_factory=dict)
 
 
 def _day_start(moment: datetime) -> datetime:
     return moment.astimezone(KST).replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _window_days(options: dict) -> Optional[float]:
+    """크롤러가 방금 본 시간 창의 길이(일). `--catch-up`이 넓힌 창도 그대로 잰다."""
+    since = options.get("since")
+    if since is None:
+        return None
+    return (datetime.now(KST) - since).total_seconds() / 86400
 
 
 @dataclass
@@ -258,7 +282,8 @@ class _CatchUp:
     now: datetime
     # 플랫폼 -> 체크포인트
     checkpoints: dict
-    # 최근 유입 이력이 있는 플랫폼. 0건 회귀 판정과 같은 기준이다.
+    # 최근 유입 이력이 있는 플랫폼. 0건 회귀 경고보다 넓은 기준이다
+    # (CATCH_UP_HOLD_DAYS 참고).
     recent: set
 
     def since(self, platform: str, default: datetime) -> datetime:
@@ -306,7 +331,7 @@ def _load_catch_up(now: datetime) -> Optional[_CatchUp]:
     return _CatchUp(
         now=now,
         checkpoints=checkpoints,
-        recent=platforms_with_recent_posts(REGRESSION_LOOKBACK_DAYS),
+        recent=platforms_with_recent_posts(CATCH_UP_HOLD_DAYS),
     )
 
 
@@ -382,7 +407,7 @@ def _crawl_platform(
 
     tally.completed.append(platform)
     if not posts:
-        tally.empty.append(platform)
+        tally.empty[platform] = _window_days(options)
         update_run_progress(run_id, platform, f"{platform} 수집된 게시글 없음")
         typer.echo("  -> 수집된 게시글 없음")
         if catch_up:
@@ -421,21 +446,55 @@ def _crawl_platform(
     return True
 
 
+def _zero_result_verdict(
+    platform: str, stats: Optional[PostCadence], window_days: Optional[float]
+) -> Optional[Tuple[bool, str]]:
+    """0건이 회귀인지와 그 근거. 게시 이력이 모자라 간격을 못 재면 None.
+
+    최근 유입 이력만 보던 때는 2~4일에 한 편 올라오는 everyto가 거의 매일 회귀로
+    잡혀 run이 상시 degraded였고, 9/24~29 arxiv 장애가 그 속에 묻혔다 (#47).
+    공백은 이번 회차가 본 창보다 긴 것만 센다. 7일 창으로 받는 producthunt는
+    하루 넘는 공백이 잦아도 7일이 빈 적은 없다. 하루 기준으로 세면 뜸한 소스로
+    분류돼, 고장 나도 침묵이 최장 공백을 넘기는 이틀 뒤에야 잡힌다.
+    """
+    if stats is None:
+        return None
+    silent = f"마지막 글 {stats.silent_days:.1f}일 전"
+    if platform in SNS_PLATFORMS or window_days is None:
+        # 시간 창이 아니라 최근 N건을 받는다. 0건이면 받는 경로가 깨진 것이다.
+        return True, f"{silent}, 최근 글을 개수로 받는 소스"
+    wider = sum(1 for gap in stats.long_gaps if gap > window_days)
+    if wider <= MISSED_RUN_ALLOWANCE:
+        return True, (
+            f"{silent}, {CADENCE_LOOKBACK_DAYS}일 동안 "
+            f"{window_days:.1f}일 창보다 긴 공백 {wider}번"
+        )
+    longest = f"{CADENCE_LOOKBACK_DAYS}일 최장 공백 {stats.max_gap_days:.1f}일"
+    if stats.silent_days > stats.max_gap_days:
+        return True, f"{silent}, {longest}보다 길다"
+    return False, f"{silent}, {longest} 안"
+
+
 def _report_crawl_warnings(tally: _CrawlTally) -> List[str]:
     """0건 회귀와 본문 추출 실패를 알린다. 회귀한 플랫폼을 돌려준다."""
-    # 크롤러가 깨져도 빈 리스트는 예외가 아니라 정상 종료로 보인다. 평소 들어오던
-    # 소스가 0건이면 회귀로 보고 드러낸다. 원래 저빈도인 소스까지 잡지 않도록
-    # 최근 유입 이력이 있는 플랫폼만 대상으로 한다.
-    regressed = (
-        sorted(set(tally.empty) & platforms_with_recent_posts(REGRESSION_LOOKBACK_DAYS))
-        if tally.empty
-        else []
-    )
-    if regressed:
-        typer.echo(
-            f"\n[!] 최근 {REGRESSION_LOOKBACK_DAYS}일간 수집되던 플랫폼이 0건입니다: "
-            f"{', '.join(regressed)}"
-        )
+    # 크롤러가 깨져도 빈 리스트는 예외가 아니라 정상 종료로 보인다. 0건을 드러내되,
+    # 원래 뜸한 소스의 조용한 날은 회귀로 잡지 않는다.
+    regressed: List[str] = []
+    notes = {True: [], False: []}
+    if tally.empty:
+        cadence = platform_post_cadence(CADENCE_LOOKBACK_DAYS)
+        for platform, window_days in sorted(tally.empty.items()):
+            verdict = _zero_result_verdict(platform, cadence.get(platform), window_days)
+            if verdict is None:
+                continue
+            is_regression, reason = verdict
+            notes[is_regression].append(f"{platform} ({reason})")
+            if is_regression:
+                regressed.append(platform)
+    if notes[True]:
+        typer.echo(f"\n[!] 0건 회귀: {'; '.join(notes[True])}")
+    if notes[False]:
+        typer.echo(f"\n정상 공백으로 본 0건: {'; '.join(notes[False])}")
 
     if tally.thin:
         detail = ", ".join(

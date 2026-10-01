@@ -74,7 +74,7 @@ def _crawl(tmp_path, results, *, now=NOW, catch_up=True, count=None, no_content=
 
 
 def _mark_recent(platform: str) -> None:
-    """최근 유입 이력을 만든다. 0건 회귀 판정과 같은 기준이다."""
+    """최근 유입 이력을 만든다. 0건이면 체크포인트를 옮기지 않는 기준이다."""
     db.init_db()
     conn = sqlite3.connect(db.DB_PATH)
     conn.execute(
