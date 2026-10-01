@@ -63,6 +63,12 @@ METRICS_INDEX_MAX_PAGES = 3
 # 토픽 요청과 따로 둔다.
 LISTING_REQUEST_INTERVAL_SECONDS = 3.0
 
+# 쌓인 조각 행의 원문 링크를 찾으려고 목록을 거슬러 읽을 때의 간격 (#33). 목록에도
+# 한도가 있는지는 아직 모른다. 토픽 페이지는 간격과 상관없이 30건 안팎에서 막혔는데,
+# 막힌 지 10분 뒤에 다시 30건이 통과한 적이 있다(2026-09-29 00:24). 한도가 10분
+# 창이어도 넘지 않게 30초에 한 장(10분에 20장)으로 읽는다.
+LISTING_SCAN_INTERVAL_SECONDS = 30.0
+
 # 홈(`/`)은 인기순이라 최근 글을 빠뜨린다(실측: RSS 50건 중 23건만 겹쳤다).
 # `/newest`는 시간순이라 RSS 창과 그대로 맞는다.
 GEEKNEWS_NEWEST_URL = f"{GEEKNEWS_URL}newest"
@@ -282,23 +288,13 @@ def fetch_listing_index(
     wanted = set(topic_ids or [])
     index: dict = {}
     for page in range(1, max_pages + 1):
-        url = GEEKNEWS_NEWEST_URL if page == 1 else f"{GEEKNEWS_NEWEST_URL}?page={page}"
         try:
-            resp = requests.get(url, headers=FEED_HEADERS, timeout=10)
+            resp = requests.get(_listing_url(page), headers=FEED_HEADERS, timeout=10)
             if _is_blocked(resp):
                 typer.echo(f"   [!] GeekNews 목록 {page}쪽이 막혔습니다.")
                 break
             resp.raise_for_status()
-            soup = BeautifulSoup(resp.text, "html.parser")
-            for row in soup.select(".topic_row"):
-                topic_id = row.get("data-topic-state-id")
-                if topic_id:
-                    index[topic_id] = {
-                        **_row_metrics(soup, topic_id),
-                        "original_url": _original_url_from(
-                            row.select_one(".topictitle a")
-                        ),
-                    }
+            index.update(_parse_listing(resp.text))
         except Exception as e:  # pylint: disable=broad-except
             typer.echo(f"   [!] GeekNews 목록 {page}쪽 수집 실패: {e}")
             break
@@ -307,6 +303,91 @@ def fetch_listing_index(
             break
         time.sleep(LISTING_REQUEST_INTERVAL_SECONDS)
     return index
+
+
+def _listing_url(page: int) -> str:
+    return GEEKNEWS_NEWEST_URL if page == 1 else f"{GEEKNEWS_NEWEST_URL}?page={page}"
+
+
+def _parse_listing(html: str) -> dict:
+    """목록 한 장에서 `{topic_id: {"likes", "comments", "original_url"}}`를 읽는다."""
+    soup = BeautifulSoup(html, "html.parser")
+    index: dict = {}
+    for row in soup.select(".topic_row"):
+        topic_id = row.get("data-topic-state-id")
+        if topic_id:
+            index[topic_id] = {
+                **_row_metrics(soup, topic_id),
+                "original_url": _original_url_from(row.select_one(".topictitle a")),
+            }
+    return index
+
+
+class ListingScan:
+    """`/newest`를 start_page부터 한 장씩 거슬러 읽는다 (#33).
+
+    크롤은 목록을 3장까지만 읽는다. 토픽 페이지가 막혔던 동안 쌓인 조각 행의 원문
+    링크를 찾으려면 몇 주 치를 거슬러 가야 하는데, 몇 장까지 가는지와 목록에도 한도가
+    있는지는 아직 모른다. 그래서 토픽 페이지와 같은 규칙으로 물러난다. 창 안에 차단
+    기록이 있으면 요청하지 않고, 한 번 막히면 바로 멈추고 차단 시각을 한도 파일에
+    적어 다른 프로세스도 요청하지 않게 한다. 멈춘 이유는 `stop`에 남는다.
+    """
+
+    def __init__(
+        self,
+        start_page: int = 1,
+        max_pages: int = 1,
+        interval: float = LISTING_SCAN_INTERVAL_SECONDS,
+    ):
+        self.start_page = max(1, start_page)
+        self.max_pages = max_pages
+        self.interval = interval
+        self.last_page = 0
+        self.stop = ""
+
+    def pages(self):
+        """(쪽 번호, 그 쪽의 글)을 낸다. 쪽 사이 간격은 부르는 쪽이 쓴 시간을 뺀 만큼만 쉰다."""
+        if last_topic_block() is not None:
+            self.stop = "paused"
+            typer.echo(f"   [!] {topic_pause_reason()} 목록도 읽지 않습니다.")
+            return
+        sent = None
+        for page in range(self.start_page, self.start_page + self.max_pages):
+            if sent is not None:
+                time.sleep(max(0.0, self.interval - (time.monotonic() - sent)))
+            sent = time.monotonic()
+            rows = self._fetch(page)
+            if rows is None:
+                return
+            self.last_page = page
+            if not rows:
+                self.stop = "empty"
+                return
+            yield page, rows
+        self.stop = "pages"
+
+    def _fetch(self, page: int) -> Optional[dict]:
+        """목록 한 장. 막히거나 실패하면 stop을 적고 None."""
+        try:
+            resp = requests.get(_listing_url(page), headers=FEED_HEADERS, timeout=10)
+        except requests.RequestException as e:
+            typer.echo(f"   [!] GeekNews 목록 {page}쪽 요청 실패: {e}")
+            self.stop = "error"
+            return None
+        kind = _block_kind(resp)
+        if kind:
+            _spend_topic_budget(time.time(), blocked=True)
+            typer.echo(
+                f"   [!] GeekNews 목록 {page}쪽이 막혔습니다 ({kind}). "
+                f"{topic_pause_reason()}"
+            )
+            self.stop = "blocked"
+            return None
+        if resp.status_code != 200:
+            typer.echo(f"   [!] GeekNews 목록 {page}쪽 HTTP {resp.status_code}")
+            self.stop = "error"
+            return None
+        return _parse_listing(resp.text)
 
 
 @dataclass

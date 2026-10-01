@@ -69,6 +69,7 @@ uv run skim doctor --strict     # warning 있으면 exit 1
 uv run python scripts/backfill_geeknews_topics.py --dry-run    # GN 요약, 댓글이 빠진 행 수
 uv run python scripts/backfill_geeknews_topics.py --limit 100  # 남은 토픽 한도만큼 채움
 uv run python scripts/backfill_github_releases.py --dry-run   # GitHub 릴리스 노트, PDF 본문 재수집 대상 (#46)
+uv run python scripts/recover_geeknews_originals.py --dry-run # GN 조각 행 원문 복구 대상 (#33, 데일리 직후에 실행)
 
 # 기타
 uv run skim platforms           # 지원 플랫폼 목록
@@ -289,6 +290,10 @@ everyto가 거의 매일 회귀로 잡혀 run이 상시 `degraded`였고, 그 �
   생긴다. 원문은 붙어 있으므로 doctor는 보여만 준다. doctor 경고는 두 가지다: 원문조차
   없는 "피드 요약 조각뿐인 본문"이 최근 7일 20%를 넘을 때, 그리고 한도 파일에 차단이
   기록됐을 때(이때는 probe도 보내지 않는다).
+  막혔던 기간에 쌓인 조각 행은 `scripts/recover_geeknews_originals.py`가 목록을
+  거슬러 읽어 원문을 붙인다(#33). 목록도 같은 규칙으로 물러난다(`geeknews.ListingScan`:
+  차단 기록이 있으면 시작하지 않고, 막히면 멈추고 기록한다). 목록에 한도가 있는지는
+  아직 모르므로 데일리 직후에 돌린다.
 - **서브피드 이름을 `platform`에 넣지 않는다.** `db.py`는 Post의 `platform`을 인자보다
   우선하므로, `fetch_feed`가 넣는 피드 이름(`hackernews/show`)을 그대로 넘기면 DB에
   별도 플랫폼 행이 생긴다. 서브피드는 `source`에 남긴다 (blogs가 쓰는 방식).
