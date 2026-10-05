@@ -403,8 +403,11 @@ everyto가 거의 매일 회귀로 잡혀 run이 상시 `degraded`였고, 그 �
 ## Git Convention
 
 - 브랜치: `type/[branch/]description[-#issue]` (GitFlow)
-- 커밋: `<type>(<scope>): <subject>` (Conventional Commits)
-- type: feat, fix, docs, style, refactor, test, chore
+- 커밋: `<type>(<scope>): <subject>` (Conventional Commits, type은 feat/fix/docs/style/refactor/test/chore)
+- PR은 에이전트가 diff를 직접 리뷰하고, pre-push 훅(`just test && just build`)과 CI `validate`가 통과하면
+  `gh pr merge --merge --delete-branch`로 머지한다. 훅과 CI가 회귀를 잡으므로 전역 규칙의 사용자 리뷰 대기는
+  이 저장소에 적용하지 않는다.
+- Claude Code 자동 모드 판정기가 머지를 막으면 우회하지 않고 PR 링크와 함께 사용자에게 넘긴다.
 
 ## Runtime Auth
 
