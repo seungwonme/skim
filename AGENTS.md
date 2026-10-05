@@ -373,6 +373,26 @@ everyto가 거의 매일 회귀로 잡혀 run이 상시 `degraded`였고, 그 �
 2. `packages/skim-core/src/skim_core/crawlers/__init__.py`의 `REGISTRY`에 등록
 3. Feed 크롤러면 `packages/skim-core/src/skim_core/feed_config.py`에 소스 추가
 
+## 데일리 운영
+
+- `scripts/run_daily_feed.sh`가 하루 한 번 돈다. 이 맥에서는 launchd `com.seungwonan.skim-daily`
+  (`~/Library/LaunchAgents/`, 매일 00:02)가 부른다. 등록이 저장소 밖이라 diff에 남지 않으므로
+  일정이나 경로를 바꾸면 이 절도 함께 고친다.
+- 순서는 네트워크 대기(최대 10분), `skim backup --keep 3`, `crawl all --days 1 --catch-up`,
+  지표 백필, GeekNews 토픽 백필, `doctor --strict`다. `data/daily/.run.lock`으로 겹쳐 돌지 않는다.
+- 회차 기록은 `data/daily/cron.log`에 `======= start <로컬 시각> =======`부터
+  `======= end ... exit=N =======`까지 쌓인다. 10MB를 넘으면 `cron.log.1`로 돌린다.
+- `end` 줄의 `exit`는 크롤 결과다(네트워크 대기에서 포기해도 1). 백필과 doctor 결과는
+  그 위 `지표 백필 exit=`, `GeekNews 토픽 백필 exit=`, `doctor exit=` 줄에 따로 찍힌다.
+  `end` 줄 없이 다음 `start`가 오는 구간은 프로세스가 중간에 죽은 회차다.
+- 마지막 회차의 `doctor --strict` 결과는 `data/daily/doctor.txt`에 따로 남는다.
+- 손으로 돌린 `skim crawl`은 `cron.log`에 남지 않고 `runs` 테이블에만 남는다.
+- plist의 `StandardOutPath`(`~/.local/log/skim-daily.log`)는 스크립트가 출력을 `cron.log`로
+  돌리기 전에 죽을 때만 쌓인다. 비어 있는 게 정상이다.
+- DB 시각(`runs.started_at`, `posts.crawled_at`)은 UTC이고 `cron.log`는 로컬 시각이다.
+  00:02 KST 회차는 DB에 전날 15:02로 찍힌다. `crawled_at`은 처음 저장된 시각이라 upsert가 바꾸지 않는다.
+- 상태 점검 절차와 경고 판정은 skim 스킬의 `.claude/skills/skim/references/health-signals.md`에 있다.
+
 ## Docs Hygiene
 
 - `README.md`는 사람용 설치, 실행, 구조 요약만 둔다.
