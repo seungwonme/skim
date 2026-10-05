@@ -4,6 +4,8 @@
 
 ## 절차
 
+아래 SQL은 `sqlite3 data/skim.db "<SQL>"`로 돌린다. `-readonly`나 `mode=ro`는 WAL 보조 파일(`-shm`)이 없으면 열리지 않을 수 있다. SELECT만 하면 크롤 중에도 쓰기를 막지 않는다.
+
 1. `uv run skim doctor --strict`를 돌린다. exit 0이면 doctor가 아는 경고는 없다. 단 회차 경고는 최근 3회차만 보므로, 그 앞 회차는 2단계에서 따로 본다.
 2. doctor의 `recent runs`는 최근 5회차뿐이다. 지난 일주일을 보려면 `runs` 테이블을 직접 읽는다.
 
@@ -24,17 +26,15 @@ GROUP BY platform, day ORDER BY platform, day;
 
 6. 아래 두 표로 실제 문제와 정상 경고를 나눈다.
 
-SQL은 `sqlite3 data/skim.db "<SQL>"`로 돌린다. `-readonly`나 `mode=ro`는 WAL 보조 파일(`-shm`)이 없으면 열리지 않을 수 있다. SELECT만 하면 크롤 중에도 쓰기를 막지 않는다.
-
 ## 실제 문제
 
-| 신호 | 원인을 찾을 곳 |
+| 신호 | 볼 곳 |
 |---|---|
 | `doctor --strict` exit 1 | 출력의 warning 줄 |
 | 회차 `failed` 또는 `degraded` | `cron.log`의 그 회차 구간. 원인이 아래 정상 경고에 해당하면 복구 여부만 보고한다 |
 | 회차 `interrupted` | 프로세스가 중간에 죽었다. `current_platform`이 중단 지점이고, `cron.log`에서 `end` 줄 없는 구간의 마지막 줄을 본다. 거기에 원인이 없으면 `pmset -g log`에서 그 시각의 재시작이나 종료를 본다 |
 | run summary의 `0건 회귀: <platform>` | 판정 기준은 `AGENTS.md`의 `#### 0건을 회귀로 볼 때` |
-| `sessions:`에서 SNS 세션이 빠짐 | `uv run skim login <platform>` |
+| `sessions:`에서 SNS 세션이 빠짐 | `data/sessions/`에 그 플랫폼 파일이 있는지 본다. 재로그인(`uv run skim login <platform>`)은 사용자에게 확인받고 한다 |
 | GeekNews "피드 요약 조각뿐인 본문" 경고, 한도 파일의 차단 기록 | `AGENTS.md`의 "요청량으로 막히는 호스트" 항목 |
 
 ## 정상 경고
@@ -45,7 +45,7 @@ doctor가 경고로 올리지 않았다면 아래는 그 자체로 문제가 아
 |---|---|
 | GeekNews `partial`이 최근 7일의 절반을 넘음 | 하루 글 수가 토픽 요청 한도보다 많다. 원문은 붙어 있다 |
 | youtube `missing_text`가 큼 | `youtube-history` 백필 행은 사용자가 요청할 때만 자막을 채운다 |
-| hackernews 본문 누락 몇 건 | 원문 사이트가 403, 402를 주거나 PDF 다운로드로 끝난다 |
+| hackernews 본문 누락 몇 건 | 원문 사이트가 401, 402, 403을 주거나 PDF 다운로드로 끝난다 |
 | `hnrss ... Algolia로 폴백합니다` | hnrss 장애를 Algolia가 메웠다 |
 | youtube의 `RSS 실패 N` | 창 안에 새 영상이 없는 채널도 실패로 센다. 실제 피드 실패 수가 아니다 |
 | `NameResolutionError`로 한 회차 실패, 다음 회차 성공 | 회차 중 네트워크가 끊겼고 catch-up이 채웠다 |
