@@ -34,6 +34,7 @@ GROUP BY platform, day ORDER BY platform, day;
 | 회차 `failed` 또는 `degraded` | `cron.log`의 그 회차 구간. 원인이 아래 정상 경고에 해당하면 복구 여부만 보고한다 |
 | 회차 `interrupted` | 프로세스가 중간에 죽었다. `current_platform`이 중단 지점이고, `cron.log`에서 `end` 줄 없는 구간의 마지막 줄을 본다. 거기에 원인이 없으면 `pmset -g log`에서 그 시각의 재시작이나 종료를 본다 |
 | run summary의 `0건 회귀: <platform>` | 판정 기준은 `AGENTS.md`의 `#### 0건을 회귀로 볼 때` |
+| `댓글 수집 실패`가 평소(0~4건)보다 크게 뜀 | 세션 만료나 네트워크를 의심한다. 같은 회차 다른 플랫폼의 `[!]` 줄과 `sessions:`를 본다 |
 | `sessions:`에서 SNS 세션이 빠짐 | `data/sessions/`에 그 플랫폼 파일이 있는지 본다. 재로그인(`uv run skim login <platform>`)은 사용자에게 확인받고 한다 |
 | GeekNews "피드 요약 조각뿐인 본문" 경고, 한도 파일의 차단 기록 | `AGENTS.md`의 "요청량으로 막히는 호스트" 항목 |
 
@@ -48,6 +49,8 @@ doctor가 경고로 올리지 않았다면 아래는 그 자체로 문제가 아
 | hackernews 본문 누락 몇 건 | 원문 사이트가 401, 402, 403을 주거나 PDF 다운로드로 끝난다 |
 | `hnrss ... Algolia로 폴백합니다` | hnrss 장애를 Algolia가 메웠다 |
 | youtube의 `RSS 실패 N` | 창 안에 새 영상이 없는 채널도 실패로 센다. 실제 피드 실패 수가 아니다 |
+| `hackernews/show` 또는 `/ask`의 `피드 상한 30건에 닿았습니다` | 점수 문턱 없이 최신순 30건만 받는 설정이라 창 앞쪽 글이 빠진다. 대부분 저점수 글이지만 수집 시점에 30점 미만이던 고득점 글도 빠질 수 있어, 보고에는 알려진 한계로 적는다 |
+| LinkedIn, Reddit의 `댓글 수집 실패 N건` (평소 0~4건) | 댓글이 삭제되거나 숨겨져 보여줄 것이 없는 글도 실패로 센다. `comments`가 0보다 큰데 댓글 섹션이 없는 행의 `comments`가 1~2면 이 경우다 |
 | `NameResolutionError`로 한 회차 실패, 다음 회차 성공 | 회차 중 네트워크가 끊겼고 catch-up이 채웠다 |
 | `start`와 `end` 사이가 몇 시간 | 맥이 잠든 채 DarkWake 때만 진행했다. `pmset -g log`의 Sleep, DarkWake 줄로 확인한다 |
 
