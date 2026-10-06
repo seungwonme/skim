@@ -113,11 +113,10 @@ uv run skim source import sources.opml --platform blogs
 
 ## Agent Skill
 
-This repository includes Claude/agent skills at `.claude/skills/skim/SKILL.md` and `.agents/skills/skim/SKILL.md`. They help an agent inspect Skim health, refresh sources, run local research, check coverage, triage crawler issues, and prepare source bundles under the system temp directory (`$TMPDIR/skim/...`) from a Skim checkout.
+This repository includes an agent skill at `.agents/skills/skim/SKILL.md`; `.claude/skills/skim` is a relative link to it so Claude Code and other agents read the same copy. It helps an agent inspect Skim health, refresh sources, run local research, check coverage, triage crawler issues, and prepare source bundles under the system temp directory (`$TMPDIR/skim/...`) from a Skim checkout.
 
 ```bash
 claude plugin validate .
-python3 ~/.agents/skills/shared/skill-manager/scripts/quick_validate.py .claude/skills/skim
 python3 ~/.agents/skills/shared/skill-manager/scripts/quick_validate.py .agents/skills/skim
 ```
 

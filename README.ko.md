@@ -112,11 +112,10 @@ uv run skim source import sources.opml --platform blogs
 
 ## Agent Skill
 
-이 repository에는 Claude/agent skill이 `.claude/skills/skim/SKILL.md`와 `.agents/skills/skim/SKILL.md`에 포함되어 있습니다. 에이전트가 Skim checkout에서 상태 확인, source refresh, local research, coverage 점검, crawler triage, `/tmp/skim/...` source bundle 생성을 수행할 때 사용합니다.
+이 repository에는 agent skill이 `.agents/skills/skim/SKILL.md`에 있습니다. `.claude/skills/skim`은 이 폴더를 가리키는 상대 링크라 Claude Code와 다른 에이전트가 같은 사본을 읽습니다. 에이전트가 Skim checkout에서 상태 확인, source refresh, local research, coverage 점검, crawler triage, 시스템 임시 디렉터리(`$TMPDIR/skim/...`) 아래 source bundle 생성을 수행할 때 사용합니다.
 
 ```bash
 claude plugin validate .
-python3 ~/.agents/skills/shared/skill-manager/scripts/quick_validate.py .claude/skills/skim
 python3 ~/.agents/skills/shared/skill-manager/scripts/quick_validate.py .agents/skills/skim
 ```
 
