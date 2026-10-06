@@ -42,6 +42,19 @@ HACKERNEWS_ALGOLIA_FALLBACK = (
     ("hackernews/ask", "story,ask_hn", "", HACKERNEWS_SHOW_ASK_COUNT),
 )
 
+# 피드 상한(30건)에 닿은 Show/Ask HN은 최신순으로만 잘려, 창 앞쪽에서 점수가 오른
+# 글이 빠진다. 그런 피드에 한해 창 전체를 Algolia로 훑어 이 점수 이상인 글을 보탠다.
+# 문턱은 최근 7일 Show/Ask HN의 점수 분포로 정했다. 30점 미만 구간에서 5점은 하루
+# 평균 19건(최대 29), 8점은 평균 7건(최대 12)이 나왔고, 하루 15건 안팎으로 묶는
+# 8점을 골랐다. 30점 이상은 newest 피드가 이미 받는다. 점수는 사후 측정이라 수집
+# 시점에는 조금 더 낮다.
+HACKERNEWS_SUPPLEMENT_MIN_POINTS = 8
+HACKERNEWS_SUPPLEMENT_LIMIT = 50
+HACKERNEWS_SUPPLEMENT_TAGS = {
+    "hackernews/show": "story,show_hn",
+    "hackernews/ask": "story,ask_hn",
+}
+
 # GeekNews (news.hada.io) - Atom 1.0 피드
 GEEKNEWS_RSS = "https://news.hada.io/rss/news"
 

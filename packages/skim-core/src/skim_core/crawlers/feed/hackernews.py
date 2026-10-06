@@ -19,6 +19,9 @@ from ...feed_config import (
     HACKERNEWS_ALGOLIA_FALLBACK,
     HACKERNEWS_FEED_LIMITS,
     HACKERNEWS_FEEDS,
+    HACKERNEWS_SUPPLEMENT_LIMIT,
+    HACKERNEWS_SUPPLEMENT_MIN_POINTS,
+    HACKERNEWS_SUPPLEMENT_TAGS,
 )
 from ...feed_utils import (
     FEED_TIMEOUT_SECONDS,
@@ -172,6 +175,13 @@ def fetch_hn_metrics(story_id: str) -> Optional[dict]:
     return {"likes": data.get("score"), "comments": data.get("descendants")}
 
 
+def item_story_id(item: dict) -> Optional[str]:
+    """피드·Algolia item dict에서 HN story id를 뽑는다."""
+    haystack = f"{item.get('external_id') or ''} {item.get('url') or ''}"
+    match = re.search(r"item\?id=(\d+)", haystack)
+    return match.group(1) if match else None
+
+
 def _algolia_item(hit: dict, source_name: str) -> Optional[dict]:
     """Algolia hit을 fetch_feed가 만드는 item dict와 같은 모양으로 바꾼다."""
     story_id = hit.get("objectID")
@@ -227,6 +237,53 @@ def fetch_algolia_fallback(since: datetime, only: Optional[set] = None) -> List[
     return items
 
 
+def fetch_algolia_supplement(
+    since: datetime,
+    source_name: str,
+    known: Optional[List[dict]] = None,
+    min_points: int = HACKERNEWS_SUPPLEMENT_MIN_POINTS,
+) -> List[dict]:
+    """상한에 닿은 Show/Ask HN 피드가 놓친 고득점 글을 창 전체에서 보탠다.
+
+    hnrss show/ask는 점수 문턱 없이 최신순으로 잘려, 창 앞쪽에서 점수가 오른 글이
+    빠진다. 이미 받은 글(`known`)은 story id와 링크로 걸러낸다. 실패해도 피드
+    결과는 그대로 두고 빈 목록을 돌려준다.
+    """
+    tags = HACKERNEWS_SUPPLEMENT_TAGS.get(source_name)
+    if not tags:
+        return []
+    if since.tzinfo is None:
+        since = since.replace(tzinfo=KST)
+    numeric = f"created_at_i>={int(since.timestamp())},points>={min_points}"
+    try:
+        resp = _ALGOLIA_SESSION.get(
+            HN_ALGOLIA_SEARCH_BY_DATE,
+            params={
+                "tags": tags,
+                "numericFilters": numeric,
+                "hitsPerPage": HACKERNEWS_SUPPLEMENT_LIMIT,
+            },
+            timeout=FEED_TIMEOUT_SECONDS,
+        )
+        resp.raise_for_status()
+        hits = resp.json().get("hits") or []
+    except Exception as e:  # pylint: disable=broad-except
+        typer.echo(f"   [!] {source_name}: Algolia 보충 실패 - {e}")
+        return []
+
+    seen_ids = {item_story_id(x) for x in known or []}
+    seen_links = {x.get("url") for x in known or [] if x.get("url")}
+    items: List[dict] = []
+    for hit in hits:
+        item = _algolia_item(hit, source_name)
+        if not item:
+            continue
+        if item_story_id(item) in seen_ids or item["url"] in seen_links:
+            continue
+        items.append(item)
+    return items
+
+
 def compose_hn_body(article_md: str, discussion: Optional[dict]) -> str:
     """스토리 텍스트 + 링크 원문 + 댓글을 하나의 정본 본문으로 합친다."""
     parts = []
@@ -272,14 +329,25 @@ class HackerNewsCrawler:
                 # 피드 한 장이 창을 다 못 덮으면 그 뒤 글은 어느 경로로도 안 잡힌다.
                 # 조용히 넘어가면 "그날 HN에 이만큼밖에 없었다"로 읽히므로 남긴다.
                 limit = HACKERNEWS_FEED_LIMITS.get(name, 0)
-                if limit and len(fetched) >= limit:
-                    typer.echo(
-                        f"   [!] {name}: 피드 상한 {limit}건에 닿았습니다. "
-                        "창 안의 더 오래된 글은 수집되지 않습니다."
-                    )
                 if not fetched:
                     empty_feeds.add(name)
                 collect(fetched)
+                if limit and len(fetched) >= limit:
+                    if name in HACKERNEWS_SUPPLEMENT_TAGS:
+                        # show/ask는 최신순으로 잘리므로 창 앞쪽의 고득점 글을 보탠다.
+                        extra = fetch_algolia_supplement(since, name, known=items)
+                        collect(extra)
+                        typer.echo(
+                            f"   [!] {name}: 피드 상한 {limit}건에 닿았습니다. "
+                            f"{HACKERNEWS_SUPPLEMENT_MIN_POINTS}점 이상 "
+                            f"{len(extra)}건을 Algolia로 보충했습니다. "
+                            "그 미만인 더 오래된 글은 수집되지 않습니다."
+                        )
+                    else:
+                        typer.echo(
+                            f"   [!] {name}: 피드 상한 {limit}건에 닿았습니다. "
+                            "창 안의 더 오래된 글은 수집되지 않습니다."
+                        )
 
             if empty_feeds:
                 # 0건은 글이 없어서가 아니라 hnrss가 죽어서다. HN은 하루 창에
@@ -378,9 +446,7 @@ class HackerNewsCrawler:
 
     @staticmethod
     def _story_id(item: dict) -> Optional[str]:
-        haystack = f"{item.get('external_id') or ''} {item.get('url') or ''}"
-        match = re.search(r"item\?id=(\d+)", haystack)
-        return match.group(1) if match else None
+        return item_story_id(item)
 
     def _item_to_post(self, item: dict) -> Post:
         story_id = self._story_id(item)
