@@ -115,6 +115,12 @@ CATCH_UP_MAX_DAYS = 7
 # 섞여 지금 고장났는지 알 수 없다.
 RECENT_THIN_LOOKBACK_DAYS = 7
 
+# doctor가 회차 경고를 판정하는 창(일)과 경고 대상 상태. 이 창 안에서 비성공 회차
+# 뒤에 `success`가 없을 때만 경고한다. 복구된 회차까지 경고하면 `--strict`가 며칠씩
+# 붉게 남는다 (#62).
+RUN_ATTENTION_DAYS = 7
+RUN_ATTENTION_STATUSES = {"failed", "interrupted", "running", "degraded"}
+
 # 본문이 피드 요약 조각뿐인 행. 비어 있지는 않아서 위 결손 집계에 안 잡힌다.
 # GeekNews 9월 저장분 89%가 이 상태였는데 doctor는 `2/268`로만 보였다 (#29).
 _EXTRA_JSON_SQL = "COALESCE(NULLIF(TRIM(extra), ''), '{}')"
@@ -186,6 +192,27 @@ def _cutoff(days: int) -> str:
     return (datetime.now(timezone.utc) - timedelta(days=days)).strftime(
         "%Y-%m-%d %H:%M:%S"
     )
+
+
+def _parse_db_time(value: Optional[str]) -> Optional[datetime]:
+    """SQLite `datetime('now')`가 저장한 UTC 문자열을 읽는다. 못 읽으면 None."""
+    try:
+        return datetime.strptime(str(value), "%Y-%m-%d %H:%M:%S").replace(
+            tzinfo=timezone.utc
+        )
+    except ValueError:
+        return None
+
+
+def _local_time(value: Optional[str]) -> str:
+    """DB의 UTC 시각을 시스템 로컬 시각 + 시각대 약어로 바꾼다 (표시 전용).
+
+    저장 형식은 그대로 UTC다. 못 읽는 값은 원문을 그대로 돌려준다.
+    """
+    parsed = _parse_db_time(value)
+    if parsed is None:
+        return str(value)
+    return parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
 
 
 def _slug(value: str) -> str:
@@ -807,8 +834,14 @@ def _doctor_sessions(session_dir: Path, platform: Optional[str]) -> List[dict]:
     ]
 
 
-def _doctor_read_db(report: dict, db_path: Path, platform: Optional[str]) -> None:
-    """플랫폼별 건수, 최근 run, 최근 본문 결손을 report에 채운다."""
+def _doctor_read_db(
+    report: dict, db_path: Path, platform: Optional[str], runs_limit: int = 5
+) -> None:
+    """플랫폼별 건수, 최근 run, 최근 본문 결손을 report에 채운다.
+
+    `runs`는 목록에 보일 최근 회차와 경고 판정 창(`RUN_ATTENTION_DAYS`) 안의 모든
+    회차를 합친 것이다. 목록 길이는 출력 단계가 `--runs`로 자른다.
+    """
     platform_filter = "WHERE platform = ?" if platform else ""
     params = [platform] if platform else []
     conn = get_connection(db_path)
@@ -831,12 +864,16 @@ def _doctor_read_db(report: dict, db_path: Path, platform: Optional[str]) -> Non
         ]
         report["runs"] = [
             dict(row)
-            for row in conn.execute("""
+            for row in conn.execute(
+                f"""
                 SELECT id, status, current_platform, started_at, finished_at, summary
                 FROM runs
+                WHERE id IN (SELECT id FROM runs ORDER BY id DESC LIMIT ?)
+                   OR started_at >= datetime('now', '-{RUN_ATTENTION_DAYS} days')
                 ORDER BY id DESC
-                LIMIT 10
-                """).fetchall()
+                """,
+                (max(runs_limit, 10),),
+            ).fetchall()
         ]
         # 본문 정본(content_markdown)이 빈 최근 유입분. summary 폴백까지 세는
         # 위 missing_text와 달리 데이터 계약을 그대로 본다. youtube 목록 행은
@@ -905,14 +942,40 @@ def _check_integrity(report: dict, db_path: Path) -> None:
             report["warnings"].append(f"database integrity: {integrity}")
 
 
+def _classify_runs(
+    runs: List[dict], now: Optional[datetime] = None
+) -> Tuple[List[dict], List[Tuple[dict, dict]]]:
+    """판정 창 안의 비성공 회차를 (복구 안 됨, [(회차, 복구한 성공 회차)])로 나눈다.
+
+    나중 회차 중 `success`가 하나라도 있으면 복구된 것이다. 복구되지 않았다면 최신
+    회차가 아직 `running`인 경우도 여기에 든다. 시각을 못 읽는 회차는 창 안으로 본다.
+    """
+    cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=RUN_ATTENTION_DAYS)
+    ordered = sorted(runs, key=lambda run: run["id"])
+    unrecovered: List[dict] = []
+    recovered: List[Tuple[dict, dict]] = []
+    for index, run in enumerate(ordered):
+        if run["status"] not in RUN_ATTENTION_STATUSES:
+            continue
+        started = _parse_db_time(run["started_at"])
+        if started is not None and started < cutoff:
+            continue
+        fixer = next(
+            (later for later in ordered[index + 1 :] if later["status"] == "success"),
+            None,
+        )
+        if fixer is None:
+            unrecovered.append(run)
+        else:
+            recovered.append((run, fixer))
+    return unrecovered, recovered
+
+
 def _attention_warnings(report: dict, platform: Optional[str]) -> List[str]:
     warnings = []
     if platform and not report["platforms"]:
         warnings.append(f"no posts found for {platform}")
-    if any(
-        run["status"] in {"failed", "interrupted", "running", "degraded"}
-        for run in report["runs"][:3]
-    ):
+    if _classify_runs(report["runs"])[0]:
         warnings.append("recent runs need attention")
     return warnings
 
@@ -927,8 +990,11 @@ def doctor(
     strict: bool = typer.Option(
         False, "--strict", help="warning이 하나라도 있으면 exit 1 (cron 연동용)"
     ),
+    runs: int = typer.Option(
+        5, "--runs", min=1, help="recent runs에 보일 회차 수 (경고 판정은 이와 무관)"
+    ),
 ):
-    """DB, 수집 run, session 상태를 점검합니다."""
+    """DB, 수집 run, session 상태를 점검합니다. 사람이 읽는 출력의 시각은 로컬 시각입니다."""
     _validate_platform(platform)
     if emit not in {"summary", "json"}:
         typer.echo(
@@ -952,11 +1018,11 @@ def doctor(
         report["warnings"].append(
             "missing database; run `uv run skim crawl all --days 1`"
         )
-        _emit_doctor(report, emit)
+        _emit_doctor(report, emit, runs)
         return
 
     try:
-        _doctor_read_db(report, db_path, platform)
+        _doctor_read_db(report, db_path, platform, runs)
         report["warnings"].extend(_fragment_body_warnings(report["recent_thin"]))
     except Exception as exc:  # pragma: no cover - defensive report path
         report["warnings"].append(f"database check failed: {exc}")
@@ -967,7 +1033,7 @@ def doctor(
     report["warnings"].extend(_geeknews_topic_warnings())
     _check_integrity(report, db_path)
     report["warnings"].extend(_attention_warnings(report, platform))
-    _emit_doctor(report, emit)
+    _emit_doctor(report, emit, runs)
     if strict and report["warnings"]:
         raise typer.Exit(1)
 
@@ -1010,7 +1076,7 @@ def _echo_platform_rows(report: dict) -> None:
             typer.echo(
                 f"  {row['platform']}: total={row['total']} "
                 f"with_text={row['with_text']} missing_text={row['missing_text']} "
-                f"latest={row['latest_crawl']}"
+                f"latest={_local_time(row['latest_crawl'])}"
             )
 
 
@@ -1042,17 +1108,22 @@ def _echo_environment(report: dict) -> None:
         typer.echo(f"sessions: {', '.join(present) if present else 'none'}")
 
 
-def _echo_runs(report: dict) -> None:
-    if report["runs"]:
-        typer.echo("recent runs:")
-        for row in report["runs"][:5]:
-            typer.echo(
-                f"  #{row['id']} {row['status']} current={row['current_platform']} "
-                f"started={row['started_at']} summary={row['summary']}"
-            )
+def _echo_runs(report: dict, runs_limit: int) -> None:
+    if not report["runs"]:
+        return
+    typer.echo("recent runs:")
+    for row in report["runs"][:runs_limit]:
+        typer.echo(
+            f"  #{row['id']} {row['status']} current={row['current_platform']} "
+            f"started={_local_time(row['started_at'])} summary={row['summary']}"
+        )
+    for bad, fixer in _classify_runs(report["runs"])[1]:
+        typer.echo(
+            f"recovered: #{bad['id']} {bad['status']} -> #{fixer['id']} {fixer['status']}"
+        )
 
 
-def _emit_doctor(report: dict, emit: str) -> None:
+def _emit_doctor(report: dict, emit: str, runs_limit: int = 5) -> None:
     if emit == "json":
         typer.echo(json.dumps(report, ensure_ascii=False, indent=2))
         return
@@ -1061,7 +1132,7 @@ def _emit_doctor(report: dict, emit: str) -> None:
     _echo_platform_rows(report)
     _echo_recent_bodies(report)
     _echo_environment(report)
-    _echo_runs(report)
+    _echo_runs(report, runs_limit)
     for warning in report["warnings"]:
         typer.echo(f"warning: {warning}")
 

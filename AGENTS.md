@@ -405,6 +405,8 @@ everyto가 거의 매일 회귀로 잡혀 run이 상시 `degraded`였고, 그 �
   돌리기 전에 죽을 때만 쌓인다. 비어 있는 게 정상이다.
 - DB 시각(`runs.started_at`, `posts.crawled_at`)은 UTC이고 `cron.log`는 로컬 시각이다.
   00:02 KST 회차는 DB에 전날 15:02로 찍힌다. `crawled_at`은 처음 저장된 시각이라 upsert가 바꾸지 않는다.
+  `doctor`의 사람용 출력(`latest=`, `started=`)만 로컬 시각에 시각대 약어를 붙여 보인다(`2026-10-06 00:02:14 KST`). `--emit json`은 DB 값 그대로다.
+- `doctor`의 회차 경고는 최근 7일 안의 `failed`/`interrupted`/`running`/`degraded` 회차 뒤에 `success`가 없을 때만 낸다. 뒤에 `success`가 있으면 `recovered: #371 failed -> #372 success` 줄로만 알린다. 목록 길이는 `--runs N`(기본 5)이고 경고 판정과 무관하다.
 - 상태 점검 절차와 경고 판정은 skim 스킬의 `.claude/skills/skim/references/health-signals.md`에 있다.
 
 ## Docs Hygiene
