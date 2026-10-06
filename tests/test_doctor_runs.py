@@ -18,6 +18,8 @@ def _offline(monkeypatch):
     monkeypatch.setattr(
         "skim_cli.cli._playwright_status", lambda: {"ok": True, "detail": "stub"}
     )
+    # CI에는 yt-dlp, bunx가 없다. 설치된 도구에 따라 --strict 결과가 갈리지 않게 한다.
+    monkeypatch.setattr("skim_cli.cli.shutil.which", lambda name: f"/stub/{name}")
 
 
 @pytest.fixture
