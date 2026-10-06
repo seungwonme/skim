@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "skim",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Operate Skim's local-first crawler and research workspace.",
   "author": {
     "name": "seungwonme"
@@ -10,6 +10,6 @@
   "repository": "https://github.com/seungwonme/skim",
   "license": "MIT",
   "skills": [
-    "./.claude/skills/skim"
+    "./.agents/skills/skim"
   ]
 }
