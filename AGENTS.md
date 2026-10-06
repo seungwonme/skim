@@ -435,6 +435,8 @@ everyto가 거의 매일 회귀로 잡혀 run이 상시 `degraded`였고, 그 �
 ## Tooling
 
 - 태스크 러너: `just` (justfile)
+- doctor `--strict`의 exit를 단언하는 테스트는 `shutil.which`를 stub한다. CI 러너에는 yt-dlp, bunx가 없어
+  도구 경고만으로 exit 1이 된다. 로컬에는 도구가 있어 통과하므로 PR CI에서야 드러난다
 - Node: husky/commitlint 훅용으로만 `pnpm` 유지 (JS/TS 소스 없음)
 - Python: `uv` workspace
 - 포맷터: `ruff format` 하나 (88자, `pyproject.toml`의 `[tool.ruff]`). 편집 훅도 같은 설정으로 돈다.
