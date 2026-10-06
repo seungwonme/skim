@@ -27,8 +27,8 @@ Operate Skim as a local data source. Prefer the CLI over hand-written SQL.
 - Do not publish blog posts or send external notifications from this skill.
 - Do not use web search unless the user explicitly asks for external research.
 - Keep outputs source-backed: include platform, title or author, and URL for cited items.
-- For wide synthesis, create a bundle before writing the final answer. Pass `--output-dir` under the temp directory your runtime provides; a literal `/tmp` path can be refused in sandboxed runtimes.
-- DB timestamps (`runs.started_at`, `posts.crawled_at`) are UTC. Convert to local time before reading dates or grouping by day.
+- For wide synthesis, create a bundle before writing the final answer. Its default directory follows `$TMPDIR`; pass `--output-dir` when your runtime gives you a different scratch directory.
+- DB timestamps (`runs.started_at`, `posts.crawled_at`) are UTC. `doctor` and `coverage --by-day` already print local time; convert only when you read the DB directly.
 
 ## Repo Selection
 
@@ -44,11 +44,11 @@ Use `uv run skim ...` inside a checkout. For released, out-of-tree execution, us
 
 - New source from a URL: read `references/adding-sources.md`, then start with `uv run skim source probe <url>`.
 - Registered source audit: run `uv run skim source refresh --all` to re-observe tiers and catch feeds that died.
-- Status or health, including "is the daily run OK?": read `references/health-signals.md`, then start with `uv run skim doctor --strict`.
+- Status or health, including "is the daily run OK?": read `references/health-signals.md` and follow its procedure.
 - Platform triage: run `uv run skim doctor --platform <name>`.
 - Refresh planning: run `uv run skim refresh-plan --days <n>`.
 - Coverage: run `uv run skim coverage --days <n>`.
-- Bundle handoff: run `uv run skim bundle [topic] --days <n> --output-dir <dir>`.
+- Bundle handoff: run `uv run skim bundle [topic] --days <n>`.
 - Fresh data: run the smallest useful `uv run skim crawl ...` command.
 - Topic research: run `uv run skim research "TOPIC" --days 7 --sources all --refresh auto --emit json`.
 
