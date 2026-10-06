@@ -278,6 +278,20 @@ class OpsCliTests(unittest.TestCase):
         payload = json.loads((out / "results.json").read_text(encoding="utf-8"))
         self.assertEqual(payload["stats"]["total"], 1)
 
+    def test_bundle_defaults_to_system_temp_dir(self):
+        sys_tmp = self.root / "sys-tmp"
+        sys_tmp.mkdir()
+
+        with patch.object(tempfile, "tempdir", str(sys_tmp)):
+            result = self.runner.invoke(
+                app, ["bundle", "nvidia", "--db", str(self.db), "--days", "30"]
+            )
+
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        bundles = list((sys_tmp / "skim").glob("*-nvidia"))
+        self.assertEqual(len(bundles), 1)
+        self.assertTrue((bundles[0] / "results.json").exists())
+
     def test_refresh_plan_reports_missing_session_before_crawl(self):
         result = self.runner.invoke(
             app,
