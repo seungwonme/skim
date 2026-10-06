@@ -181,6 +181,7 @@ class RedditAPICrawler:
         게시글당 요청 1건이 늘어난다. `--no-content`면 호출되지 않는다.
         """
         failures = 0
+        empty = 0
         consecutive = 0
         for index, post in enumerate(posts):
             if consecutive >= MAX_CONSECUTIVE_COMMENT_FAILURES:
@@ -189,16 +190,17 @@ class RedditAPICrawler:
                     f"(연속 {consecutive}건 실패, 남은 {len(posts) - index}건은 본문만 저장)"
                 )
                 break
-            # 댓글이 0건인 글은 조회해봐야 None이 돌아온다. 그 None이 HTTP 실패와
-            # 구분되지 않아서, 조용한 서브레딧에서 0건 글 3개가 연속되면 남은
-            # 게시글 전체의 댓글 수집이 중단됐다. 링크 게시물은 댓글이 사실상 본문이다.
+            # 댓글이 0건인 글은 조회해봐야 보여줄 게 없다. 조용한 서브레딧에서 0건 글
+            # 3개가 연속되면 남은 게시글 전체의 댓글 수집이 중단됐던 자리라 조회하지
+            # 않는다. 링크 게시물은 댓글이 사실상 본문이다.
             if (post.comments or 0) < 1:
                 continue
             if index:
                 time.sleep(COMMENT_REQUEST_INTERVAL_SECONDS)
 
-            # HTTP 실패는 fetch_comment_section 안에서 None이 된다. 여기서 잡는 건
-            # 응답 구조가 바뀌었을 때의 파싱 실패다.
+            # 요청·파싱 실패는 fetch_comment_section 안에서 None이 되고, 응답은 정상인데
+            # 보여줄 댓글이 없으면 빈 문자열이다(연속 실패 차단에 세지 않는다). 여기서
+            # 잡는 건 응답 구조가 바뀌었을 때의 파싱 실패다.
             try:
                 section = self.fetch_comment_section(post.url)
             except Exception as exc:  # noqa: BLE001 - 댓글 실패가 게시글 저장을 막지 않는다
@@ -211,14 +213,22 @@ class RedditAPICrawler:
                 consecutive += 1
                 continue
             consecutive = 0
+            if section == "":
+                empty += 1
             body = post.content_markdown or post.content
             post.content_markdown = append_comment_section(body, section)
 
         if failures:
             typer.echo(f"   [!] Reddit 댓글 수집 실패 {failures}건 (본문만 저장)")
+        if empty:
+            typer.echo(f"   Reddit 보여줄 댓글 없음 {empty}건")
 
     def fetch_comment_section(self, url: Optional[str]) -> Optional[str]:
-        """permalink의 댓글 트리를 본문용 마크다운 섹션으로 만든다."""
+        """permalink의 댓글 트리를 본문용 마크다운 섹션으로 만든다.
+
+        요청이나 파싱이 실패하면 None, 응답은 정상인데 보여줄 댓글이 없으면
+        빈 문자열이다(`[deleted]`/`[removed]`만 있는 글).
+        """
         if not url:
             return None
 
@@ -270,8 +280,11 @@ class RedditAPICrawler:
                     walk(replies, depth + 1)
 
         walk(payload[1], 0)
-        return render_comment_section(
-            "Reddit Comments", collected, max_comments=MAX_COMMENTS
+        return (
+            render_comment_section(
+                "Reddit Comments", collected, max_comments=MAX_COMMENTS
+            )
+            or ""
         )
 
     def build_listing_url(
