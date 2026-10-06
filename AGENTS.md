@@ -135,9 +135,16 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
 | lobsters | `## Lobsters Comments` | 게시물당 1건 (초당 1요청). 같은 응답의 `description_plain`이 본문 폴백 |
 | huggingface | `## Hugging Face Comments` | 논문당 1건. 페이지 SSR 페이로드(`data-props`)라 로그인 불필요 |
 
-- **댓글 조회는 `comments`가 0보다 클 때만 한다.** 0건인 글을 조회하면 "유효 댓글 없음"과
-  "HTTP 실패"가 둘 다 `None`이라 구분되지 않는다. reddit은 그 때문에 조용한 서브레딧에서
-  0건 글 3개가 연속되면 서킷브레이커가 남은 게시글 전체의 댓글 수집을 끊었다.
+- **댓글 조회는 `comments`가 0보다 클 때만 한다.** 0건인 글을 조회해 봐야 보여줄 게 없고,
+  reddit은 예전에 조용한 서브레딧에서 0건 글 3개가 연속되면 서킷브레이커가 남은 게시글
+  전체의 댓글 수집을 끊었다.
+- **실패와 "보여줄 댓글 없음"을 구분한다 (reddit, linkedin, #61).** `fetch_comment_section()`은
+  요청·파싱 실패에 `None`, 응답은 정상인데 보여줄 댓글이 없으면 빈 문자열을 돌려준다.
+  `comments`가 1이어도 삭제된 댓글(`[deleted]`/`[removed]`)이나 답글뿐, 텍스트가 빈 댓글뿐이면
+  이쪽이다. `attach_comments`는 `수집 실패 N건`에 `None`만 세고 빈 문자열은
+  `보여줄 댓글 없음 N건`으로 따로 센다. reddit의 연속 실패 차단도 `None`만 센다. 둘을 한
+  `None`으로 합치면 진짜 장애와 평시 값이 같은 문구로 섞인다(9/4 LinkedIn 34건 장애 vs
+  평시 0~4건). 다른 플랫폼은 아직 이 구분이 없다.
 - **파싱까지 `try` 안에 넣는다.** HTTP 호출만 감싸면 상류 응답 구조가 바뀔 때 파싱 예외가
   크롤 루프까지 올라가 그 회차의 게시글이 통째로 저장 0건이 된다. "댓글 실패가 게시글
   저장을 막지 않는다"는 계약이 실제로 깨져 있던 자리다. API형 4종을 먼저 고쳤는데

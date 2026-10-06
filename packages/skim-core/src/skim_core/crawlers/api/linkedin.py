@@ -109,14 +109,16 @@ class LinkedInAPICrawler:
     def attach_comments(self, posts: List[Post]) -> None:
         """게시글별 댓글을 정본 본문 뒤에 잇는다. 게시글당 요청 1건이 늘어난다."""
         failures = 0
+        empty = 0
         for index, post in enumerate(posts):
             if (post.comments or 0) < 1:
                 continue
             # 게시글당 요청 1건이라 호스트별 간격을 둔다 (reddit과 같은 패턴).
             if index:
                 time.sleep(COMMENT_REQUEST_INTERVAL_SECONDS)
-            # HTTP 실패는 fetch_comment_section 안에서 None이 된다. 여기서 잡는 건
-            # Voyager 응답 구조가 바뀌었을 때의 파싱 실패다.
+            # 요청·파싱 실패는 fetch_comment_section 안에서 None이 되고, 응답은 정상인데
+            # 보여줄 댓글이 없으면 빈 문자열이다. 여기서 잡는 건 Voyager 응답 구조가
+            # 바뀌었을 때의 파싱 실패다.
             try:
                 section = self.fetch_comment_section(post.external_id)
             except Exception as exc:  # noqa: BLE001 - 댓글 실패가 게시글 저장을 막지 않는다
@@ -126,14 +128,22 @@ class LinkedInAPICrawler:
             if section is None and post.external_id:
                 failures += 1
                 continue
+            if section == "":
+                empty += 1
             body = post.content_markdown or post.content
             post.content_markdown = append_comment_section(body, section)
 
         if failures:
             typer.echo(f"   [!] LinkedIn 댓글 수집 실패 {failures}건 (본문만 저장)")
+        if empty:
+            typer.echo(f"   LinkedIn 보여줄 댓글 없음 {empty}건")
 
     def fetch_comment_section(self, external_id: Optional[str]) -> Optional[str]:
-        """activity id의 댓글을 본문용 마크다운 섹션으로 만든다."""
+        """activity id의 댓글을 본문용 마크다운 섹션으로 만든다.
+
+        요청이나 파싱이 실패하면 None, 응답은 정상인데 보여줄 댓글이 없으면
+        빈 문자열이다(답글뿐이거나 텍스트가 빈 댓글만 있는 글).
+        """
         if not external_id:
             return None
         activity_id = self._extract_activity_id(str(external_id)) or str(external_id)
@@ -186,8 +196,11 @@ class LinkedInAPICrawler:
                 Comment(author=author or "unknown", text=text, created=created)
             )
 
-        return render_comment_section(
-            "LinkedIn Comments", collected, max_comments=MAX_COMMENTS
+        return (
+            render_comment_section(
+                "LinkedIn Comments", collected, max_comments=MAX_COMMENTS
+            )
+            or ""
         )
 
     def fetch_feed(self, *, count: int) -> List[Post]:
