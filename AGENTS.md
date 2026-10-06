@@ -62,6 +62,7 @@ uv run skim research "topic" --max-chars 2000               # 본문 절단 + tr
 uv run skim bundle --days 1 --group-by platform             # topic 없이 최근 글 본문까지
 uv run skim export ./out --days 7 --unread                  # 마크다운 파일로
 uv run skim mark 12 34 --state read                         # 소비 상태
+uv run skim coverage --by-day --days 7                      # 플랫폼별 로컬 날짜별 신규 행 수
 
 # 운영
 uv run skim backup --keep 3     # 온라인 백업 + quick_check

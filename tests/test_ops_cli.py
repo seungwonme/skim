@@ -252,6 +252,56 @@ class OpsCliTests(unittest.TestCase):
         self.assertEqual(payload["coverage"][0]["platform"], "hackernews")
         self.assertEqual(payload["coverage"][0]["with_text"], 1)
 
+    def _set_crawled_at(self, external_id, when):
+        conn = get_connection(self.db)
+        conn.execute(
+            "UPDATE posts SET crawled_at = ? WHERE external_id = ?",
+            (when.strftime("%Y-%m-%d %H:%M:%S"), external_id),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_coverage_by_day_splits_new_rows_by_local_date(self):
+        now = datetime.now(timezone.utc)
+        _insert(self.db, external_id="hn-2")
+        _insert(self.db, external_id="hn-old")
+        self._set_crawled_at("hn-2", now - timedelta(days=1))
+        self._set_crawled_at("hn-old", now - timedelta(days=10))
+
+        result = self.runner.invoke(
+            app,
+            [
+                "coverage",
+                "--db",
+                str(self.db),
+                "--by-day",
+                "--days",
+                "3",
+                "--emit",
+                "json",
+            ],
+        )
+
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        rows = json.loads(result.stdout)["by_day"]
+        today = datetime.now().astimezone().date()
+        self.assertEqual(
+            {(row["day"], row["new_rows"]) for row in rows},
+            {(today.isoformat(), 1), ((today - timedelta(days=1)).isoformat(), 1)},
+        )
+
+    def test_coverage_by_day_summary_shows_days_without_rows(self):
+        result = self.runner.invoke(
+            app, ["coverage", "--db", str(self.db), "--by-day", "--days", "3"]
+        )
+
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        header, row = result.stdout.splitlines()[:2]
+        today = datetime.now().astimezone().date()
+        for offset in range(3):
+            self.assertIn((today - timedelta(days=offset)).isoformat(), header)
+        self.assertEqual(row.split(), ["hackernews", "0", "0", "1"])
+
     def test_bundle_writes_handoff_files(self):
         out = self.root / "bundle"
 

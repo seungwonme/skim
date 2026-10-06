@@ -97,6 +97,7 @@ uv run skim doctor --strict            # exit 1 on any warning (for cron)
 uv run skim backup --keep 3            # online backup + quick_check
 uv run skim refresh-plan --days 1
 uv run skim coverage --days 7 --emit json
+uv run skim coverage --by-day --days 7   # new rows per platform per local day
 uv run skim bundle "AI video" --days 7
 uv run skim bundle --days 1 --group-by platform    # no topic: recent posts with bodies
 ```

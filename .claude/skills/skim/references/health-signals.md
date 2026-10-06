@@ -16,14 +16,7 @@ FROM runs ORDER BY id DESC LIMIT 10;
 
 3. `success`가 아닌 회차는 원인을 로그에서 읽는다. `grep -n '======= \(start\|end\)' data/daily/cron.log | tail -20`으로 구간을 찾고, 구간 안의 `(run #N)` 줄로 DB 회차 번호를 맞춘 뒤 `[!]` 줄을 본다.
 4. 실패한 회차 다음 회차가 `success`인지 본다. feed 플랫폼은 `--catch-up`이 놓친 날을 채운다. SNS(threads, x, linkedin, reddit)는 최근 N건만 받아서 못 받은 날을 되찾지 못한다.
-5. 날짜별 유입이 필요하면 `posts.crawled_at`을 로컬 날짜로 바꿔 묶는다. `skim coverage`는 창 전체 합계만 준다.
-
-```sql
-SELECT platform, date(crawled_at, 'localtime') AS day, count(*) AS new_rows
-FROM posts WHERE crawled_at >= datetime('now', '-7 days')
-GROUP BY platform, day ORDER BY platform, day;
-```
-
+5. 날짜별 유입은 `uv run skim coverage --by-day --days 7`로 본다. 로컬 날짜 기준이고, 수집이 통째로 빠진 날도 0으로 보인다.
 6. 아래 두 표로 실제 문제와 정상 경고를 나눈다.
 
 ## 실제 문제
