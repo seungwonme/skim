@@ -91,21 +91,37 @@ def is_within_range(entry_dt: Optional[datetime], since: datetime) -> bool:
 def fetch_feed(
     url: str, source_name: str, since: datetime, quiet: bool = False
 ) -> List[dict]:
-    """RSS/Atom 피드를 가져와서 since 이후 항목만 반환"""
+    """RSS/Atom 피드를 가져와서 since 이후 항목만 반환
+
+    요청 실패, 파싱 실패, 창 안에 항목이 없음을 모두 빈 리스트로 돌려준다.
+    셋을 구분해야 하는 호출자는 `fetch_feed_or_none`을 쓴다.
+    """
+    results = fetch_feed_or_none(url, source_name, since, quiet=quiet)
+    return results if results is not None else []
+
+
+def fetch_feed_or_none(
+    url: str, source_name: str, since: datetime, quiet: bool = False
+) -> Optional[List[dict]]:
+    """`fetch_feed`와 같되 요청이나 파싱이 실패하면 None을 돌려준다.
+
+    빈 리스트는 "피드는 정상인데 창 안에 항목이 없다"는 뜻이다. 이 구분이 없으면
+    호출자가 조용한 날을 장애로 읽고 폴백을 매번 태운다 (#54).
+    """
     try:
         response = _FEED_SESSION.get(url, timeout=FEED_TIMEOUT_SECONDS)
         response.raise_for_status()
     except requests.RequestException as exc:
         if not quiet:
             print(f"  [!] {source_name}: 피드 요청 실패 - {exc}")
-        return []
+        return None
 
     feed = feedparser.parse(response.content)
 
     if feed.bozo and not feed.entries:
         if not quiet:
             print(f"  [!] {source_name}: 피드 파싱 실패 - {feed.bozo_exception}")
-        return []
+        return None
 
     results = []
     skipped_undated = 0

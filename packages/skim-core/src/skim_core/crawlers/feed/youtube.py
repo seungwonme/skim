@@ -14,7 +14,7 @@ from typing import Any, List, Optional, Tuple
 from ...db import drop_known_items, get_connection
 from ...enrichment import enrich_with_content
 from ...feed_config import YOUTUBE_CHANNELS, youtube_videos_url
-from ...feed_utils import fetch_feed, finish_feed_items
+from ...feed_utils import fetch_feed_or_none, finish_feed_items
 from ...models import Post
 from ...youtube_history import normalize_tracked_channels
 
@@ -164,6 +164,7 @@ class YouTubeCrawler:
 
         all_items: List[dict] = []
         rss_failed = 0
+        no_new = 0
         handle_only = 0
         # 핸들과 채널 ID로 이중 등록된 구독은 같은 채널을 두 번 크롤한다.
         # 매 수집 앞에서 하나로 모은다 (핸들 행이 없으면 아무 일도 하지 않는다).
@@ -171,27 +172,37 @@ class YouTubeCrawler:
         channels = tracked_youtube_channels()
 
         for name, channel_id in channels:
-            results: List[dict] = []
             longform: List[dict] = []
+            needs_ytdlp = False
 
             # 1차: RSS (quiet=True로 에러 메시지 억제).
             # 핸들 구독은 channel_id가 없어 RSS 주소를 만들 수 없다.
             is_handle = channel_id.startswith("@")
-            if not is_handle:
+            if is_handle:
+                handle_only += 1
+                needs_ytdlp = True
+            else:
                 url = (
                     f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
                 )
-                results = fetch_feed(url, f"youtube/{name}", since, quiet=True)
-                longform = [r for r in results if "/shorts/" not in r.get("url", "")]
-
-            # 2차: RSS 실패(또는 핸들) 시 yt-dlp fallback
-            if not results:
-                if is_handle:
-                    handle_only += 1
-                else:
+                results = fetch_feed_or_none(url, f"youtube/{name}", since, quiet=True)
+                if results is None:
+                    # 요청이나 파싱이 실패한 때만 yt-dlp로 넘어간다. 빈 리스트는
+                    # "피드는 정상인데 창 안에 새 영상이 없다"는 뜻이라 넘기지 않는다
+                    # (#54: 29개 피드가 모두 200인데 매일 14~24개가 실패로 집계됐다).
                     rss_failed += 1
+                    needs_ytdlp = True
                     if rss_failed == 1 and debug:
                         print("  RSS 실패 - yt-dlp fallback 사용")
+                else:
+                    if not results:
+                        no_new += 1
+                    longform = [
+                        r for r in results if "/shorts/" not in r.get("url", "")
+                    ]
+
+            # 2차: RSS 실패(또는 핸들) 시 yt-dlp fallback
+            if needs_ytdlp:
                 longform = drop_known_items(
                     "youtube", _fetch_via_ytdlp(name, channel_id, since)
                 )
@@ -201,10 +212,11 @@ class YouTubeCrawler:
             all_items.extend(longform)
             time.sleep(0.3)
 
-        if rss_failed or handle_only:
+        if rss_failed or handle_only or no_new:
             print(
                 f"  (yt-dlp 경로 {rss_failed + handle_only}/{len(channels)}개"
-                f" - RSS 실패 {rss_failed}, 핸들 구독 {handle_only})"
+                f" - RSS 실패 {rss_failed}, 핸들 구독 {handle_only}"
+                f" / 새 영상 없음 {no_new})"
             )
 
         print(f"  -> 총 {len(all_items)}개 영상 (롱폼만)")
