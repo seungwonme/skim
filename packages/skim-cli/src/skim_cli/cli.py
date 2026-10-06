@@ -7,6 +7,7 @@ import re
 import shutil
 import sqlite3
 import sys
+import tempfile
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1260,8 +1261,12 @@ def bundle(
     platforms = source_list if explicit_sources else None
 
     slug = _slug(topic or "inventory")
-    bundle_dir = (
-        output_dir or Path("/tmp/skim") / f"{datetime.now().strftime('%Y%m%d')}-{slug}"
+    # /tmp 리터럴은 실행 주체마다 허용 경로가 다른 샌드박스에서 쓰기가 거부된다.
+    # gettempdir()는 $TMPDIR을 먼저 따른다.
+    bundle_dir = output_dir or (
+        Path(tempfile.gettempdir())
+        / "skim"
+        / f"{datetime.now().strftime('%Y%m%d')}-{slug}"
     )
     bundle_dir.mkdir(parents=True, exist_ok=True)
 
