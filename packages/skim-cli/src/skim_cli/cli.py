@@ -1075,6 +1075,9 @@ def coverage(
     db: Optional[Path] = typer.Option(None, "--db", help="SQLite DB 경로"),
     output: Optional[Path] = typer.Option(None, "--output", "-o", help="CSV 출력 경로"),
     emit: str = typer.Option("summary", "--emit", help="summary|json|csv"),
+    by_day: bool = typer.Option(
+        False, "--by-day", help="로컬 날짜별로 새로 저장된 행 수를 나눠 본다"
+    ),
 ):
     """플랫폼별 수집량과 본문 coverage를 집계합니다."""
     _validate_platform(platform)
@@ -1089,6 +1092,9 @@ def coverage(
     if not db_path.exists():
         typer.echo(f"missing database: {db_path}", err=True)
         raise typer.Exit(1)
+    if by_day:
+        _coverage_by_day(db_path, max(days, 1), platform, output, emit)
+        return
 
     where = ["crawled_at >= ?"]
     params: list = [_cutoff(days)]
@@ -1137,6 +1143,80 @@ def coverage(
                 f"{row['platform']}: total={row['total']} with_text={row['with_text']} "
                 f"missing_text={row['missing_text']} last={row['last_crawl']}"
             )
+
+
+def _local_days(days: int) -> List[str]:
+    """오늘을 포함한 최근 N개 로컬 날짜(YYYY-MM-DD)를 오래된 순으로 돌려준다."""
+    today = datetime.now().astimezone().date()
+    return [(today - timedelta(days=i)).isoformat() for i in range(days - 1, -1, -1)]
+
+
+def _coverage_by_day(
+    db_path: Path,
+    days: int,
+    platform: Optional[str],
+    output: Optional[Path],
+    emit: str,
+) -> None:
+    """플랫폼 x 로컬 날짜별로 새로 저장된 행 수를 낸다.
+
+    crawled_at은 UTC로 저장되고 처음 저장된 시각이라 upsert가 바꾸지 않는다.
+    UTC 날짜로 자르면 00:02 KST 회차가 전날로 묶여서 로컬 날짜로 자른다.
+    """
+    day_list = _local_days(days)
+    start = datetime.fromisoformat(day_list[0]).astimezone()
+    where = ["crawled_at >= ?"]
+    params: list = [start.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")]
+    if platform:
+        where.append("platform = ?")
+        params.append(platform)
+    conn = get_connection(db_path)
+    try:
+        rows = [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT platform, date(crawled_at, 'localtime') AS day,
+                       COUNT(*) AS new_rows,
+                       SUM(CASE WHEN {TEXT_PRESENT_SQL} != '' THEN 1 ELSE 0 END) AS with_text,
+                       SUM(CASE WHEN {TEXT_PRESENT_SQL} = '' THEN 1 ELSE 0 END) AS missing_text
+                FROM posts
+                WHERE {" AND ".join(where)}
+                GROUP BY platform, day
+                ORDER BY platform, day
+                """,
+                params,
+            ).fetchall()
+        ]
+    finally:
+        conn.close()
+
+    if output:
+        _write_csv(output, rows)
+        typer.echo(f"coverage csv: {output}")
+        return
+    if emit == "json":
+        typer.echo(
+            json.dumps(
+                {"days": days, "platform": platform, "by_day": rows},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return
+    if emit == "csv":
+        _print_csv(rows)
+        return
+
+    # 수집이 통째로 빠진 날도 보이도록 행이 없는 날짜까지 열로 둔다.
+    counts = {(row["platform"], row["day"]): row["new_rows"] for row in rows}
+    platforms = sorted({row["platform"] for row in rows})
+    width = max([len("platform")] + [len(name) for name in platforms])
+    typer.echo("platform".ljust(width) + "".join(f"  {day}" for day in day_list))
+    for name in platforms:
+        cells = "".join(f"  {counts.get((name, day), 0):>10}" for day in day_list)
+        typer.echo(name.ljust(width) + cells)
+    typer.echo("(로컬 날짜 기준, 새로 저장된 행 수)")
 
 
 @app.command("refresh-plan")
