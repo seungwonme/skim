@@ -24,7 +24,17 @@ import contextlib
 import json
 import re
 from datetime import datetime, timezone
-from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional
+from typing import (
+    Any,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+)
+from urllib.parse import parse_qs
 
 import requests
 import typer
@@ -124,7 +134,8 @@ async ({postID, after, first}) => {
 ReplyPageFetcher = Callable[[str, Optional[str]], Awaitable[List[Dict[str, Any]]]]
 
 # persisted query 좌표. Meta가 웹앱을 재배포하면 doc_id가 바뀌어 execution error가 난다.
-# 갱신하려면 브라우저로 threads.com을 열어 graphql/query 요청의 doc_id를 다시 읽는다.
+# 갱신하려면 브라우저로 threads.com을 열어 GraphQL 요청의 doc_id를 다시 읽는다.
+# 웹앱 요청은 2026-10부터 `/api/graphql`로 간다.
 TIMELINE_QUERY = {
     "doc_id": "29069292379337431",
     "friendly_name": "BarcelonaFeedPaginationDirectQuery",
@@ -193,6 +204,31 @@ def parse_meta_response(text: str) -> Optional[Dict[str, Any]]:
     except ValueError:
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+def is_timeline_request(post_data: Optional[str], headers: Mapping[str, str]) -> bool:
+    """브라우저 요청이 타임라인 쿼리인지 쿼리 이름으로 판정한다.
+
+    정확한 URL 경로로 거르지 않는다. 웹앱이 2026-10 초에 같은 쿼리를
+    `/graphql/query`에서 `/api/graphql`로 옮겼을 때, `graphql/query`로 거르던 수집이
+    응답을 전부 버렸다 (#74).
+    """
+    name = headers.get("x-fb-friendly-name")
+    if not name and post_data:
+        name = (parse_qs(post_data).get("fb_api_req_friendly_name") or [None])[0]
+    return name == TIMELINE_QUERY["friendly_name"]
+
+
+def timeline_threads(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """타임라인 응답에서 스레드 노드만 꺼낸다. 루트 필드 이름은 별칭이라 보지 않는다."""
+    data = payload.get("data") or {}
+    connection = next(iter(data.values()), None) or {}
+    threads = []
+    for edge in connection.get("edges") or []:
+        thread = (edge.get("node") or {}).get("text_post_app_thread")
+        if thread:
+            threads.append(thread)
+    return threads
 
 
 def shortcode_to_post_id(code: str) -> Optional[str]:
@@ -578,14 +614,7 @@ class ThreadsAPICrawler:
         from playwright.async_api import async_playwright
 
         collected: List[Dict[str, Any]] = []
-
-        def take(payload: Dict[str, Any]) -> None:
-            data = payload.get("data") or {}
-            connection = next(iter(data.values()), None) or {}
-            for edge in connection.get("edges") or []:
-                thread = (edge.get("node") or {}).get("text_post_app_thread")
-                if thread:
-                    collected.append(thread)
+        timeline_responses = 0
 
         async with async_playwright() as pw:
             # 번들 chromium 대신 시스템 Chrome을 쓴다. 로그인 경로와 같은 브라우저이고,
@@ -599,18 +628,26 @@ class ThreadsAPICrawler:
                 page = await context.new_page()
 
                 async def on_response(response: Any) -> None:
-                    if "graphql/query" not in response.url:
+                    nonlocal timeline_responses
+                    # GraphQL이 아닌 요청은 본문을 열지 않는다. post_data는 본문을
+                    # UTF-8로 디코드하므로 로깅 비콘 같은 바이너리 본문에서 예외가 난다.
+                    # 경로의 세부 형태(/graphql/query, /api/graphql)에는 기대지 않는다.
+                    if "graphql" not in response.url:
                         return
-                    if TIMELINE_QUERY["friendly_name"] not in (
-                        response.request.post_data or ""
-                    ):
+                    request = response.request
+                    try:
+                        post_data = request.post_data
+                    except UnicodeDecodeError:
                         return
+                    if not is_timeline_request(post_data, request.headers):
+                        return
+                    timeline_responses += 1
                     try:
                         body = parse_meta_response(await response.text())
                     except Exception:  # noqa: BLE001 - 응답 본문을 못 읽어도 수집은 이어간다
                         return
                     if body:
-                        take(body)
+                        collected.extend(timeline_threads(body))
 
                 page.on("response", lambda r: asyncio.create_task(on_response(r)))
 
@@ -628,8 +665,19 @@ class ThreadsAPICrawler:
             finally:
                 await browser.close()
 
-        if not collected:
-            typer.echo("  [!] 타임라인이 비어 있습니다. 세션이 만료됐는지 확인하세요:")
+        # 두 경우를 나눠 남긴다. 쿼리 응답이 아예 없으면 웹앱이 쿼리 이름을 바꿨거나
+        # 로그인이 풀린 것이고, 응답은 왔는데 비었으면 세션 만료나 응답 구조 변경이다.
+        if not collected and not timeline_responses:
+            typer.echo(
+                f"  [!] 타임라인 쿼리({TIMELINE_QUERY['friendly_name']}) 응답이 "
+                "없었습니다. 웹앱의 쿼리 이름이 바뀌었거나 로그인이 풀렸는지 확인하세요:"
+            )
+            typer.echo("      uv run skim login threads")
+        elif not collected:
+            typer.echo(
+                f"  [!] 타임라인 응답 {timeline_responses}건에 스레드가 없습니다. "
+                "세션이 만료됐거나 응답 구조가 바뀌었는지 확인하세요:"
+            )
             typer.echo("      uv run skim login threads")
         return collected
 
