@@ -209,8 +209,9 @@ def parse_meta_response(text: str) -> Optional[Dict[str, Any]]:
 def is_timeline_request(post_data: Optional[str], headers: Mapping[str, str]) -> bool:
     """브라우저 요청이 타임라인 쿼리인지 쿼리 이름으로 판정한다.
 
-    URL 경로로 거르지 않는다. 웹앱이 2026-10 초에 같은 쿼리를 `/graphql/query`에서
-    `/api/graphql`로 옮겼을 때 경로로 거르던 수집이 응답을 전부 버렸다 (#74).
+    정확한 URL 경로로 거르지 않는다. 웹앱이 2026-10 초에 같은 쿼리를
+    `/graphql/query`에서 `/api/graphql`로 옮겼을 때, `graphql/query`로 거르던 수집이
+    응답을 전부 버렸다 (#74).
     """
     name = headers.get("x-fb-friendly-name")
     if not name and post_data:
@@ -628,8 +629,17 @@ class ThreadsAPICrawler:
 
                 async def on_response(response: Any) -> None:
                     nonlocal timeline_responses
+                    # GraphQL이 아닌 요청은 본문을 열지 않는다. post_data는 본문을
+                    # UTF-8로 디코드하므로 로깅 비콘 같은 바이너리 본문에서 예외가 난다.
+                    # 경로의 세부 형태(/graphql/query, /api/graphql)에는 기대지 않는다.
+                    if "graphql" not in response.url:
+                        return
                     request = response.request
-                    if not is_timeline_request(request.post_data, request.headers):
+                    try:
+                        post_data = request.post_data
+                    except UnicodeDecodeError:
+                        return
+                    if not is_timeline_request(post_data, request.headers):
                         return
                     timeline_responses += 1
                     try:
