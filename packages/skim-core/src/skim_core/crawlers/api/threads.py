@@ -476,12 +476,10 @@ class ThreadsAPICrawler:
                     user_agent=WEB_USER_AGENT,
                 )
                 page = await context.new_page()
-                status = "게시물 URL 없음"
-                for post in [p for p in posts if p.url][:2]:
-                    status = await self._boot_reply_page(page, post.url)
-                    if status == "ok":
-                        break
-                else:
+                status = await self._boot_first_ready(
+                    page, [p.url for p in posts if p.url]
+                )
+                if status != "ok":
                     raise RuntimeError(
                         f"웹앱 답글 쿼리를 준비하지 못했습니다 ({status})"
                     )
@@ -504,6 +502,27 @@ class ThreadsAPICrawler:
                 yield fetch
             finally:
                 await browser.close()
+
+    @classmethod
+    async def _boot_first_ready(cls, page: Any, urls: List[str]) -> str:
+        """앞쪽 게시물 두 개까지 열어 보고, 답글 쿼리가 준비된 첫 페이지에서 멈춘다.
+
+        페이지 열기 예외도 그 게시물의 실패로 보고 다음 게시물로 넘어간다. 맥이
+        잠들면 `goto`가 시간 초과 예외로 끝나는데, 예전에는 이 예외가 재시도를
+        건너뛰고 답글 단계 전체를 접었다 (#76).
+        """
+        status = "게시물 URL 없음"
+        for url in urls[:2]:
+            try:
+                status = await cls._boot_reply_page(page, url)
+            except Exception as exc:  # noqa: BLE001 - 다음 게시물로 다시 연다
+                # playwright 예외는 호출 기록이 여러 줄 붙어 첫 줄만 남긴다.
+                first_line = (str(exc).splitlines() or [type(exc).__name__])[0]
+                status = f"페이지 열기 실패: {first_line}"
+                continue
+            if status == "ok":
+                break
+        return status
 
     @staticmethod
     async def _boot_reply_page(page: Any, url: str) -> str:
