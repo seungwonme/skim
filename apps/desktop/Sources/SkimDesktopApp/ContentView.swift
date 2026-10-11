@@ -404,7 +404,7 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 Spacer()
-                Text(displayDate(post))
+                Text(post.displayDate())
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                 if let likes = post.likes {
@@ -1154,7 +1154,7 @@ struct ContentView: View {
             if let source = post.source {
                 infoItem("소스", source)
             }
-            infoItem("날짜", displayDate(post))
+            infoItem("날짜", post.displayDate())
             if let likes = post.likes {
                 infoItem("좋아요", likes.formatted())
             }
@@ -1200,16 +1200,6 @@ struct ContentView: View {
         }
         let body = post.contentMarkdown?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return body.isEmpty ? post.content : String(body.prefix(300))
-    }
-
-    private func displayDate(_ post: DashboardPost) -> String {
-        // timestamp가 빈 문자열인 행(구버전 yt-dlp fallback 등)은 crawledAt으로 대체
-        let raw = (post.timestamp?.isEmpty == false) ? post.timestamp! : post.crawledAt
-        return raw
-            .replacingOccurrences(of: "T", with: " ")
-            .replacingOccurrences(of: "+09:00", with: "")
-            .prefix(16)
-            .description
     }
 
     private func platformColor(_ platform: String) -> Color {
