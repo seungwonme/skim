@@ -471,6 +471,54 @@ class ThreadsReplyTests(unittest.TestCase):
         printed = " ".join(str(call.args[0]) for call in echo.call_args_list)
         self.assertIn("Threads 답글 수집 중단", printed)
 
+    def _boot(self, outcomes, urls):
+        """`_boot_reply_page` 대역으로 준비 단계만 돌린다. outcomes는 URL별 결과다."""
+        opened = []
+
+        async def fake_boot(_page, url):
+            opened.append(url)
+            outcome = outcomes[url]
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        with patch.object(
+            ThreadsAPICrawler, "_boot_reply_page", staticmethod(fake_boot)
+        ):
+            status = asyncio.run(self._crawler()._boot_first_ready(object(), urls))
+        return status, opened
+
+    def test_boot_moves_to_next_post_when_page_open_times_out(self):
+        # 맥이 잠들면 페이지 열기가 시간 초과 예외로 끝난다. 예외가 재시도를 건너뛰고
+        # 답글 단계 전체를 접던 결함이다 (#76).
+        status, opened = self._boot(
+            {
+                "u1": RuntimeError("Page.goto: Timeout 60000ms exceeded.\nCall log:"),
+                "u2": "ok",
+            },
+            ["u1", "u2", "u3"],
+        )
+        self.assertEqual(status, "ok")
+        self.assertEqual(opened, ["u1", "u2"])
+
+    def test_boot_reports_first_line_of_last_failure(self):
+        status, opened = self._boot(
+            {
+                "u1": "module",
+                "u2": RuntimeError("Page.goto: Timeout 60000ms exceeded.\nCall log:"),
+            },
+            ["u1", "u2", "u3"],
+        )
+        self.assertEqual(opened, ["u1", "u2"])
+        self.assertEqual(
+            status, "페이지 열기 실패: Page.goto: Timeout 60000ms exceeded."
+        )
+
+    def test_boot_without_urls(self):
+        status, opened = self._boot({}, [])
+        self.assertEqual(status, "게시물 URL 없음")
+        self.assertEqual(opened, [])
+
 
 class ProductHuntCommentTests(unittest.TestCase):
     def test_author_comes_from_avatar_not_product_logo(self):
