@@ -1759,7 +1759,7 @@ private struct ReaderMarkdownWebView: NSViewRepresentable {
         // 크롤링된 외부 콘텐츠 뷰어라 페이지 JS가 필요 없다. 실행 표면을 닫는다.
         // (네이티브 evaluateJavaScript 기반 높이 측정에는 영향 없음)
         configuration.defaultWebpagePreferences.allowsContentJavaScript = false
-        let webView = WKWebView(frame: .zero, configuration: configuration)
+        let webView = PassthroughScrollWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = false
         webView.setValue(false, forKey: "drawsBackground")

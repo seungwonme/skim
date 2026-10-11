@@ -38,6 +38,15 @@ struct PreviewPane: View {
     }
 }
 
+/// 바깥 SwiftUI `ScrollView` 안에 높이를 고정해 넣는 웹뷰. 자기 안에서는 스크롤할 것이
+/// 없으므로 휠 이벤트를 바깥 스크롤 뷰로 넘긴다. `WKWebView`는 휠을 직접 받아 삼켜서,
+/// 커서가 본문 위에 있으면 리더 칸이 스크롤되지 않았다 (#78).
+final class PassthroughScrollWebView: WKWebView {
+    override func scrollWheel(with event: NSEvent) {
+        nextResponder?.scrollWheel(with: event)
+    }
+}
+
 private struct YouTubeWebPreview: NSViewRepresentable {
     let embedURL: URL
     let videoID: String
@@ -50,7 +59,7 @@ private struct YouTubeWebPreview: NSViewRepresentable {
         let configuration = WKWebViewConfiguration()
         configuration.allowsAirPlayForMediaPlayback = true
         configuration.mediaTypesRequiringUserActionForPlayback = []
-        let webView = WKWebView(frame: .zero, configuration: configuration)
+        let webView = PassthroughScrollWebView(frame: .zero, configuration: configuration)
         webView.allowsBackForwardNavigationGestures = false
         return webView
     }
