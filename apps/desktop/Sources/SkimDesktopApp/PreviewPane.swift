@@ -38,6 +38,32 @@ struct PreviewPane: View {
     }
 }
 
+/// 바깥 SwiftUI `ScrollView` 안에 높이를 고정해 넣는 웹뷰. 세로로는 스크롤할 것이 없으므로
+/// 세로 휠 이벤트를 바깥 스크롤 뷰로 넘긴다. `WKWebView`는 휠을 직접 받아 삼켜서, 커서가
+/// 본문 위에 있으면 리더 칸이 스크롤되지 않았다 (#78). 가로 휠은 웹뷰에 남긴다. 본문의
+/// 긴 코드 블록(`pre`, `overflow-x: auto`)이 가로로 스크롤해야 한다.
+final class PassthroughScrollWebView: WKWebView {
+    /// 트랙패드 제스처는 시작할 때 방향을 정해 끝(관성 포함)까지 같은 쪽으로 보낸다.
+    /// 이벤트마다 정하면 변화량 0인 끝 이벤트가 다른 쪽으로 가 스크롤이 끊긴다.
+    private var routesToParent: Bool?
+
+    override func scrollWheel(with event: NSEvent) {
+        let startsGesture = event.phase == .mayBegin || event.phase == .began
+        let isWheelClick = event.phase.isEmpty && event.momentumPhase.isEmpty
+        if startsGesture || isWheelClick {
+            routesToParent = nil
+        }
+        if routesToParent == nil, event.scrollingDeltaX != 0 || event.scrollingDeltaY != 0 {
+            routesToParent = abs(event.scrollingDeltaY) >= abs(event.scrollingDeltaX)
+        }
+        if routesToParent ?? true {
+            nextResponder?.scrollWheel(with: event)
+        } else {
+            super.scrollWheel(with: event)
+        }
+    }
+}
+
 private struct YouTubeWebPreview: NSViewRepresentable {
     let embedURL: URL
     let videoID: String
@@ -50,7 +76,7 @@ private struct YouTubeWebPreview: NSViewRepresentable {
         let configuration = WKWebViewConfiguration()
         configuration.allowsAirPlayForMediaPlayback = true
         configuration.mediaTypesRequiringUserActionForPlayback = []
-        let webView = WKWebView(frame: .zero, configuration: configuration)
+        let webView = PassthroughScrollWebView(frame: .zero, configuration: configuration)
         webView.allowsBackForwardNavigationGestures = false
         return webView
     }
