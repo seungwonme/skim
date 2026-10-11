@@ -67,6 +67,37 @@ public struct DashboardPost: Identifiable, Equatable, Sendable {
         }
         return title
     }
+
+    /// 목록과 리더 칸에 보이는 날짜(`yyyy-MM-dd HH:mm`, 로컬 시각).
+    ///
+    /// `timestamp`는 대부분 UTC(`+00:00`)로 저장된다. 글자만 잘라 보이던 때는 15:49 KST 글이
+    /// 06:49로 보였다 (#80). 비어 있으면 `crawled_at`을 쓰는데, 이 값은 시각대 표기 없는 UTC다.
+    /// 읽지 못하는 값은 앞 16자를 그대로 보인다.
+    public func displayDate(in timeZone: TimeZone = .current) -> String {
+        let date: Date?
+        let raw: String
+        if let timestamp, !timestamp.isEmpty {
+            raw = timestamp
+            date = try? Date.ISO8601FormatStyle().parse(timestamp)
+        } else {
+            raw = crawledAt
+            date = try? Date.ISO8601FormatStyle().parse(
+                crawledAt.replacingOccurrences(of: " ", with: "T") + "Z"
+            )
+        }
+        guard let date else {
+            return String(raw.replacingOccurrences(of: "T", with: " ").prefix(16))
+        }
+        let style = Date.VerbatimFormatStyle(
+            format: """
+            \(year: .defaultDigits)-\(month: .twoDigits)-\(day: .twoDigits) \
+            \(hour: .twoDigits(clock: .twentyFourHour, hourCycle: .zeroBased)):\(minute: .twoDigits)
+            """,
+            timeZone: timeZone,
+            calendar: Calendar(identifier: .gregorian)
+        )
+        return date.formatted(style)
+    }
 }
 
 public struct DashboardSummary: Equatable, Sendable {
