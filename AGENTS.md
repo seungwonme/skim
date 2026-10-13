@@ -71,6 +71,7 @@ uv run python scripts/backfill_geeknews_topics.py --dry-run    # GN 요약, 댓�
 uv run python scripts/backfill_geeknews_topics.py --limit 100  # 남은 토픽 한도만큼 채움
 uv run python scripts/backfill_github_releases.py --dry-run   # GitHub 릴리스 노트, PDF 본문 재수집 대상 (#46)
 uv run python scripts/recover_geeknews_originals.py --dry-run # GN 조각 행 원문 복구 대상 (#33, 데일리 직후에 실행)
+uv run python scripts/reextract_trafilatura_rows.py --dry-run --limit 20  # #85 전 행의 목록, 굵은 글씨 재추출 (#86)
 
 # 기타
 uv run skim platforms           # 지원 플랫폼 목록
