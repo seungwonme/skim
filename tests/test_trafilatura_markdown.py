@@ -86,6 +86,24 @@ class ListMarkdownTests(unittest.TestCase):
         )
         self.assertIn("1. *First* step.\n2. Second step.", md)
 
+    def test_nested_list_starts_on_its_own_line(self):
+        # #85는 첫 하위 항목을 상위 항목 줄에 붙였다 (#93).
+        md = extract_markdown(
+            _page(
+                "<ul><li>Files<ul><li>Visiting Files</li><li>Large Files</li></ul>"
+                "</li><li>Next</li></ul>"
+            )
+        )
+        self.assertIn("- Files\n  - Visiting Files\n  - Large Files\n- Next", md)
+
+    def test_nested_list_under_ordered_item_indents_to_content(self):
+        md = extract_markdown(
+            _page(
+                "<ol><li><b>Step</b> one<ul><li>detail</li></ul></li><li>Two</li></ol>"
+            )
+        )
+        self.assertIn("1. **Step** one\n   - detail\n2. Two", md)
+
     def test_does_not_add_space_that_was_not_there(self):
         # 한국어 조사는 굵은 글씨에 바로 붙는다. 원문에 없던 공백을 만들지 않는다.
         md = extract_markdown(
