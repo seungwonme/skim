@@ -135,6 +135,23 @@ class TargetTests(_DbCase):
         self.assertEqual(ids, {broken})
 
 
+class BrokenBoldTests(unittest.TestCase):
+    def test_pairs_marks_per_line(self):
+        cases = {
+            "**A.**B": True,
+            "**bold**inside": True,
+            "**A.** B": False,
+            "**a** and **b** too": False,
+            "**a** and **b**c": True,
+            "**스킴**은 좋다": False,
+            "***both***x": False,
+            "**a\n**b": False,
+        }
+        for text, expected in cases.items():
+            with self.subTest(text):
+                self.assertEqual(reextract.has_broken_bold(text), expected)
+
+
 class PlanTests(unittest.TestCase):
     def _row(self, body):
         return {"id": 1, "content_markdown": body, "word_count": len(body.split())}

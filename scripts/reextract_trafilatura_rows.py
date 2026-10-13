@@ -48,8 +48,8 @@ PLATFORMS = ("hackernews", "lobsters", "blogs", "ailabs", "geeknews")
 # 요청량으로 막히는 호스트. geeknews 모듈만 부른다.
 FORBIDDEN_HOSTS = frozenset({"news.hada.io"})
 
-# 굵은 글씨 바로 뒤에 영문, 숫자가 붙은 자리. 한국어 조사(`**스킴**은`)는 정상이라 뺀다.
-BROKEN_BOLD = re.compile(r"\*\*[^*\n]+\*\*[A-Za-z0-9]")
+# `**` 표지. `***`(굵은 기울임)는 짝을 셀 수 없어 뺀다.
+BOLD_MARK = re.compile(r"(?<!\*)\*\*(?!\*)")
 
 DEFAULT_DELAY = 0.5
 BATCH_SIZE = 25
@@ -72,6 +72,22 @@ def link_of(row) -> str:
     return _extra(row).get("original_url") or row["url"] or ""
 
 
+def has_broken_bold(text: str) -> bool:
+    """닫는 `**` 바로 뒤에 영문, 숫자가 붙은 자리가 있는지.
+
+    줄마다 표지를 앞에서부터 둘씩 짝지어 짝수 번째만 닫는 표지로 본다. 정규식 하나로
+    `**...**X`를 찾으면 한 줄의 굵은 글씨 둘 사이(`**a** and **b**`의 `** and **b`)를
+    닫는 자리로 잘못 잡는다. 한국어 조사(`**스킴**은`)는 정상이라 뺀다.
+    """
+    for line in text.splitlines():
+        marks = [m.start() for m in BOLD_MARK.finditer(line)]
+        for close in marks[1::2]:
+            after = line[close + 2 : close + 3]
+            if after.isascii() and after.isalnum():
+                return True
+    return False
+
+
 def is_target(row, flagged_only: bool = False) -> bool:
     if row["platform"] not in PLATFORMS:
         return False
@@ -82,7 +98,7 @@ def is_target(row, flagged_only: bool = False) -> bool:
     if not link.startswith("http") or host in FORBIDDEN_HOSTS:
         return False
     if flagged_only:
-        return bool(BROKEN_BOLD.search(row["content_markdown"] or ""))
+        return has_broken_bold(row["content_markdown"] or "")
     return True
 
 
