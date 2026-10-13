@@ -1,15 +1,15 @@
 #!/usr/bin/env python
 """trafilatura로 추출해 저장한 행을 지금 추출기로 다시 추출한다 (#86).
 
-저장된 본문은 두 추출기 중 하나로 만들어졌다.
+저장된 본문은 지금까지 쓴 추출기 중 하나로 만들어졌다(`PAST_EXTRACTORS`).
 
   - 옛 방식(`trafilatura.extract`): 목록 기호를 빼 항목을 한 문단으로 붙이고, 굵은 글씨
     뒤 띄어쓰기를 지웠다(`**A.**B`, #84).
-  - #85(`6a46a76`의 `extract_markdown`): 위를 고쳤지만 서식이 겹친 문단의 뒷부분과,
-    `<body>` 없는 압축 문서의 본문을 잃었다(#89). 2026-10-13 밤부터 #90 머지 전까지의
-    데일리 행과, 이 스크립트의 첫 실행이 바꾼 행이 이것이다.
+  - #85(`6a46a76`): 위를 고쳤지만 서식이 겹친 문단의 뒷부분과, `<body>` 없는 압축 문서의
+    본문을 잃었다(#89). 하위 목록의 첫 항목을 상위 항목 줄에 붙였다(#93).
+  - #90(`182d737`): #89를 고쳤지만 #93은 남아 있었다.
 
-원문 페이지를 다시 받아 두 방식과 지금 방식으로 각각 추출하고, 두 방식 중 하나의 결과가
+원문 페이지를 다시 받아 지난 추출기들과 지금 추출기로 각각 추출하고, 지난 결과 중 하나가
 저장된 본문에 글자 그대로 한 번 들어 있을 때만 그 부분을 지금 결과로 바꾼다.
 
   - 본문 앞뒤의 스토리 본문, GN 요약, 댓글 섹션은 건드리지 않는다. 바꾸는 범위는 옛
@@ -26,6 +26,7 @@
 사용:
     uv run python scripts/reextract_trafilatura_rows.py --days 30 --dry-run --limit 20
     uv run python scripts/reextract_trafilatura_rows.py --days 30 --diff-dir <폴더>
+    uv run python scripts/reextract_trafilatura_rows.py --days 30 --ids ids.txt
 """
 
 import argparse
@@ -69,8 +70,9 @@ SAVE_RETRY_WAIT = 30
 
 CHANGED = "바꿈"
 
-# #85의 추출기. 이 커밋의 모듈을 git에서 읽어 쓴다.
-V85_COMMIT = "6a46a76"
+# 지금 추출기 전에 운영에서 쓴 `trafilatura_markdown`. 이 커밋의 모듈을 git에서 읽는다.
+# 추출기를 고쳐 머지하면 그 전 커밋을 여기에 더한다.
+PAST_EXTRACTORS = ("6a46a76", "182d737")
 MODULE_PATH = "packages/skim-core/src/skim_core/trafilatura_markdown.py"
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -124,8 +126,9 @@ def fetch_targets(
     platforms: Optional[List[str]] = None,
     flagged_only: bool = False,
     limit: int = 0,
+    only_ids: Optional[set] = None,
 ) -> List[Dict]:
-    """최근 days일 안에 처음 저장된 대상 행. 최신순."""
+    """최근 days일 안에 처음 저장된 대상 행. 최신순. only_ids가 있으면 그 행만."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     wanted = [p for p in (platforms or PLATFORMS) if p in PLATFORMS]
     if not wanted:
@@ -137,7 +140,11 @@ def fetch_targets(
         "ORDER BY crawled_at DESC",
         (*wanted, cutoff.strftime("%Y-%m-%d %H:%M:%S")),
     ).fetchall()
-    targets = [dict(row) for row in rows if is_target(row, flagged_only)]
+    targets = [
+        dict(row)
+        for row in rows
+        if is_target(row, flagged_only) and (only_ids is None or row["id"] in only_ids)
+    ]
     return targets[:limit] if limit else targets
 
 
@@ -154,22 +161,22 @@ def old_markdown(html: str, url: str) -> Optional[str]:
     return md.strip() if md else None
 
 
-@lru_cache(maxsize=1)
-def _v85_module() -> Optional[types.ModuleType]:
-    """#85의 `trafilatura_markdown`. git이 없거나 커밋을 못 읽으면 None."""
+@lru_cache(maxsize=None)
+def _past_module(commit: str) -> Optional[types.ModuleType]:
+    """그 커밋의 `trafilatura_markdown`. git이 없거나 커밋을 못 읽으면 None."""
     try:
         source = subprocess.run(
-            ["git", "show", f"{V85_COMMIT}:{MODULE_PATH}"],
+            ["git", "show", f"{commit}:{MODULE_PATH}"],
             cwd=ROOT,
             capture_output=True,
             text=True,
             check=True,
         ).stdout
     except (OSError, subprocess.CalledProcessError) as exc:
-        print(f"[reextract] #85 추출기를 못 읽어 옛 방식만 봅니다: {exc}")
+        print(f"[reextract] {commit} 추출기를 못 읽어 건너뜁니다: {exc}")
         return None
     with tempfile.TemporaryDirectory() as tmp:
-        path = Path(tmp) / "trafilatura_markdown_v85.py"
+        path = Path(tmp) / f"trafilatura_markdown_{commit}.py"
         path.write_text(source, encoding="utf-8")
         spec = importlib.util.spec_from_file_location(path.stem, path)
         module = importlib.util.module_from_spec(spec)
@@ -177,10 +184,14 @@ def _v85_module() -> Optional[types.ModuleType]:
     return module
 
 
-def v85_markdown(html: str, url: str) -> Optional[str]:
-    module = _v85_module()
-    md = module.extract_markdown(html, url) if module else None
-    return md.strip() if md else None
+def past_markdowns(html: str, url: str) -> List[Optional[str]]:
+    """옛 방식과 `PAST_EXTRACTORS`의 결과. 저장된 본문이 이 중 하나로 만들어졌다."""
+    results = [old_markdown(html, url)]
+    for commit in PAST_EXTRACTORS:
+        module = _past_module(commit)
+        md = module.extract_markdown(html, url) if module else None
+        results.append(md.strip() if md else None)
+    return results
 
 
 def new_markdown(html: str, url: str) -> Optional[str]:
@@ -263,7 +274,7 @@ def reextract(
         return "받기 실패", None
     link = link_of(row)
     try:
-        stored = [old_markdown(html, link), v85_markdown(html, link)]
+        stored = past_markdowns(html, link)
         new = new_markdown(html, link)
     except Exception as exc:  # noqa: BLE001
         print(f"    [!] 추출 예외 (#{row['id']}): {exc}")
@@ -346,6 +357,12 @@ def run(
     return statuses
 
 
+def _read_ids(path: Path) -> set:
+    """한 줄에 하나씩 적은 행 id. 빈 줄과 `#` 줄은 건너뛴다."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    return {int(s) for s in (line.strip() for line in lines) if s and s[0] != "#"}
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -362,6 +379,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="굵은 글씨 뒤 띄어쓰기가 빠진 행만 (목록만 깨진 행은 못 고른다)",
     )
     parser.add_argument("--limit", type=int, default=0, help="최대 처리 건수")
+    parser.add_argument(
+        "--ids", type=Path, help="이 파일에 한 줄씩 적은 행 id만 (--days 안에서)"
+    )
     parser.add_argument(
         "--dry-run", action="store_true", help="다시 추출만 하고 저장하지 않는다"
     )
@@ -383,7 +403,12 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     try:
         rows = fetch_targets(
-            conn, args.days, args.platform, args.flagged_only, args.limit
+            conn,
+            args.days,
+            args.platform,
+            args.flagged_only,
+            args.limit,
+            _read_ids(args.ids) if args.ids else None,
         )
         if not rows:
             print("[reextract] 대상 없음")
