@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from skim_core.db import get_connection, init_db
 
@@ -158,7 +159,7 @@ class PlanTests(unittest.TestCase):
 
     def test_replaces_only_the_article_part(self):
         old, new = "**A.**B\n\n**C.**D", "- **A.** B\n- **C.** D"
-        status, update = reextract.plan_update(self._row(_hn_body(old)), old, new)
+        status, update = reextract.plan_update(self._row(_hn_body(old)), [old], new)
         self.assertEqual(status, reextract.CHANGED)
         self.assertEqual(update["content_markdown"], _hn_body(new))
         self.assertEqual(update["word_count"], len(_hn_body(new).split()))
@@ -166,18 +167,40 @@ class PlanTests(unittest.TestCase):
     def test_skips(self):
         old, new = "**A.**B", "**A.** B"
         cases = {
-            "변화 없음": (_hn_body(old), old, old),
-            "옛 결과 불일치": (_hn_body("page was edited"), old, new),
-            "이미 고침": (_hn_body(new), old, new),
-            "위치 모호": (f"{old}\n\n{old}", old, new),
-            "글자 손실": (_hn_body(old), old, "**A.**"),
-            "추출 실패": (_hn_body(old), None, new),
+            "변화 없음": (_hn_body(old), [old], old),
+            "옛 결과 불일치": (_hn_body("page was edited"), [old], new),
+            "이미 고침": (_hn_body(new), [old], new),
+            "위치 모호": (f"{old}\n\n{old}", [old], new),
+            "글자 손실": (_hn_body(old), [old], "**A.**"),
+            "추출 실패": (_hn_body(old), [None, None], new),
         }
-        for expected, (body, old_md, new_md) in cases.items():
+        for expected, (body, stored, new_md) in cases.items():
             with self.subTest(expected):
-                status, update = reextract.plan_update(self._row(body), old_md, new_md)
+                status, update = reextract.plan_update(self._row(body), stored, new_md)
                 self.assertEqual(status, expected)
                 self.assertIsNone(update)
+
+    def test_replaces_whichever_extractor_made_the_body(self):
+        # #85가 만든 본문이면 옛 방식 결과는 본문에 없고 #85 결과가 있다.
+        old, v85, new = "**A.**B", "- **A.** B\n\ncut", "- **A.** B\n\ncut. Rest."
+        status, update = reextract.plan_update(
+            self._row(_hn_body(v85)), [old, v85], new
+        )
+        self.assertEqual(status, reextract.CHANGED)
+        self.assertEqual(update["content_markdown"], _hn_body(new))
+
+    def test_moved_text_is_not_a_loss(self):
+        # 옛 방식이 엉뚱한 자리에 두던 글을 제자리로 옮긴 경우
+        old = "Gap filler. may fill the gap.\n\n__Vary__"
+        new = "Gap filler. __Vary__ may fill the gap."
+        status, _ = reextract.plan_update(self._row(_hn_body(old)), [old], new)
+        self.assertEqual(status, reextract.CHANGED)
+
+    def test_lost_word_is_caught_even_with_gains(self):
+        old = "Heading line.\n\nBody text."
+        new = "Body text. Plus a long new paragraph with many more words."
+        status, _ = reextract.plan_update(self._row(_hn_body(old)), [old], new)
+        self.assertEqual(status, "글자 손실")
 
     def test_gained_letters_are_allowed(self):
         self.assertTrue(reextract.keeps_all_letters("**A.**B", "# Title\n\n**A.** B"))
@@ -185,6 +208,13 @@ class PlanTests(unittest.TestCase):
 
 
 class RunTests(_DbCase):
+    def setUp(self):
+        super().setUp()
+        # #85 추출기는 git 이력에서 읽는다. CI의 얕은 체크아웃에는 그 커밋이 없다.
+        patcher = patch.object(reextract, "v85_markdown", return_value=None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_real_extraction_round_trip(self):
         old = reextract.old_markdown(PAGE, ORIGINAL)
         new = reextract.new_markdown(PAGE, ORIGINAL)
@@ -239,8 +269,12 @@ class RunTests(_DbCase):
             raise OSError("boom")
 
         rows = reextract.fetch_targets(self.conn, days=30)
-        result = reextract.run(self.conn, rows, dry_run=False, delay=0, fetch=broken)
+        ids = {}
+        result = reextract.run(
+            self.conn, rows, dry_run=False, delay=0, fetch=broken, ids=ids
+        )
         self.assertEqual(result["받기 실패"], 1)
+        self.assertEqual(ids, {"받기 실패": [row_id]})
         self.assertEqual(self._body(row_id), "**A.**B")
 
 

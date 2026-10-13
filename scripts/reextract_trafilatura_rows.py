@@ -1,16 +1,22 @@
 #!/usr/bin/env python
-"""#85 전에 trafilatura로 추출한 행의 목록과 굵은 글씨를 다시 추출한다 (#86).
+"""trafilatura로 추출해 저장한 행을 지금 추출기로 다시 추출한다 (#86).
 
-trafilatura 2.0.0의 마크다운 출력은 목록 기호를 빼 항목을 한 문단으로 붙이고, 굵은
-글씨 뒤 띄어쓰기를 지웠다(`**A.**B`, #84). 원문 페이지를 다시 받아 옛 방식과 새
-방식으로 각각 추출하고, 옛 방식 결과가 저장된 본문에 글자 그대로 한 번 들어 있을 때만
-그 부분을 새 결과로 바꾼다.
+저장된 본문은 두 추출기 중 하나로 만들어졌다.
+
+  - 옛 방식(`trafilatura.extract`): 목록 기호를 빼 항목을 한 문단으로 붙이고, 굵은 글씨
+    뒤 띄어쓰기를 지웠다(`**A.**B`, #84).
+  - #85(`6a46a76`의 `extract_markdown`): 위를 고쳤지만 서식이 겹친 문단의 뒷부분과,
+    `<body>` 없는 압축 문서의 본문을 잃었다(#89). 2026-10-13 밤부터 #90 머지 전까지의
+    데일리 행과, 이 스크립트의 첫 실행이 바꾼 행이 이것이다.
+
+원문 페이지를 다시 받아 두 방식과 지금 방식으로 각각 추출하고, 두 방식 중 하나의 결과가
+저장된 본문에 글자 그대로 한 번 들어 있을 때만 그 부분을 지금 결과로 바꾼다.
 
   - 본문 앞뒤의 스토리 본문, GN 요약, 댓글 섹션은 건드리지 않는다. 바꾸는 범위는 옛
     결과와 똑같은 부분뿐이다.
   - 옛 결과가 본문과 다르면(원문이 바뀌었거나, 추출 설정이 달랐던 시기의 행) 그대로 둔다.
-  - 새 결과가 옛 결과의 글자를 하나라도 잃으면 그대로 둔다. 새 방식은 띄어쓰기와 목록
-    기호만 더해야 한다.
+  - 지금 결과가 옛 결과의 글자를 잃으면 그대로 둔다. 순서대로 다 들어 있거나(띄어쓰기,
+    목록 기호만 더함), 순서는 달라도 단어가 하나도 줄지 않아야 한다(제자리로 옮김).
   - producthunt는 뺀다. 추출한 주소(제품 사이트로 가는 리다이렉트)를 저장하지 않았다.
   - geeknews는 원문 주소만 받는다. news.hada.io는 부르지 않는다.
   - 피드 본문으로 추출한 행(feed-content)은 피드에 더는 없어 다시 받을 수 없다.
@@ -19,19 +25,24 @@ trafilatura 2.0.0의 마크다운 출력은 목록 기호를 빼 항목을 한 �
 
 사용:
     uv run python scripts/reextract_trafilatura_rows.py --days 30 --dry-run --limit 20
-    uv run python scripts/reextract_trafilatura_rows.py --days 30
+    uv run python scripts/reextract_trafilatura_rows.py --days 30 --diff-dir <폴더>
 """
 
 import argparse
+import importlib.util
 import json
 import re
 import sqlite3
+import subprocess
 import sys
+import tempfile
 import time
+import types
 from collections import Counter
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import urlparse
 
 import trafilatura
@@ -57,6 +68,11 @@ SAVE_RETRIES = 5
 SAVE_RETRY_WAIT = 30
 
 CHANGED = "바꿈"
+
+# #85의 추출기. 이 커밋의 모듈을 git에서 읽어 쓴다.
+V85_COMMIT = "6a46a76"
+MODULE_PATH = "packages/skim-core/src/skim_core/trafilatura_markdown.py"
+ROOT = Path(__file__).resolve().parent.parent
 
 
 def _extra(row) -> dict:
@@ -138,6 +154,35 @@ def old_markdown(html: str, url: str) -> Optional[str]:
     return md.strip() if md else None
 
 
+@lru_cache(maxsize=1)
+def _v85_module() -> Optional[types.ModuleType]:
+    """#85의 `trafilatura_markdown`. git이 없거나 커밋을 못 읽으면 None."""
+    try:
+        source = subprocess.run(
+            ["git", "show", f"{V85_COMMIT}:{MODULE_PATH}"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as exc:
+        print(f"[reextract] #85 추출기를 못 읽어 옛 방식만 봅니다: {exc}")
+        return None
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "trafilatura_markdown_v85.py"
+        path.write_text(source, encoding="utf-8")
+        spec = importlib.util.spec_from_file_location(path.stem, path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    return module
+
+
+def v85_markdown(html: str, url: str) -> Optional[str]:
+    module = _v85_module()
+    md = module.extract_markdown(html, url) if module else None
+    return md.strip() if md else None
+
+
 def new_markdown(html: str, url: str) -> Optional[str]:
     md = extract_markdown(html, url)
     return md.strip() if md else None
@@ -153,21 +198,39 @@ def keeps_all_letters(old: str, new: str) -> bool:
     return all(char in remaining for char in _letters(old))
 
 
+def keeps_all_words(old: str, new: str) -> bool:
+    """순서와 상관없이 old의 단어가 new에서 하나도 줄지 않았는지.
+
+    옛 방식이 엉뚱한 자리에 두던 글을 지금 방식이 제자리로 옮기면 순서 검사는
+    실패한다. 붙어 있던 단어(`andhelp`)를 띄우면 이 검사가 실패하므로 둘 중 하나만
+    통과하면 된다.
+    """
+    return not Counter(re.findall(r"\w+", old)) - Counter(re.findall(r"\w+", new))
+
+
 def plan_update(
-    row: Dict, old: Optional[str], new: Optional[str]
+    row: Dict, stored: Sequence[Optional[str]], new: Optional[str]
 ) -> Tuple[str, Optional[Dict]]:
-    """(상태, 바꿀 값). 바꾸지 않으면 바꿀 값은 None이다."""
-    if not old or not new:
+    """(상태, 바꿀 값). 바꾸지 않으면 바꿀 값은 None이다.
+
+    stored는 저장 당시 추출기 후보들의 결과다(옛 방식, #85). 본문에 한 번 들어 있는
+    첫 후보를 바꾼다.
+    """
+    candidates = [md for md in dict.fromkeys(stored) if md]
+    if not candidates or not new:
         return "추출 실패", None
+    body = row["content_markdown"] or ""
+    found = [md for md in candidates if body.count(md) == 1]
+    if not found:
+        if new in body:
+            return "이미 고침", None
+        if any(body.count(md) > 1 for md in candidates):
+            return "위치 모호", None
+        return "옛 결과 불일치", None
+    old = found[0]
     if old == new:
         return "변화 없음", None
-    body = row["content_markdown"] or ""
-    found = body.count(old)
-    if found == 0:
-        return ("이미 고침" if new in body else "옛 결과 불일치"), None
-    if found > 1:
-        return "위치 모호", None
-    if not keeps_all_letters(old, new):
+    if not (keeps_all_letters(old, new) or keeps_all_words(old, new)):
         return "글자 손실", None
     word_count = row.get("word_count")
     if word_count:
@@ -200,12 +263,12 @@ def reextract(
         return "받기 실패", None
     link = link_of(row)
     try:
-        old = old_markdown(html, link)
+        stored = [old_markdown(html, link), v85_markdown(html, link)]
         new = new_markdown(html, link)
     except Exception as exc:  # noqa: BLE001
         print(f"    [!] 추출 예외 (#{row['id']}): {exc}")
         return "추출 실패", None
-    return plan_update(row, old, new)
+    return plan_update(row, stored, new)
 
 
 def save(conn, updates: List[Dict]) -> int:
@@ -251,14 +314,20 @@ def run(
     delay: float = DEFAULT_DELAY,
     diff_dir: Optional[Path] = None,
     fetch: Callable[[Dict], Optional[str]] = fetch_html,
+    ids: Optional[Dict[str, List[int]]] = None,
 ) -> Counter:
-    """행마다 다시 추출해 배치 단위로 저장한다. 상태별 건수를 돌려준다."""
+    """행마다 다시 추출해 배치 단위로 저장한다. 상태별 건수를 돌려준다.
+
+    ids를 넘기면 상태별 행 id를 채운다.
+    """
     statuses: Counter = Counter()
     for start in range(0, len(rows), BATCH_SIZE):
         updates: List[Dict] = []
         for row in rows[start : start + BATCH_SIZE]:
             status, update = reextract(row, fetch)
             statuses[status] += 1
+            if ids is not None:
+                ids.setdefault(status, []).append(row["id"])
             statuses[f"{row['platform']}:{status}"] += 1
             if update:
                 updates.append(update)
@@ -296,7 +365,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--dry-run", action="store_true", help="다시 추출만 하고 저장하지 않는다"
     )
-    parser.add_argument("--diff-dir", type=Path, help="바꿀 부분의 전후를 쓸 폴더")
+    parser.add_argument(
+        "--diff-dir",
+        type=Path,
+        help="바꿀 부분의 전후와 상태별 행 id(statuses.json)를 쓸 폴더",
+    )
     parser.add_argument(
         "--delay", type=float, default=DEFAULT_DELAY, help="행 사이 대기 초"
     )
@@ -320,7 +393,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             f"[reextract] 대상 {len(rows)}건: "
             + ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))
         )
-        statuses = run(conn, rows, args.dry_run, args.delay, args.diff_dir)
+        ids: Dict[str, List[int]] = {}
+        statuses = run(conn, rows, args.dry_run, args.delay, args.diff_dir, ids=ids)
+        if args.diff_dir:
+            args.diff_dir.mkdir(parents=True, exist_ok=True)
+            (args.diff_dir / "statuses.json").write_text(
+                json.dumps(ids, ensure_ascii=False), encoding="utf-8"
+            )
         print("[reextract] 결과:")
         for key, value in sorted(statuses.items()):
             if ":" not in key:
