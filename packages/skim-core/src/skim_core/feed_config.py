@@ -137,24 +137,12 @@ PERSONAL_BLOGS = {
     "LangChain Releases": "https://github.com/langchain-ai/langchain/releases.atom",
 }
 
-# AI 빅테크 블로그/뉴스 (RSS + HTML 스크래핑 혼합)
+# AI 빅테크 블로그/뉴스 (RSS)
+# OpenAI와 Anthropic은 넣지 않는다. 이 맥에서는 별도 미러 저장소가 두 회사의 공개 글을
+# 본문까지 매일 받는다. 겹쳐 받던 때 OpenAI 글은 403으로 본문이 자주 비었고, RSS가 없는
+# Anthropic은 인덱스 HTML 파싱, 사이트맵, Playwright를 거쳐야 했다 (#82).
+# 2026-10-13 이전에 저장된 두 회사 행은 DB에 그대로 있다.
 AI_LABS_SOURCES = [
-    {"name": "OpenAI News", "type": "rss", "url": "https://openai.com/news/rss.xml"},
-    {
-        "name": "Anthropic News",
-        "type": "anthropic",
-        "url": "https://www.anthropic.com/news",
-    },
-    {
-        "name": "Anthropic Research",
-        "type": "anthropic",
-        "url": "https://www.anthropic.com/research",
-    },
-    {
-        "name": "Anthropic Engineering",
-        "type": "anthropic",
-        "url": "https://www.anthropic.com/engineering",
-    },
     # Webflow가 rss.xml을 내준다. 인덱스 HTML 파싱보다 정확하고 playwright가 필요 없다.
     {
         "name": "LangChain Blog",

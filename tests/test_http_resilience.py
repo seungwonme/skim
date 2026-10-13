@@ -10,7 +10,6 @@ import unittest
 from unittest.mock import patch
 
 from skim_core import enrichment, feed_utils
-from skim_core.crawlers.feed import ailabs
 from skim_core.feed_utils import USER_AGENT, make_retrying_session
 
 
@@ -48,7 +47,6 @@ class UserAgentConvergenceTests(unittest.TestCase):
         self.assertEqual(feed_utils.FEED_HEADERS["User-Agent"], USER_AGENT)
         self.assertEqual(enrichment._UA_HEADERS["User-Agent"], USER_AGENT)
         self.assertEqual(enrichment._HTTP_SESSION.headers["User-Agent"], USER_AGENT)
-        self.assertEqual(ailabs._SESSION.headers["User-Agent"], USER_AGENT)
 
     def test_user_agent_clears_the_known_block_line(self):
         # news.hada.io는 Chrome 메이저 버전을 본다. 124는 403, 128 이상은 통과(2026-08-09).
