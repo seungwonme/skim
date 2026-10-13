@@ -366,6 +366,8 @@ everyto가 거의 매일 회귀로 잡혀 run이 상시 `degraded`였고, 그 �
 - `packages/skim-core/src/skim_core/trafilatura_markdown.py`: trafilatura가 고른 본문 트리를 마크다운으로 바꾼다.
   trafilatura 2.0.0은 목록 기호와 굵은 글씨 뒤 띄어쓰기를 지운다(#84). trafilatura를 올리려면 lxml 6.1.1 이상이
   필요한데 2026-10 이 맥에서는 새 lxml 바이너리가 서명 정책에 막혔다. 올릴 때는 `tests/test_trafilatura_markdown.py`를 먼저 본다
+  서식 안의 서식이나 `<br>`은 trafilatura가 문단 뒷부분을 잃게 해서 넘기기 전에 푼다(#89). 문서는 `_load`로만 읽는다.
+  `lxml.html.fromstring`은 `<body>` 없는 압축 문서의 본문을 head에 넣고, trafilatura의 `load_html`은 첫 `/ >`까지 지운다
 - `packages/skim-core/src/skim_core/comments.py`: 플랫폼 중립 `Comment`와 본문 댓글 섹션 합성
 - `packages/skim-core/src/skim_core/feed_utils.py`: RSS/Atom 파싱, KST 변환. `FEED_HEADERS`의 Chrome 버전은 news.hada.io가 UA 문자열 단위 요청량으로 토픽 페이지를 막을 때 걸린다. 버전을 올리는 건 임시방편이고, 차단은 쓰지 않으면 몇십 분에 풀리므로 물러나는 쪽이 정답이다 (geeknews 크롤러의 간격·서킷브레이커). `CHALLENGE_MARKER`는 2026-09 차단의 형태였던 Turnstile 브라우저 확인 페이지의 표지다
 - `packages/skim-core/src/skim_core/feed_config.py`: RSS URL, YouTube 채널 ID, API endpoint 설정
