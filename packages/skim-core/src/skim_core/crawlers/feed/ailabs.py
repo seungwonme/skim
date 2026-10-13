@@ -1,245 +1,21 @@
 """
 @file ailabs.py
-@description AI 빅테크 블로그/뉴스 멀티소스 크롤러 (RSS + HTML 스크래핑)
+@description AI 빅테크 블로그 RSS 멀티소스 크롤러
 
-정확도 우선. 각 post 링크를 실제로 방문해 `<meta property="article:published_time">`
-기반으로 정확한 발행일을 확보하고, 인덱스 페이지 DOM 구조 변경에 대한 방어선을 둔다.
+소스는 `feed_config.AI_LABS_SOURCES`에 있고 전부 RSS다. Anthropic, OpenAI는 별도
+미러가 받아서 넣지 않는다 (#82). 그 두 소스를 위해 두던 인덱스 HTML 파싱, 사이트맵,
+Playwright 발행일 조회 경로도 함께 지웠다.
 """
 
 import asyncio
-import json
-import re
 from datetime import datetime, timedelta, timezone
-from functools import lru_cache
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Iterable, List, Optional
 from urllib.parse import urlparse
 
-import requests
-from bs4 import BeautifulSoup
-
-from ...enrichment import _fetch_rendered_html, enrich_with_content
+from ...enrichment import enrich_with_content
 from ...feed_config import AI_LABS_SOURCES
-from ...feed_utils import (
-    fetch_feed,
-    finish_feed_items,
-    is_within_range,
-    make_retrying_session,
-)
+from ...feed_utils import fetch_feed, finish_feed_items
 from ...models import Post
-
-REQUEST_TIMEOUT = 20
-
-_DATE_ANTHROPIC = re.compile(r"\b([A-Z][a-z]{2,9}) (\d{1,2}), (20\d\d)\b")
-
-_SESSION = make_retrying_session({"Accept": "text/html,*/*"})
-
-
-def _fetch_html(url: str) -> Optional[str]:
-    try:
-        resp = _SESSION.get(url, timeout=REQUEST_TIMEOUT)
-    except requests.RequestException as e:
-        print(f"  [!] HTTP fetch 실패 ({url[:60]}...): {e}")
-        return None
-    if resp.status_code != 200:
-        print(f"  [!] HTTP {resp.status_code} ({url[:60]}...)")
-        return None
-    return resp.text
-
-
-def _parse_date_text(text: str) -> Optional[datetime]:
-    """'Apr 17, 2026' 또는 'April 17, 2026'을 UTC datetime으로 변환."""
-    if not text:
-        return None
-    m = _DATE_ANTHROPIC.search(text)
-    if not m:
-        return None
-    month, day, year = m.group(1), m.group(2), m.group(3)
-    for fmt in ("%b %d, %Y", "%B %d, %Y"):
-        try:
-            return datetime.strptime(f"{month} {day}, {year}", fmt).replace(
-                tzinfo=timezone.utc
-            )
-        except ValueError:
-            continue
-    return None
-
-
-def _parse_iso8601(text: str) -> Optional[datetime]:
-    """ISO 8601 / RFC 3339 문자열을 UTC datetime으로 변환."""
-    if not text:
-        return None
-    candidate = text.strip()
-    if candidate.endswith("Z"):
-        candidate = candidate[:-1] + "+00:00"
-    try:
-        dt = datetime.fromisoformat(candidate)
-    except ValueError:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
-
-
-def _parse_meta_from_html(html: str) -> Dict[str, Optional[str]]:
-    """HTML에서 published_time, title, author 메타 태그를 추출."""
-    soup = BeautifulSoup(html, "html.parser")
-
-    def _meta(*keys: str) -> Optional[str]:
-        for key in keys:
-            el = soup.find("meta", attrs={"property": key})
-            if el and el.get("content"):
-                return el["content"].strip()
-            el = soup.find("meta", attrs={"name": key})
-            if el and el.get("content"):
-                return el["content"].strip()
-        return None
-
-    published = _meta(
-        "article:published_time",
-        "og:article:published_time",
-        "article:published",
-        "pubdate",
-        "date",
-    )
-    if not published:
-        time_el = soup.find("time", attrs={"datetime": True})
-        if time_el:
-            published = time_el.get("datetime")
-
-    if not published:
-        for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
-            raw = script.string or script.get_text() or ""
-            if "datePublished" not in raw:
-                continue
-            try:
-                payload = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            candidates: List[Dict[str, Any]] = []
-            if isinstance(payload, list):
-                candidates.extend(p for p in payload if isinstance(p, dict))
-            elif isinstance(payload, dict):
-                candidates.append(payload)
-                graph = payload.get("@graph")
-                if isinstance(graph, list):
-                    candidates.extend(p for p in graph if isinstance(p, dict))
-            for node in candidates:
-                date = node.get("datePublished")
-                if date:
-                    published = date
-                    break
-            if published:
-                break
-
-    title = _meta("og:title", "twitter:title") or (
-        soup.title.get_text(strip=True) if soup.title else None
-    )
-    author = _meta("article:author", "author")
-
-    return {"published": published, "title": title, "author": author}
-
-
-@lru_cache(maxsize=8)
-def _fetch_sitemap_lastmod_map(sitemap_url: str) -> Dict[str, str]:
-    """sitemap.xml을 받아 URL → lastmod ISO 문자열 dict로 반환."""
-    html = _fetch_html(sitemap_url)
-    if not html:
-        return {}
-    mapping: Dict[str, str] = {}
-    for m in re.finditer(
-        r"<url>\s*<loc>([^<]+)</loc>\s*<lastmod>([^<]+)</lastmod>",
-        html,
-    ):
-        mapping[m.group(1).strip()] = m.group(2).strip()
-    return mapping
-
-
-_SITEMAP_URLS = {
-    "www.anthropic.com": "https://www.anthropic.com/sitemap.xml",
-    "openai.com": "https://openai.com/sitemap.xml",
-}
-
-
-def _sitemap_published(url: str) -> Optional[str]:
-    """사이트맵에서 lastmod을 조회. 발행일의 근사치로 사용."""
-    host = urlparse(url).netloc
-    sitemap_url = _SITEMAP_URLS.get(host)
-    if not sitemap_url:
-        return None
-    mapping = _fetch_sitemap_lastmod_map(sitemap_url)
-    return mapping.get(url)
-
-
-@lru_cache(maxsize=512)
-def _fetch_article_metadata(url: str) -> Dict[str, Optional[str]]:
-    """
-    article 페이지에서 published_time, title, author 메타데이터를 추출한다.
-    1) 빠른 HTTP fetch 후 meta 태그 파싱
-    2) published 못 찾으면 Playwright로 JS 렌더링 후 재파싱
-    lru_cache로 동일 URL 재요청을 방지한다.
-    """
-    empty: Dict[str, Optional[str]] = {"published": None, "title": None, "author": None}
-
-    html = _fetch_html(url)
-    baseline = _parse_meta_from_html(html) if html else dict(empty)
-
-    # 1) HTTP-fetched article meta (ISO published_time / ld+json) 즉시 사용
-    if baseline.get("published"):
-        return baseline
-
-    # 2) 사이트맵 `<lastmod>`. 지원 소스(Anthropic/LangChain/OpenAI)는 sitemap이
-    #    실질적으로 첫 게시일 근사치이고, HTTP 한 번이면 끝나 비용이 작다.
-    #    `_resolve_entry_datetime`에서 anchor_text_date가 있으면 anchor가 우선한다.
-    sitemap_date = _sitemap_published(url)
-    if sitemap_date:
-        baseline["published"] = sitemap_date
-        return baseline
-
-    # 3) 마지막 수단: Playwright 렌더링 (expensive). sitemap 커버리지 밖 URL 전용.
-    rendered = _fetch_rendered_html(url)
-    if rendered:
-        rendered_meta = _parse_meta_from_html(rendered)
-        if rendered_meta.get("published"):
-            return {
-                "published": rendered_meta["published"],
-                "title": rendered_meta.get("title") or baseline.get("title"),
-                "author": rendered_meta.get("author") or baseline.get("author"),
-            }
-        if rendered_meta.get("title") and not baseline.get("title"):
-            baseline["title"] = rendered_meta["title"]
-        if rendered_meta.get("author") and not baseline.get("author"):
-            baseline["author"] = rendered_meta["author"]
-    return baseline
-
-
-def _resolve_entry_datetime(
-    anchor_text_date: Optional[datetime],
-    url: str,
-) -> Optional[datetime]:
-    """발행일 신뢰도 우선순위.
-
-    1) article meta의 ISO published_time (HTTP 또는 Playwright) — 가장 정확
-    2) 인덱스 페이지 anchor text 날짜 — 소스가 큐레이션한 날짜
-    3) sitemap `<lastmod>` — 수정 시각일 수 있어 최후 수단
-    """
-    meta = _fetch_article_metadata(url)
-    published_raw = meta.get("published") or ""
-    iso_dt = _parse_iso8601(published_raw)
-    is_sitemap_only = (
-        bool(_sitemap_published(url))
-        and iso_dt
-        and _sitemap_published(url) == published_raw
-    )
-
-    # anchor 텍스트가 있고 article meta가 sitemap lastmod 밖에 없으면 anchor 우선
-    if anchor_text_date and is_sitemap_only:
-        return anchor_text_date
-
-    if iso_dt:
-        return iso_dt
-    if anchor_text_date:
-        return anchor_text_date
-    return _parse_date_text(published_raw)
 
 
 def _external_id_from_url(url: str) -> str:
@@ -251,126 +27,15 @@ def _external_id_from_url(url: str) -> str:
     return f"{parsed.netloc}{path}"
 
 
-# === 소스별 인덱스 파서 ===================================================
-
-
-def _parse_anthropic_index(source: dict, html: str) -> List[Dict[str, Any]]:
-    """Anthropic /news·/research·/engineering 인덱스에서 (url, anchor_date_text) 수집.
-
-    동일 post가 Featured(날짜 없음)와 PublicationList(날짜 있음)에 중복 렌더링되므로
-    각 URL에 대해 '날짜가 있는 anchor'를 우선 채택한다.
-    """
-    soup = BeautifulSoup(html, "html.parser")
-    section_path = urlparse(source["url"]).path.rstrip("/") + "/"
-
-    collected: Dict[str, Dict[str, Any]] = {}
-    for anchor in soup.find_all("a", href=True):
-        href = anchor["href"]
-        if not href.startswith(section_path):
-            continue
-
-        anchor_text = anchor.get_text(" ", strip=True)
-        anchor_date = _parse_date_text(anchor_text)
-
-        title_hint = None
-        for tag in ("h1", "h2", "h3", "h4"):
-            el = anchor.find(tag)
-            if el:
-                t = el.get_text(strip=True)
-                if t:
-                    title_hint = t
-                    break
-        if not title_hint:
-            title_el = anchor.select_one('[class*="title"]')
-            if title_el:
-                title_hint = title_el.get_text(strip=True)
-
-        existing = collected.get(href)
-        if existing is None:
-            collected[href] = {
-                "href": href,
-                "absolute_url": (
-                    href
-                    if href.startswith("http")
-                    else f"https://www.anthropic.com{href}"
-                ),
-                "anchor_date": anchor_date,
-                "title_hint": title_hint,
-                "default_author": "Anthropic",
-            }
-            continue
-
-        # 이미 본 URL이면: 날짜가 비어있던 항목에 날짜를 채우고, 더 구체적인 title로 보강
-        if existing.get("anchor_date") is None and anchor_date is not None:
-            existing["anchor_date"] = anchor_date
-        if not existing.get("title_hint") and title_hint:
-            existing["title_hint"] = title_hint
-
-    return list(collected.values())
-
-
-# === 소스 타입별 수집 ======================================================
+# === 수집 ======================================================
 
 
 def _collect_from_rss(
     source: dict, since: datetime, limit: Optional[int] = None
 ) -> List[dict]:
-    """RSS 소스(OpenAI 등)."""
+    """RSS 소스."""
     results = fetch_feed(source["url"], f"ailabs/{source['name']}", since)
     return results[:limit] if limit else results
-
-
-def _collect_from_html(
-    source: dict,
-    since: datetime,
-    index_parser,
-    *,
-    limit: Optional[int] = None,
-    fast_metadata: bool = False,
-) -> List[dict]:
-    """HTML 스크래핑 + article metadata fallback 공통 경로."""
-    html = _fetch_html(source["url"])
-    if not html:
-        return []
-
-    results: List[dict] = []
-    for entry in index_parser(source, html):
-        url = entry["absolute_url"]
-        anchor_date = entry.get("anchor_date")
-        if anchor_date and not is_within_range(anchor_date, since):
-            continue
-
-        meta: Dict[str, Optional[str]] = {}
-        if fast_metadata and anchor_date:
-            entry_dt = anchor_date
-        else:
-            entry_dt = _resolve_entry_datetime(anchor_date, url)
-        if not is_within_range(entry_dt, since):
-            continue
-
-        if not fast_metadata:
-            meta = _fetch_article_metadata(url)
-        title = (meta.get("title") or entry.get("title_hint") or "").strip()
-        if not title:
-            continue
-        author = (meta.get("author") or entry.get("default_author") or "").strip()
-
-        results.append(
-            {
-                "platform": f"ailabs/{source['name']}",
-                "title": title,
-                "url": url,
-                "author": author,
-                "published": entry_dt.astimezone(timezone.utc).isoformat()
-                if entry_dt
-                else "",
-                "summary": "",
-                "external_id": _external_id_from_url(url),
-            }
-        )
-        if limit and len(results) >= limit:
-            break
-    return results
 
 
 def _dispatch(
@@ -378,26 +43,16 @@ def _dispatch(
     since: datetime,
     *,
     limit: Optional[int] = None,
-    fast_metadata: bool = False,
 ) -> Iterable[dict]:
-    t = source.get("type")
-    if t == "rss":
-        results = _collect_from_rss(source, since, limit=limit)
-        for item in results:
-            # 피드 guid가 아니라 URL로 고정한다. 소스가 RSS/HTML 경로를 오가면
-            # id 체계가 바뀌어 같은 글이 두 행으로 갈라진다 (실측 182행 중복).
-            if item.get("url"):
-                item["external_id"] = _external_id_from_url(item["url"])
-        return results
-    if t == "anthropic":
-        return _collect_from_html(
-            source,
-            since,
-            _parse_anthropic_index,
-            limit=limit,
-            fast_metadata=fast_metadata,
-        )
-    return []
+    if source.get("type") != "rss":
+        return []
+    results = _collect_from_rss(source, since, limit=limit)
+    for item in results:
+        # 피드 guid가 아니라 URL로 고정한다. 소스가 RSS/HTML 경로를 오가면
+        # id 체계가 바뀌어 같은 글이 두 행으로 갈라진다 (실측 182행 중복).
+        if item.get("url"):
+            item["external_id"] = _external_id_from_url(item["url"])
+    return results
 
 
 def _dedupe_by_url(items: List[dict]) -> List[dict]:
@@ -444,7 +99,7 @@ def _item_to_post(item: dict) -> Post:
 
 
 class AILabsCrawler:
-    """AI 빅테크 뉴스 통합 크롤러 (OpenAI / Anthropic / LangChain)."""
+    """AI 빅테크 블로그 통합 크롤러 (LangChain, DeepMind, Google Research 등)."""
 
     platform: str = "ailabs"
 
@@ -480,7 +135,6 @@ class AILabsCrawler:
                         source,
                         since,
                         limit=count,
-                        fast_metadata=no_content,
                     )
                 )
             except Exception as e:  # pylint: disable=broad-except
@@ -496,7 +150,7 @@ class AILabsCrawler:
             print(f"  -> 중복제거 후 {len(all_items)}개 글")
 
         # 소스별 limit(=count)은 과수집 방지용이고, count는 전역 상한이다.
-        # 소스 9개면 최대 9*count개가 모이므로 여기서 한 번 더 자른다.
+        # 소스 N개면 최대 N*count개가 모이므로 여기서 한 번 더 자른다.
         return finish_feed_items(
             all_items,
             _item_to_post,

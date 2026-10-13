@@ -11,7 +11,7 @@ Skim에 넣을 source 후보와 promotion checklist입니다. 구현 계획은 `
 - Articles: Every.to, `PERSONAL_BLOGS`의 블로그와 뉴스레터
 - Video: `YOUTUBE_CHANNELS`의 YouTube channels
 - Papers: Hugging Face Daily Papers, arXiv (cs.AI, cs.CL, cs.LG, cs.CV)
-- AI labs: OpenAI, Anthropic, LangChain, Google DeepMind, Google Research, Hugging Face, Mistral
+- AI labs: LangChain, Google DeepMind, Google Research, Hugging Face, Mistral
 
 ## 등록하지 않은 소스
 

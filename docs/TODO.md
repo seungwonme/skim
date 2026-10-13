@@ -11,7 +11,7 @@ Candidate sources and promotion checklist for Skim. Keep implementation plans un
 - Articles: Every.to, blogs and newsletters in `PERSONAL_BLOGS`
 - Video: YouTube channels in `YOUTUBE_CHANNELS`
 - Papers: Hugging Face Daily Papers, arXiv (cs.AI, cs.CL, cs.LG, cs.CV)
-- AI labs: OpenAI, Anthropic, LangChain, Google DeepMind, Google Research, Hugging Face, Mistral
+- AI labs: LangChain, Google DeepMind, Google Research, Hugging Face, Mistral
 
 ## Candidate Accounts
 
