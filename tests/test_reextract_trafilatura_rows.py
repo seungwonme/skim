@@ -118,6 +118,17 @@ class TargetTests(_DbCase):
         ids = {row["id"] for row in reextract.fetch_targets(self.conn, days=30)}
         self.assertEqual(ids, {hn, rendered, gn})
 
+    def test_only_ids_narrows_targets(self):
+        first = self._insert(
+            "blogs", ORIGINAL, "x", {"enrichment_method": "trafilatura"}
+        )
+        self._insert("blogs", ORIGINAL, "y", {"enrichment_method": "trafilatura"})
+        ids = {
+            row["id"]
+            for row in reextract.fetch_targets(self.conn, days=30, only_ids={first})
+        }
+        self.assertEqual(ids, {first})
+
     def test_flagged_only_picks_broken_bold(self):
         broken = self._insert(
             "blogs", ORIGINAL, "**A.**B", {"enrichment_method": "trafilatura"}
@@ -210,8 +221,8 @@ class PlanTests(unittest.TestCase):
 class RunTests(_DbCase):
     def setUp(self):
         super().setUp()
-        # #85 추출기는 git 이력에서 읽는다. CI의 얕은 체크아웃에는 그 커밋이 없다.
-        patcher = patch.object(reextract, "v85_markdown", return_value=None)
+        # 지난 추출기는 git 이력에서 읽는다. CI의 얕은 체크아웃에는 그 커밋이 없다.
+        patcher = patch.object(reextract, "PAST_EXTRACTORS", ())
         patcher.start()
         self.addCleanup(patcher.stop)
 
