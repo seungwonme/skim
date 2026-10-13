@@ -35,6 +35,7 @@ except ImportError:  # pragma: no cover — optional dependency
 from .comments import Comment, append_comment_section, render_comment_section
 from .feed_utils import USER_AGENT, make_retrying_session
 from .paths import workspace_root
+from .trafilatura_markdown import extract_markdown
 
 # 렌더 스레드를 기다릴 때 playwright 자체 타임아웃 위에 얹는 여유. 브라우저 launch와
 # 종료가 이 안에 들어간다.
@@ -255,19 +256,14 @@ def _trafilatura_extract(html: str, url: str, fragment: bool = False) -> Optiona
     """trafilatura로 HTML → markdown 본문 추출. subprocess 없이 Python 내부 처리.
 
     fragment는 이미 본문만 떼어 낸 HTML이다. 짧은 결과도 버리지 않는다.
+    마크다운 변환은 `trafilatura_markdown`이 한다. trafilatura 2.0.0의 마크다운 출력은
+    목록 기호와 굵은 글씨 뒤 띄어쓰기를 지운다 (#84).
     """
     if trafilatura is None:
         return None
-    options = {"config": _fragment_config()} if fragment else {}
     try:
-        md = trafilatura.extract(
-            html,
-            url=url,
-            output_format="markdown",
-            include_comments=False,
-            include_tables=True,
-            no_fallback=False,
-            **options,
+        md = extract_markdown(
+            html, url, config=_fragment_config() if fragment else None
         )
     except Exception as e:  # pylint: disable=broad-except
         print(f"    [!] trafilatura 실패 ({url[:60]}...): {e}")
