@@ -111,6 +111,90 @@ class ListMarkdownTests(unittest.TestCase):
         self.assertNotIn("␠", md)
 
 
+class NestedFormattingTests(unittest.TestCase):
+    """서식 안의 서식이나 `<br>`이 있으면 trafilatura가 문단을 망가뜨린다 (#89).
+
+    문단을 도는 도중 안쪽 태그를 지워 순회가 어긋난다. 아래 기대값은 전부 trafilatura
+    2.0.0이 그대로 두면 뒷부분을 잃거나 줄을 엉뚱하게 가르던 입력이다.
+    """
+
+    def test_nested_formatting_keeps_rest_of_paragraph(self):
+        md = extract_markdown(
+            _page("<p>Start <em><strong>Note</strong></em>. More. <b>Bold</b> end.</p>")
+        )
+        self.assertIn("Start **Note**. More. **Bold** end.", md)
+
+    def test_formatting_inside_formatting_with_text(self):
+        md = extract_markdown(
+            _page(
+                "<p>Start <strong>Note: <em>this</em> thing</strong>. More."
+                " <b>Bold</b> end.</p>"
+            )
+        )
+        self.assertIn("Start **Note: this thing**. More. **Bold** end.", md)
+
+    def test_two_nested_groups_in_a_row(self):
+        md = extract_markdown(
+            _page(
+                "<p>Ask, <em><strong>but read this guide,</strong></em> "
+                "<em><strong>or search</strong></em>. No one likes it.</p>"
+            )
+        )
+        self.assertIn("**but read this guide,** **or search**. No one likes it.", md)
+
+    def test_links_inside_formatting_are_left_alone(self):
+        # 링크는 안에 있어도 멀쩡하고, 본문과 메뉴를 가르는 링크 밀도 판단에 쓰인다.
+        md = extract_markdown(
+            _page('<p>Start <strong><a href="/x">linked</a></strong> after. End.</p>')
+        )
+        self.assertIn("Start **linked** after. End.", md)
+
+    def test_break_inside_formatting(self):
+        # AWS 블로그의 소제목 형태
+        md = extract_markdown(
+            _page(
+                '<p>Intro <span style="text-decoration: underline"><strong>Why Web'
+                " Functions <br></strong></span>Modern web apps. <b>Bold</b> end.</p>"
+            )
+        )
+        self.assertIn("**Why Web Functions**\n\nModern web apps. **Bold** end.", md)
+
+    def test_break_before_element_is_kept(self):
+        # 글자도 꼬리도 없는 `<br>`은 trafilatura가 버려 앞뒤가 붙었다.
+        md = extract_markdown(_page("<p>Some text<br><strong>Why</strong> it.</p>"))
+        self.assertIn("Some text\n\n**Why** it.", md)
+
+    def test_hidden_text_inside_formatting_does_not_leak(self):
+        md = extract_markdown(
+            _page(
+                '<p>Start <strong>Visible <span style="display:none">SECRET</span>'
+                " text</strong> tail.</p>"
+            )
+        )
+        self.assertNotIn("SECRET", md)
+
+
+class LoadTests(unittest.TestCase):
+    """한 줄로 압축된 문서를 읽을 때 본문을 잃지 않는다 (#89, danluu.com)."""
+
+    HTML = (
+        "<!DOCTYPE html><html lang=en><meta charset=utf-8><title>T</title>"
+        "<header><strong>Intro words</strong></header><main><p>Body with a "
+        "<a href=/everything-is-broken/ >link</a> here.</p></main>"
+    )
+
+    def test_doctype_removal_stops_at_first_bracket(self):
+        # trafilatura의 load_html은 첫 `/ >`까지 지워 "Intro words"를 잃는다.
+        self.assertIn("Intro words", protect_inline_spaces(self.HTML))
+
+    def test_body_is_not_left_inside_head(self):
+        # libxml2는 `<header>`부터 전부 head에 넣는다.
+        out = protect_inline_spaces(self.HTML)
+        self.assertIn("<body>", out)
+        self.assertLess(out.index("<body>"), out.index("Intro words"))
+        self.assertLess(out.index("<title>"), out.index("<body>"))
+
+
 class ProtectInlineSpacesTests(unittest.TestCase):
     def test_leaves_preformatted_text_alone(self):
         html = "<div><pre>a <b>b</b> c</pre></div>"
