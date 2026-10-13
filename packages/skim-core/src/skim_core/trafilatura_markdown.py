@@ -49,6 +49,9 @@ except ImportError:  # pragma: no cover - trafilatura는 skim-core 의존성이�
 # 공백 대신 넣어 두는 표시. 공백 문자가 아니어서 trim()을 통과하고, 인쇄 가능한 문자라
 # trafilatura의 제어 문자 제거에도 걸리지 않는다. 원문에 이 문자가 있으면 공백이 된다.
 SPACE_MARK = "␠"
+# 하위 목록 들여쓰기 표시. trafilatura의 sanitize가 줄 앞 공백을 지워서 표시로 넘긴다.
+INDENT_MARK = "␉"
+_INDENT_AT_LINE_START = re.compile(rf"(?m)^{INDENT_MARK}+")
 _MARK_RUN = rf"[ {SPACE_MARK}]*{SPACE_MARK}[ {SPACE_MARK}]*"
 # 줄 첫머리(목록 기호 뒤 포함)와 줄 끝의 표시는 지운다. 끝에 남은 공백 둘은 줄바꿈이 된다.
 _MARK_AT_LINE_START = re.compile(rf"(?m)^([ \t]*(?:[-*+] |\d+\. )?){_MARK_RUN}")
@@ -330,7 +333,12 @@ def protect_inline_spaces(html: str) -> str:
 
 
 def restore_spaces(markdown: str) -> str:
-    """`SPACE_MARK`를 공백으로 되돌린다. 줄 첫머리와 끝의 표시는 지운다."""
+    """`SPACE_MARK`를 공백으로 되돌린다. 줄 첫머리와 끝의 표시는 지운다.
+
+    줄 첫머리의 `INDENT_MARK`는 같은 수의 공백이 된다.
+    """
+    markdown = _INDENT_AT_LINE_START.sub(lambda m: " " * len(m.group()), markdown)
+    markdown = markdown.replace(INDENT_MARK, "")
     markdown = _MARK_AT_LINE_START.sub(r"\1", markdown)
     markdown = _MARK_AT_LINE_END.sub("", markdown)
     return _MARK_INSIDE.sub(" ", markdown)
@@ -344,20 +352,46 @@ def _list_marker(item: _Element) -> str:
     return "- "
 
 
-def _process_element(element: _Element, out: List[str]) -> None:
-    """trafilatura.xml.process_element(2.0.0)와 같되 목록 항목만 다르게 쓴다.
+def _ends_line(out: List[str]) -> bool:
+    for chunk in reversed(out):
+        if chunk:
+            return chunk.endswith("\n")
+    return True
 
-    항목은 기호를 항상 앞에 붙이고 줄바꿈을 항목 끝에 둔다.
+
+def _process_item(item: _Element, out: List[str]) -> None:
+    """목록 항목. 기호를 항상 앞에 붙이고 줄바꿈을 항목 끝에 둔다.
+
+    하위 목록은 줄을 바꿔 상위 항목 기호 폭만큼 들여 쓴다. 줄을 안 바꾸면 첫 하위
+    항목이 상위 항목 줄에 붙는다(`- Files- Visiting Files`, #93). 하위 목록 뒤에는
+    빈 줄을 넣지 않는다.
     """
-    if element.tag == "item":
-        out.append(_list_marker(element))
-        if element.text:
-            out.append(element.text)
-        for child in element:
+    width = sum(len(_list_marker(a)) for a in item.iterancestors("item"))
+    out.append(INDENT_MARK * width + _list_marker(item))
+    if item.text:
+        out.append(item.text)
+    for child in item:
+        if child.tag != "list":
             _process_element(child, out)
+            continue
+        if not _ends_line(out):
+            out.append("\n")
+        if child.text and child.text.strip():
+            out.append(child.text)
+        for sub in child:
+            _process_element(sub, out)
+        if child.tail:
+            out.append(child.tail)
+    if not _ends_line(out):
         out.append("\n")
-        if element.tail:
-            out.append(element.tail)
+    if item.tail:
+        out.append(item.tail)
+
+
+def _process_element(element: _Element, out: List[str]) -> None:
+    """trafilatura.xml.process_element(2.0.0)와 같되 목록 항목만 다르게 쓴다."""
+    if element.tag == "item":
+        _process_item(element, out)
         return
 
     if element.text:
