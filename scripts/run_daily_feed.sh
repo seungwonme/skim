@@ -71,6 +71,15 @@ caffeinate -i -w $$ &
 # 실패해도 크롤은 계속한다 (백업이 수집을 막을 이유가 없다).
 uv run skim backup --keep 3 >>"$LOG" 2>&1 || echo "[!] 백업 실패" >>"$LOG"
 
+# 렌더 추출에 쓰는 chromium이 있는지 크롤 전에 확인한다. 브라우저는 다른 프로젝트와
+# 함께 쓰는 공유 캐시(~/Library/Caches/ms-playwright)에 있어서, 다른 프로젝트가 새
+# playwright를 설치하며 캐시를 정리할 때 이 버전의 빌드가 지워질 수 있다. 2026-10-15
+# 01:19에 chromium 1208이 그렇게 사라졌고, doctor는 크롤이 끝난 뒤에야 알린다.
+# 이미 있으면 출력 없이 몇 초 만에 끝나고, 없으면 다시 받는다. 실패해도 크롤은 계속한다
+# (렌더가 필요한 글만 본문이 비고, 끝의 doctor가 경고한다).
+uv run playwright install chromium >>"$LOG" 2>&1 ||
+    echo "[!] playwright 브라우저 설치 실패" >>"$LOG"
+
 # --days 1을 유지한다. 발행일이 밀리는 소스(arxiv, huggingface)는 CLI의
 # min_lookback_days()가 창을 알아서 넓히므로, 여기서 전역으로 넓히면 이미
 # 저장된 항목까지 매일 다시 enrichment하게 된다.
