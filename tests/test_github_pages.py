@@ -119,6 +119,24 @@ class GithubUrlTests(unittest.TestCase):
 
 
 class ReleaseNotesTests(unittest.TestCase):
+    def test_single_paragraph_release_feed_notes_are_kept(self):
+        for note in (
+            "Release v0.5.22",
+            "vllm-proto 0.6.0",
+            "[CI] Pin model eval to its revision (#123)",
+        ):
+            with self.subTest(note=note):
+                item = {
+                    "platform": "blogs/vLLM Releases",
+                    "title": "v0.32.0rc2",
+                    "url": RELEASE_URL,
+                    "content_html": f"<p>{note}</p>",
+                }
+                with patch("skim_core.enrichment._http_fetch_html", return_value=None):
+                    enrich_with_content([item])
+                self.assertEqual(item["content_markdown"], note)
+                self.assertEqual(item["enrichment_method"], "feed-content")
+
     def test_notes_are_read_from_the_markdown_body_only(self):
         with patch(
             "skim_core.enrichment._http_fetch_html", return_value=RELEASE_PAGE
