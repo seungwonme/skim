@@ -261,6 +261,10 @@ def _trafilatura_extract(html: str, url: str, fragment: bool = False) -> Optiona
     """
     if trafilatura is None:
         return None
+    if fragment:
+        # load_html은 자식 없는 <p> 하나를 잘못된 HTML로 버린다. 이미 본문만
+        # 받은 릴리스 노트 조각은 문서로 감싸 한 줄 설명도 읽을 수 있게 한다.
+        html = f"<html><body>{html}</body></html>"
     try:
         md = extract_markdown(
             html, url, config=_fragment_config() if fragment else None
@@ -864,7 +868,10 @@ def enrich_with_content(items: List[dict]) -> List[dict]:
 
         data = _extract_for_platform(item, url)
 
-        if data and _is_content_usable(data, item.get("title", ""), min_words=3):
+        min_words = 1 if is_github_release_url(item.get("enrich_url") or url) else 3
+        if data and _is_content_usable(
+            data, item.get("title", ""), min_words=min_words
+        ):
             item["content_markdown"] = data.get("content_markdown", "")
             item["word_count"] = data.get("word_count", 0)
             item["description"] = data.get("description", "")

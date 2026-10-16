@@ -18,12 +18,19 @@ The registry (`tracked_sources`) owns this list. `fetch_tier` is observed by
 | blogs | LangChain Releases | rss+enrich | https://github.com/langchain-ai/langchain/releases.atom |
 | blogs | Latent Space | rss | https://www.latent.space/feed |
 | blogs | NAVER D2 | rss | https://d2.naver.com/d2.atom |
+| blogs | NVIDIA CUDA Blog | rss+enrich | https://developer.nvidia.com/blog/tag/cuda/feed/ |
 | blogs | Phil Schmid | rss+enrich | https://www.philschmid.de/rss |
 | blogs | PyTorchKR News | rss | https://discuss.pytorch.kr/c/news/14.rss |
+| blogs | Sean Goedecke | rss | https://www.seangoedecke.com/rss.xml |
+| blogs | SemiAnalysis | rss | https://newsletter.semianalysis.com/feed |
+| blogs | SGLang Releases | rss | https://github.com/sgl-project/sglang/releases.atom |
 | blogs | Simon Willison | rss | https://simonwillison.net/atom/everything/ |
 | blogs | Tidy First (Kent Beck) | rss | https://newsletter.kentbeck.com/feed |
 | blogs | TLDR AI | rss+enrich | https://tldr.tech/api/rss/ai |
 | blogs | Toss Tech | rss | https://toss.tech/rss.xml |
+| blogs | Triton Releases | rss | https://github.com/triton-lang/triton/releases.atom |
+| blogs | vLLM Blog | rss+enrich | https://vllm.ai/blog/rss.xml |
+| blogs | vLLM Releases | rss | https://github.com/vllm-project/vllm/releases.atom |
 | blogs | 당근 | rss | https://medium.com/feed/daangn |
 | blogs | 우아한형제들 | rss | https://techblog.woowahan.com/feed/ |
 | everyto | AI & I Podcast | rss+enrich | https://every.to/podcast/feed |

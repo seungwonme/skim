@@ -42,7 +42,7 @@ Skim은 여러 public feed와 세션 기반 social source에서 post를 수집�
 | Feed | arXiv | Atom API (cs.AI, cs.CL, cs.LG, cs.CV) |
 | Feed | Hugging Face | Daily Papers JSON API |
 | Feed | Every.to | RSS feeds |
-| Feed | Blogs | `PERSONAL_BLOGS`의 RSS feeds |
+| Feed | Blogs | `tracked_sources`에 등록된 RSS 피드. `PERSONAL_BLOGS`는 폴백과 초기 목록 |
 | Feed | AI Labs | LangChain, DeepMind, Google Research, Hugging Face, Mistral |
 | API | Threads | Instagram Private API |
 | API | X | `twitter-api-client` 기반 GraphQL |
@@ -192,6 +192,12 @@ Skim은 hosted crawler service, data resale product, platform access control 우
 - 현재 CLI 동작과 맞지 않는 문서 수정
 
 PR을 열기 전에는 변경 범위에 맞는 가장 작은 test부터 실행하고, shared behavior를 건드렸다면 root gate까지 통과시켜 주세요.
+
+## 참고 프로젝트
+
+[Horizon](https://github.com/Thysrael/Horizon)의 공개 정보원 구성을 참고해 vLLM Blog, Sean Goedecke, SemiAnalysis, NVIDIA CUDA Blog와 vLLM, SGLang, Triton 릴리스 피드를 추가했습니다. Skim의 기존 RSS/Atom 수집 경로를 사용하므로 AI API 키가 필요하지 않습니다. 등록된 피드는 [소스 목록](docs/SOURCES.md)에서 확인할 수 있습니다.
+
+새 블로그 글은 정규화한 원문 URL이 같고, 공백을 제외한 본문 전체가 기존 글에 들어 있을 때 추가 DB 저장을 건너뜁니다. 본문이 비었거나 내용이 다르면 저장 대상으로 남고, 기존 글의 빈 필드나 추출 실패를 복구하는 갱신도 그대로 수행합니다.
 
 ## 라이선스
 

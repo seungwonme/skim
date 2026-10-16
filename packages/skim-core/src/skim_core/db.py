@@ -617,6 +617,34 @@ def save_posts(
     return saved
 
 
+def _is_redundant_blog(
+    conn: sqlite3.Connection, platform: str, ext_id: str, url: str, body: str
+) -> bool:
+    """같은 원문과 본문이 이미 있으면 새 blogs 행만 생략한다.
+
+    URL만 같다고 거르면 댓글이나 요약만 있던 글의 원문을 잃는다. 공백을 제외한
+    새 본문 전체가 기존 본문에 들어 있을 때만 중복으로 본다. 기존 blogs 행은
+    평소 upsert를 거쳐 빈 메타데이터나 실패한 추출을 복구할 수 있게 한다.
+    """
+    canonical_url = canonical_url_for(url)
+    if platform != "blogs" or not canonical_url or not body:
+        return False
+    rows = conn.execute(
+        """SELECT platform, external_id, content_markdown FROM posts
+           WHERE canonical_url = ?""",
+        (canonical_url,),
+    ).fetchall()
+    if any(
+        row["platform"] == platform and row["external_id"] == ext_id for row in rows
+    ):
+        return False
+    normalized = f" {' '.join(body.split())} "
+    return any(
+        normalized in f" {' '.join((row['content_markdown'] or '').split())} "
+        for row in rows
+    )
+
+
 def _save_posts_rows(
     conn: sqlite3.Connection,
     posts: list,
@@ -703,6 +731,8 @@ def _save_posts_rows(
                 ext_id = row["external_id"]
 
         try:
+            if _is_redundant_blog(conn, row_platform, ext_id, url, body):
+                continue
             conn.execute(
                 """INSERT INTO posts
                    (platform, source, external_id, author, title, content,
