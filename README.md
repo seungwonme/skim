@@ -42,7 +42,7 @@ Skim collects posts from multiple public feeds and session-based social sources,
 | Feed | arXiv | Atom API (cs.AI, cs.CL, cs.LG, cs.CV) |
 | Feed | Hugging Face | Daily Papers JSON API |
 | Feed | Every.to | RSS feeds |
-| Feed | Blogs | RSS feeds in `PERSONAL_BLOGS` |
+| Feed | Blogs | Registered RSS feeds in `tracked_sources`; `PERSONAL_BLOGS` provides fallback seeds |
 | Feed | AI Labs | LangChain, DeepMind, Google Research, Hugging Face, Mistral |
 | API | Threads | Instagram Private API |
 | API | X | GraphQL via `twitter-api-client` |
@@ -193,6 +193,12 @@ Small fixes are welcome. Useful contribution areas:
 - documentation corrections that match current CLI behavior
 
 Before opening a PR, run the smallest relevant test first, then the root gates when the change touches shared behavior.
+
+## Acknowledgements
+
+[Horizon](https://github.com/Thysrael/Horizon)'s public-source configuration informed the addition of vLLM Blog, Sean Goedecke, SemiAnalysis, NVIDIA CUDA Blog, and the vLLM, SGLang, and Triton release feeds. These sources use Skim's existing RSS/Atom pipeline without an AI API key. See the [source inventory](docs/SOURCES.md) for registered feeds.
+
+For new blog items, Skim skips an additional database row when the normalized article URL matches and the complete incoming body, apart from whitespace, is already present in a stored post. Empty or different bodies remain eligible for storage, and existing posts continue through the normal update path.
 
 ## License
 
