@@ -118,7 +118,15 @@ def _item_to_post(item: dict) -> Post:
     extras = {
         key: value
         for key, value in item.items()
-        if key in ("enrichment_method", "enrichment_error") and value is not None
+        if key
+        in (
+            "enrichment_method",
+            "enrichment_error",
+            "content_status",
+            "enrich_url",
+            "tagline",
+        )
+        and value is not None
     }
     return Post(
         platform="producthunt",

@@ -158,6 +158,8 @@ def _fetch_rendered_html(url: str, timeout_ms: int = 30000) -> Optional[str]:
 _AGGREGATOR_PLATFORMS = frozenset({"hackernews", "lobsters", "everyto", "reddit"})
 # 릴리스 노트나 짧은 공지도 정당한 본문이라 기사용 60단어 게이트를 낮춘다.
 _AGGREGATOR_MIN_WORDS = 20
+# 제품 소개는 기사보다 짧다. 내용 판정은 유지하되 정상적인 47단어 소개를 버리지 않는다.
+_PRODUCT_MIN_WORDS = 20
 
 _UA_HEADERS = {
     "User-Agent": USER_AGENT,
@@ -337,8 +339,36 @@ def _is_content_usable(data: Optional[dict], title: str, min_words: int = 60) ->
     return True
 
 
+def _article_html(html: Optional[str]) -> tuple[Optional[str], bool]:
+    """본문 영역을 우선하고, 메뉴만 있는 JS 앱 껍데기는 렌더링으로 넘긴다."""
+    if not html:
+        return None, False
+    soup = BeautifulSoup(html, "html.parser")
+    regions = soup.select('main, [role="main"]') or soup.select("article")
+    if len(regions) != 1:
+        return html, False
+    region = regions[0]
+    noscript = " ".join(
+        node.get_text(" ", strip=True) for node in region.select("noscript")
+    )
+    needs_js = bool(
+        re.search(
+            r"(?:needs?|requires?|enable).*javascript|javascript.*(?:required|disabled)",
+            noscript,
+            re.I,
+        )
+    )
+    for node in region.select(
+        "nav, header, footer, aside, script, style, noscript, svg, canvas, button, select, input"
+    ):
+        node.decompose()
+    if needs_js and len(region.get_text(" ", strip=True).split()) < 20:
+        return None, True
+    return f"<html><body>{region}</body></html>", False
+
+
 def extract_article_content(
-    url: str, title: str
+    url: str, title: str, *, min_words: int = 60
 ) -> tuple[Optional[dict], str, Optional[str]]:
     """
     품질 게이트가 붙은 본문 추출 — Python 내부에서 전부 처리.
@@ -352,12 +382,14 @@ def extract_article_content(
     기본 경로에서는 제외했다.
     """
     # 1) HTTP + trafilatura
-    html = _http_fetch_html(url)
+    html, needs_render = _article_html(_http_fetch_html(url))
     data = _trafilatura_extract(html, url) if html else None
-    if _is_content_usable(data, title):
+    if _is_content_usable(data, title, min_words=min_words):
         return data, "trafilatura", None
     thin_reason_1 = (
-        "http fetch failed"
+        "javascript shell requires rendering"
+        if needs_render
+        else "http fetch failed"
         if not html
         else "trafilatura empty"
         if not data
@@ -365,9 +397,9 @@ def extract_article_content(
     )
 
     # 2) Playwright 렌더 + trafilatura
-    rendered_html = _fetch_rendered_html(url)
+    rendered_html, _ = _article_html(_fetch_rendered_html(url))
     rendered_data = _trafilatura_extract(rendered_html, url) if rendered_html else None
-    if _is_content_usable(rendered_data, title):
+    if _is_content_usable(rendered_data, title, min_words=min_words):
         return rendered_data, "playwright+trafilatura", None
     thin_reason_2 = (
         "playwright fetch failed"
@@ -381,8 +413,9 @@ def extract_article_content(
 
     # 3) defuddle 최후 시도 (실패해도 무관)
     try:
-        defuddle_data = defuddle(url)
-        if _is_content_usable(defuddle_data, title):
+        # JS 앱의 미렌더링 HTML로 돌아가 메뉴를 본문화하지 않고 렌더링 결과를 쓴다.
+        defuddle_data = None if needs_render else defuddle(url)
+        if _is_content_usable(defuddle_data, title, min_words=min_words):
             return defuddle_data, "defuddle", None
         if rendered_html:
             with tempfile.NamedTemporaryFile(
@@ -397,7 +430,7 @@ def extract_article_content(
                     Path(tmp_path).unlink()
                 except OSError:
                     pass
-            if _is_content_usable(defuddle_file_data, title):
+            if _is_content_usable(defuddle_file_data, title, min_words=min_words):
                 return defuddle_file_data, "playwright+defuddle", None
     except Exception as e:  # pylint: disable=broad-except
         print(f"    [!] defuddle fallback 예외: {e}")
@@ -421,15 +454,17 @@ def _extract_feed_content_html(item: dict, fragment: bool = False) -> Optional[d
 
 
 def _extract_article_or_feed_content(
-    item: dict, target_url: str
+    item: dict, target_url: str, min_words: int = 60
 ) -> tuple[Optional[dict], str, Optional[str]]:
     title = item.get("title", "")
-    data, method, error = extract_article_content(target_url, title)
-    if _is_content_usable(data, title):
+    data, method, error = extract_article_content(
+        target_url, title, min_words=min_words
+    )
+    if _is_content_usable(data, title, min_words=min_words):
         return data, method, error
 
     feed_data = _extract_feed_content_html(item)
-    if _is_content_usable(feed_data, title):
+    if _is_content_usable(feed_data, title, min_words=min_words):
         return feed_data, "feed-content", None
 
     return data, method, error
@@ -764,7 +799,7 @@ def _enrich_article_item(item: dict, url: str, min_words: int = 60) -> Optional[
         item["enrichment_method"] = method
         print(f"    -> method={method}")
         return data
-    data, method, error = _extract_article_or_feed_content(item, target_url)
+    data, method, error = _extract_article_or_feed_content(item, target_url, min_words)
     if error:
         item["enrichment_error"] = error
         print(f"    [!] enrichment 경고: {error}")
@@ -777,8 +812,10 @@ def _enrich_article_item(item: dict, url: str, min_words: int = 60) -> Optional[
             return pdf
         if tagline:
             data = {"content_markdown": tagline, "word_count": len(tagline.split())}
+            item["content_status"] = "partial"
         else:
             data = None
+            item["content_status"] = "unavailable"
             item.setdefault("enrichment_error", "content not usable")
         method = "failed"
     item["enrichment_method"] = method
@@ -803,18 +840,16 @@ def _apply_youtube_comments(item: dict, url: str) -> None:
 
 def _extract_for_platform(item: dict, url: str) -> Optional[dict]:
     """플랫폼에 맞는 본문 추출 경로를 고른다."""
-    platform = item["platform"]
+    platform = item["platform"].split("/", 1)[0]
     if platform == "geeknews":
         # GeekNews 본문은 crawlers/feed/geeknews.py의 enrich_geeknews_items가 만든다.
         # 토픽 페이지는 요청량으로 막히는 자리라 그 모듈의 간격과 서킷브레이커를
         # 거쳐야 한다. 여기서 열면 둘 다 우회해 2026-09의 차단을 되풀이한다 (#29).
         print("    [!] GeekNews는 enrich_geeknews_items로 추출합니다. 건너뜁니다.")
         return None
-    if (
-        platform.startswith("ailabs")
-        or platform.startswith("blogs")
-        or platform == "producthunt"
-    ):
+    if platform == "producthunt":
+        return _enrich_article_item(item, url, min_words=_PRODUCT_MIN_WORDS)
+    if platform in {"ailabs", "blogs"}:
         return _enrich_article_item(item, url)
     if platform in _AGGREGATOR_PLATFORMS:
         # 링크 애그리게이터는 defuddle 단발만 타고 있었다. 3단 사다리

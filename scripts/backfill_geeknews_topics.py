@@ -39,6 +39,7 @@ from typing import Dict, List, Optional
 from skim_core.comments import append_comment_section
 from skim_core.crawlers.feed.geeknews import (
     COMMENT_HEADER,
+    TOPIC_BUDGET,
     TopicPage,
     enrich_geeknews_item,
     fetch_topic,
@@ -79,7 +80,7 @@ _NEEDS_METRICS = "COALESCE(likes, 0) = 0"
 _FAILURES = f"COALESCE(json_extract({_EXTRA}, '$.geeknews_topic_failures'), 0)"
 
 
-def fetch_targets(conn, limit: int = 0) -> List[Dict]:
+def fetch_targets(conn, limit: int = 0, ids: Optional[List[int]] = None) -> List[Dict]:
     """토픽 페이지를 받아 본 적 없고 채울 것이 남은 행. 우선순위, 최신순."""
     sql = f"""
         SELECT id, url, title, summary, content_markdown, likes, comments, extra,
@@ -92,9 +93,12 @@ def fetch_targets(conn, limit: int = 0) -> List[Dict]:
           AND json_extract({_EXTRA}, '$.geeknews_topic') IS NULL
           AND {_FAILURES} < ?
           AND (({_NEEDS_BODY}) OR ({_NEEDS_COMMENTS}) OR ({_NEEDS_METRICS}))
-        ORDER BY priority, {_FAILURES}, timestamp DESC
     """
     params: list = [MAX_ROW_FAILURES]
+    if ids:
+        sql += f" AND id IN ({','.join('?' for _ in ids)})"
+        params.extend(ids)
+    sql += f" ORDER BY priority, {_FAILURES}, timestamp DESC"
     if limit:
         sql += " LIMIT ?"
         params.append(limit)
@@ -249,14 +253,33 @@ def run(conn, targets: List[Dict], delay: float) -> Dict[str, int]:
     return stats
 
 
+def wait_for_budget(required: int) -> None:
+    """선택한 복구 배치의 한도가 생길 때까지 기다린다. 요청이나 카운터 변경은 없다."""
+    previous = None
+    while (left := topic_budget_left()) < required:
+        reason = topic_pause_reason() if not left else f"남은 한도 {left}/{required}건"
+        if reason != previous:
+            print(f"[geeknews] 대기: {reason}", flush=True)
+            previous = reason
+        time.sleep(30)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--limit", type=int, default=0, help="최대 처리 건수")
     parser.add_argument("--dry-run", action="store_true", help="대상만 세고 끝낸다")
+    parser.add_argument("--ids", type=int, nargs="+", help="지정한 행만 복구")
+    parser.add_argument(
+        "--wait-for-budget",
+        action="store_true",
+        help="선택한 행의 요청 한도가 생길 때까지 대기 (--ids 필요)",
+    )
     parser.add_argument(
         "--delay", type=float, default=DEFAULT_DELAY, help="행 사이 대기 초"
     )
     args = parser.parse_args()
+    if args.wait_for_budget and not args.ids:
+        parser.error("--wait-for-budget은 --ids와 함께 사용합니다")
 
     try:
         conn = get_connection()
@@ -265,7 +288,7 @@ def main() -> int:
         return 1
 
     try:
-        targets = fetch_targets(conn, args.limit)
+        targets = fetch_targets(conn, args.limit, args.ids)
         by_priority = {
             p: sum(1 for t in targets if t["priority"] == p) for p in (1, 2, 3)
         }
@@ -276,14 +299,34 @@ def main() -> int:
         )
         if not left:
             print(topic_pause_reason())
-        if args.dry_run or not targets or not left:
+        if args.dry_run or not targets:
+            return 0
+        if args.wait_for_budget:
+            if len(targets) > TOPIC_BUDGET:
+                print(
+                    f"한 번에 대기 복구할 대상은 {TOPIC_BUDGET}건 이하로 지정하세요.",
+                    file=sys.stderr,
+                )
+                return 2
+            conn.close()
+            wait_for_budget(len(targets))
+            conn = get_connection()
+            targets = fetch_targets(conn, args.limit, args.ids)
+        elif not left:
             return 0
         stats = run(conn, targets, args.delay)
+        remaining = fetch_targets(conn, args.limit, args.ids) if args.ids else []
     finally:
         conn.close()
     print(
         f"완료: 채움 {stats['filled']} / 실패 {stats['failed']} / 삭제된 글 {stats['gone']}"
     )
+    if remaining:
+        print(
+            f"미복구 {len(remaining)}건: "
+            + ", ".join(str(row["id"]) for row in remaining)
+        )
+        return 2
     return 0
 
 

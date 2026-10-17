@@ -132,6 +132,7 @@ def fetch_hn_discussion(story_id: str) -> Optional[dict]:
             "story_text": _html_to_text(data.get("text") or ""),
             "comments": comments,
             "points": data.get("points"),
+            "url": data.get("url"),
         }
     except Exception as e:
         typer.echo(f"   [!] HN 댓글 수집 실패(id={story_id}): {e}")
@@ -388,6 +389,15 @@ class HackerNewsCrawler:
                 if merged:
                     item["content_markdown"] = merged
                     item["word_count"] = len(merged.split())
+                    if item.get("enrichment_method") == "failed":
+                        item["content_status"] = "partial"
+                elif (
+                    discussion is not None
+                    and "url" in discussion
+                    and not discussion["url"]
+                    and "news.ycombinator.com" in (item.get("url") or "")
+                ):
+                    item["content_status"] = "source_empty"
                 # 피드가 이미 실어 보낸 Points/# Comments를 먼저 쓴다. 추가 요청이 없다.
                 # 거기서 못 뽑을 때만 item API로 폴백한다.
                 # Top Stories 경로가 Firebase에서 이미 채운 값은 덮지 않는다.
@@ -467,6 +477,7 @@ class HackerNewsCrawler:
                 "image",
                 "description",
                 "original_url",
+                "content_status",
             )
             and value
         }
