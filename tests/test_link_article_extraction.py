@@ -148,7 +148,14 @@ class RedditRssFallbackTests(unittest.TestCase):
 class AggregatorLadderTests(unittest.TestCase):
     def test_aggregators_use_the_three_step_ladder(self):
         # defuddle 단발은 파이프라인에서 가장 약한 경로다.
-        for platform in ("hackernews", "lobsters", "everyto", "reddit"):
+        for platform in (
+            "hackernews",
+            "hackernews/show",
+            "hackernews/ask",
+            "lobsters",
+            "everyto",
+            "reddit",
+        ):
             item = {"platform": platform, "title": "t"}
             with patch.object(
                 enrichment,

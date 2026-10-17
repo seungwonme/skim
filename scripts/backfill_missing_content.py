@@ -9,7 +9,9 @@ content도 비어 있어 `skim migrate`(content -> content_markdown 승격)로�
   - arxiv, huggingface -> enrich_papers_with_content (HTML -> PDF -> abstract)
   - 그 외              -> enrich_with_content
 
-재실행해도 안전하다. 이미 채워진 행은 대상에서 빠진다.
+재실행해도 안전하다. 이미 채워진 행은 대상에서 빠진다. --include-failed는 댓글이나
+태그라인만 남은 실패도 고른다. --ids로 명시한 Product Hunt 행만 예외적으로 처리한다.
+기존 댓글과 출처는 보존하고, 추출 중 다른 작업이 바꾼 행은 덮어쓰지 않는다.
 
 사용:
     uv run python scripts/backfill_missing_content.py --dry-run
@@ -19,18 +21,26 @@ content도 비어 있어 `skim migrate`(content -> content_markdown 승격)로�
 """
 
 import argparse
+import json
+import re
 import sqlite3
 import sys
 import time
-from typing import Dict, List
+from datetime import datetime, timezone
+from typing import Dict, List, Optional
+from urllib.parse import parse_qs, urlsplit
 
+from skim_core.comments import append_comment_section
 from skim_core.crawlers.feed.hackernews import (
     compose_hn_body,
     fetch_hn_discussion,
     search_story_id,
 )
+from skim_core.crawlers.feed.producthunt import _redirect_url, _tagline
 from skim_core.db import get_connection
 from skim_core.enrichment import enrich_papers_with_content, enrich_with_content
+from skim_core.feed_config import PRODUCTHUNT_RSS
+from skim_core.feed_utils import fetch_feed
 
 # 논문은 HTML/PDF 전문 경로가 따로 있다.
 PAPER_PLATFORMS = {"arxiv", "huggingface"}
@@ -57,15 +67,31 @@ SAVE_RETRIES = 5
 SAVE_RETRY_WAIT = 30
 
 
-def fetch_targets(conn, platform: str = None, limit: int = 0) -> List[Dict]:
+def fetch_targets(
+    conn,
+    platform: str = None,
+    limit: int = 0,
+    *,
+    ids: Optional[List[int]] = None,
+    include_failed: bool = False,
+) -> List[Dict]:
     """본문 정본이 빈 행. url이 없으면 재추출할 방법이 없어 제외한다."""
+    extra = "COALESCE(NULLIF(TRIM(extra), ''), '{}')"
+    excluded = EXCLUDED_PLATFORMS - ({"producthunt"} if ids else set())
+    condition = "TRIM(COALESCE(content_markdown, '')) = ''"
+    if include_failed:
+        condition += f" OR json_extract({extra}, '$.enrichment_method') = 'failed'"
     sql = (
-        "SELECT id, platform, source, url, title, summary FROM posts "
-        "WHERE COALESCE(content_markdown, '') = '' "
+        "SELECT id, platform, source, url, title, summary, external_id, content_markdown, extra FROM posts "
+        f"WHERE ({condition}) "
+        f"AND COALESCE(json_extract({extra}, '$.content_status'), '') != 'source_empty' "
         "AND COALESCE(url, '') <> '' "
-        f"AND platform NOT IN ({','.join('?' for _ in EXCLUDED_PLATFORMS)})"
+        f"AND platform NOT IN ({','.join('?' for _ in excluded)})"
     )
-    params: list = list(EXCLUDED_PLATFORMS)
+    params: list = list(excluded)
+    if ids:
+        sql += f" AND id IN ({','.join('?' for _ in ids)})"
+        params.extend(ids)
     if platform:
         sql += " AND platform = ?"
         params.append(platform)
@@ -84,11 +110,64 @@ def to_item(row: Dict) -> Dict:
     platform이 아니라 source다("ailabs/OpenAI News"). 구버전 행은 source가
     NULL이라 platform으로 폴백한다.
     """
+    extra = _extra(row)
     return {
         "platform": row.get("source") or row["platform"],
-        "url": row["url"],
+        "url": extra.get("original_url") or row["url"],
         "title": row.get("title") or "",
         "summary": row.get("summary") or "",
+        **{key: extra[key] for key in ("enrich_url", "tagline") if extra.get(key)},
+    }
+
+
+def _extra(row: Dict) -> dict:
+    return json.loads(row.get("extra") or "{}")
+
+
+def _update(row: Dict, item: Dict) -> Dict:
+    """새 원문만 교체하고, 이미 저장한 댓글과 실패 시의 본문은 보존한다."""
+    old_body = row.get("content_markdown") or ""
+    article = (item.get("content_markdown") or "").strip()
+    extra = _extra(row)
+    good = bool(article) and item.get("enrichment_method") != "failed"
+    if good:
+        marker = re.search(r"^## .*(?:Comments|Replies)\s*$", old_body, re.MULTILINE)
+        previous = old_body[: marker.start()] if marker else old_body
+        previous = re.sub(r"\n+---\s*$", "", previous).strip()
+        if row["platform"] == HN_PLATFORM and previous and previous not in article:
+            article = previous + "\n\n---\n\n" + article
+        body = append_comment_section(
+            article, old_body[marker.start() :] if marker else None
+        )
+        extra.pop("enrichment_error", None)
+        extra.pop("content_status", None)
+    else:
+        body = old_body or article
+    for key in (
+        "enrichment_method",
+        "enrichment_error",
+        "content_status",
+        "enrich_url",
+        "tagline",
+    ):
+        if key in item:
+            extra[key] = item[key]
+    if item.get("content_status") == "source_empty":
+        extra.pop("enrichment_error", None)
+        extra.pop("enrichment_method", None)
+    elif not good:
+        extra["enrichment_method"] = "failed"
+        extra.setdefault("enrichment_error", "no usable article body")
+        extra["content_status"] = "partial" if body else "unavailable"
+    extra["enrichment_checked_at"] = datetime.now(timezone.utc).isoformat()
+    return {
+        "id": row["id"],
+        "content_markdown": body,
+        "word_count": len(body.split()),
+        "extra": json.dumps(extra, ensure_ascii=False),
+        "old_body": row.get("content_markdown"),
+        "old_extra": row.get("extra"),
+        "outcome": "recovered" if good else extra.get("content_status", "unavailable"),
     }
 
 
@@ -101,21 +180,32 @@ def enrich_hn_rows(rows: List[Dict], delay: float) -> List[Dict]:
     enriched: List[Dict] = []
     for row in rows:
         item = to_item(row)
-        enrich_with_content([item])
-        article = (item.get("content_markdown") or "").strip()
-
-        story_id = search_story_id(row.get("title") or "", row.get("url") or "")
+        story_id = row.get("external_id") or ""
+        if not str(story_id).isdigit():
+            story_id = parse_qs(urlsplit(row["url"]).query).get("id", [None])[0]
+        if not story_id:
+            story_id = search_story_id(row.get("title") or "", row.get("url") or "")
         discussion = fetch_hn_discussion(story_id) if story_id else None
-
-        body = compose_hn_body(article, discussion).strip()
-        if body:
-            enriched.append(
-                {
-                    "id": row["id"],
-                    "content_markdown": body,
-                    "word_count": len(body.split()),
-                }
+        if "news.ycombinator.com" in item["url"]:
+            item["url"] = (discussion or {}).get("url") or ""
+        if item["url"]:
+            enrich_with_content([item])
+        elif discussion is None:
+            item.update(
+                enrichment_method="failed", enrichment_error="HN discussion unavailable"
             )
+        if not row.get("content_markdown"):
+            item["content_markdown"] = compose_hn_body(
+                item.get("content_markdown") or "", discussion
+            ).strip()
+        if (
+            discussion is not None
+            and not item["url"]
+            and not item.get("content_markdown")
+            and not row.get("content_markdown")
+        ):
+            item["content_status"] = "source_empty"
+        enriched.append(_update(row, item))
         if delay:
             time.sleep(delay)
     return enriched
@@ -138,6 +228,27 @@ def run_batch(rows: List[Dict], delay: float = 0.0) -> List[Dict]:
         if not group:
             continue
         items = [to_item(r) for r in group]
+        if any(row["platform"] == "producthunt" for row in group):
+            feed = fetch_feed(
+                PRODUCTHUNT_RSS,
+                "producthunt",
+                datetime(1970, 1, 1, tzinfo=timezone.utc),
+            )
+            for row, item in zip(group, items):
+                if row["platform"] != "producthunt" or item.get("enrich_url"):
+                    continue
+                match = next(
+                    (
+                        entry
+                        for entry in feed
+                        if entry.get("external_id") == row.get("external_id")
+                    ),
+                    None,
+                )
+                if match:
+                    item.update(
+                        enrich_url=_redirect_url(match), tagline=_tagline(match)
+                    )
         if delay:
             # 한 호스트에 몰아치면 차단당한다. producthunt 323건이 첫 실행에서
             # 통째로 빈손이었던 이유가 이것이었다(같은 URL을 한 건씩 부르면 추출된다).
@@ -147,15 +258,7 @@ def run_batch(rows: List[Dict], delay: float = 0.0) -> List[Dict]:
         else:
             enrich(items)
         for row, item in zip(group, items):
-            body = (item.get("content_markdown") or "").strip()
-            if body:
-                enriched.append(
-                    {
-                        "id": row["id"],
-                        "content_markdown": body,
-                        "word_count": item.get("word_count") or len(body.split()),
-                    }
-                )
+            enriched.append(_update(row, item))
     return enriched
 
 
@@ -168,15 +271,30 @@ def save(conn, enriched: List[Dict]) -> int:
     if not enriched:
         return 0
 
-    params = [(e["content_markdown"], e["word_count"], e["id"]) for e in enriched]
+    params = [
+        (
+            e["content_markdown"],
+            e["word_count"],
+            e["extra"],
+            e["id"],
+            e["old_body"],
+            e["old_extra"],
+        )
+        for e in enriched
+    ]
     for attempt in range(SAVE_RETRIES):
         try:
-            conn.executemany(
-                "UPDATE posts SET content_markdown = ?, word_count = ? WHERE id = ?",
+            cursor = conn.executemany(
+                "UPDATE posts SET content_markdown = ?, word_count = ?, extra = ? "
+                "WHERE id = ? AND content_markdown IS ? AND extra IS ?",
                 params,
             )
             conn.commit()
-            return len(enriched)
+            if cursor.rowcount != len(enriched):
+                print(
+                    f"[backfill] 동시 변경 {len(enriched) - cursor.rowcount}건은 덮어쓰지 않았습니다."
+                )
+            return cursor.rowcount
         except sqlite3.OperationalError as exc:
             if "locked" not in str(exc) or attempt == SAVE_RETRIES - 1:
                 raise
@@ -196,6 +314,14 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=0, help="최대 처리 건수")
     parser.add_argument("--dry-run", action="store_true", help="대상만 세고 끝낸다")
     parser.add_argument(
+        "--ids", type=int, nargs="+", help="지정한 행만 복구 (Product Hunt 포함)"
+    )
+    parser.add_argument(
+        "--include-failed",
+        action="store_true",
+        help="댓글/소개만 남은 원문 추출 실패도 포함",
+    )
+    parser.add_argument(
         "--delay",
         type=float,
         default=0.0,
@@ -209,10 +335,23 @@ def main() -> int:
         print(f"[backfill] DB를 열 수 없습니다: {exc}", file=sys.stderr)
         return 1
 
-    rows = fetch_targets(conn, args.platform, args.limit)
+    try:
+        return _run_selected(conn, args)
+    finally:
+        conn.close()
+
+
+def _run_selected(conn, args) -> int:
+    """선택한 행을 검사하고 실제 반영과 남은 실패를 각각 보고한다."""
+    rows = fetch_targets(
+        conn,
+        args.platform,
+        args.limit,
+        ids=args.ids,
+        include_failed=args.include_failed,
+    )
     if not rows:
         print("[backfill] 대상 없음")
-        conn.close()
         return 0
 
     counts: Dict[str, int] = {}
@@ -224,23 +363,28 @@ def main() -> int:
     )
 
     if args.dry_run:
-        conn.close()
         return 0
 
     filled = 0
+    unresolved = 0
     for start in range(0, len(rows), BATCH_SIZE):
         batch = rows[start : start + BATCH_SIZE]
         # 배치마다 커밋한다. 중간에 끊겨도 여기까지는 남고, 재실행하면 이어서 간다.
-        filled += save(conn, run_batch(batch, args.delay))
+        updates = run_batch(batch, args.delay)
+        for update in updates:
+            print(f"[backfill] row {update['id']}: {update['outcome']}")
+            unresolved += update["outcome"] not in {"recovered", "source_empty"}
+        filled += save(conn, updates)
         print(
-            f"[backfill] {min(start + BATCH_SIZE, len(rows))}/{len(rows)} 처리, 누적 {filled}건 채움"
+            f"[backfill] {min(start + BATCH_SIZE, len(rows))}/{len(rows)} 처리, 누적 {filled}건 DB 반영"
         )
 
-    conn.close()
     print(
-        f"[backfill] 완료: {filled}/{len(rows)}건 채움 (나머지는 원문 소실/추출 불가)"
+        f"[backfill] 완료: {filled}/{len(rows)}건 DB 반영 (원문 복구와 실패 상태 기록 포함)"
     )
-    return 0
+    if unresolved:
+        print(f"[backfill] 아직 원문을 확보하지 못한 항목: {unresolved}건")
+    return 2 if args.ids and (unresolved or filled != len(rows)) else 0
 
 
 if __name__ == "__main__":

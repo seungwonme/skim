@@ -110,6 +110,18 @@ uv run skim source export --out sources.opml           # 소스 목록 공유·�
 uv run skim source import sources.opml --platform blogs
 ```
 
+실행 상태 `success`는 수집 절차가 끝났다는 뜻입니다. `skim doctor`의 원문 추출 실패와 부분 본문 집계도 함께 확인하면 됩니다. 원문을 받지 못해도 댓글이나 짧은 제품 소개는 저장될 수 있습니다. `source_empty`는 원본이 본문과 댓글을 모두 제공하지 않은 항목입니다.
+
+확인한 행은 유지보수 명령으로 복구할 수 있습니다. 먼저 `--dry-run`으로 대상을 확인하면 됩니다. 복구는 기존 댓글을 보존하며, 추출 중 다른 작업이 바꾼 행은 덮어쓰지 않습니다.
+
+```bash
+uv run python scripts/backfill_missing_content.py --ids 123 456 --include-failed --dry-run
+uv run python scripts/backfill_missing_content.py --ids 123 456 --include-failed
+uv run python scripts/backfill_geeknews_topics.py --ids 789 --wait-for-budget
+```
+
+GeekNews 명령은 공유 요청 한도가 생길 때까지 기다립니다. 정기 수집과 백필도 같은 한도를 사용하므로, 복구에 쓴 요청은 한도 창이 지날 때까지 다음 수집의 가용량을 줄입니다.
+
 ## Agent Skill
 
 이 repository에는 agent skill이 `.agents/skills/skim/SKILL.md`에 있습니다. `.claude/skills/skim`은 이 폴더를 가리키는 상대 링크라 Claude Code와 다른 에이전트가 같은 사본을 읽습니다. 에이전트가 Skim checkout에서 상태 확인, source refresh, local research, coverage 점검, crawler triage, 시스템 임시 디렉터리(`$TMPDIR/skim/...`) 아래 source bundle 생성을 수행할 때 사용합니다.

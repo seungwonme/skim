@@ -111,6 +111,18 @@ uv run skim source export --out sources.opml           # share or back up the so
 uv run skim source import sources.opml --platform blogs
 ```
 
+An execution status of `success` means the crawl finished. Inspect the article-failure and partial-body counts in `skim doctor` as well: comments or a product tagline can be stored while the original article is unavailable. `source_empty` identifies a source that returned neither a body nor comments.
+
+Repair reviewed rows through the maintenance commands. Start with `--dry-run`; recovery preserves existing comments and skips rows changed by another writer during extraction.
+
+```bash
+uv run python scripts/backfill_missing_content.py --ids 123 456 --include-failed --dry-run
+uv run python scripts/backfill_missing_content.py --ids 123 456 --include-failed
+uv run python scripts/backfill_geeknews_topics.py --ids 789 --wait-for-budget
+```
+
+The GeekNews command waits for the shared request budget. It consumes the same budget as scheduled crawls and backfills, so a recovery batch reduces the requests available to the next crawl until the window expires.
+
 ## Agent Skill
 
 This repository includes an agent skill at `.agents/skills/skim/SKILL.md`; `.claude/skills/skim` is a relative link to it so Claude Code and other agents read the same copy. It helps an agent inspect Skim health, refresh sources, run local research, check coverage, triage crawler issues, and prepare source bundles under the system temp directory (`$TMPDIR/skim/...`) from a Skim checkout.

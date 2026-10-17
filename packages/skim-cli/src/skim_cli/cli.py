@@ -283,6 +283,7 @@ class _CrawlTally:
     empty: dict = field(default_factory=dict)
     # 플랫폼 -> (본문이 빈 글 수, 수집한 글 수)
     thin: dict = field(default_factory=dict)
+    article_failed: dict = field(default_factory=dict)
 
 
 def _day_start(moment: datetime) -> datetime:
@@ -450,9 +451,19 @@ def _crawl_platform(
     # save_posts와 같은 판정 함수를 써야 한다. API형 4종은 본문이 content로
     # 와서 저장 직전에 승격되므로, 승격 전 content_markdown만 보면 정상
     # 저장된 회차가 전량 실패로 잡힌다.
-    thin = sum(1 for p in posts if not canonical_body(p, platform))
+    thin = sum(
+        1
+        for p in posts
+        if not canonical_body(p, platform)
+        and getattr(p, "content_status", None) != "source_empty"
+    )
     if thin:
         tally.thin[platform] = (thin, len(posts))
+    article_failed = sum(
+        getattr(p, "enrichment_method", None) == "failed" for p in posts
+    )
+    if article_failed:
+        tally.article_failed[platform] = article_failed
 
     # DB 저장
     saved = save_posts(posts, platform)
@@ -531,6 +542,11 @@ def _report_crawl_warnings(tally: _CrawlTally) -> List[str]:
         )
         typer.echo(f"\n[!] 본문 추출 실패: {detail}")
         typer.echo("    반복되면 `uv run skim doctor`로 추출 환경을 점검하세요.")
+    if tally.article_failed:
+        detail = ", ".join(
+            f"{name} {count}건" for name, count in sorted(tally.article_failed.items())
+        )
+        typer.echo(f"[!] 원문 추출 실패 (댓글/소개만 저장된 항목 포함): {detail}")
     return regressed
 
 
@@ -560,7 +576,10 @@ def _finish_crawl(run_id: int, tally: _CrawlTally, regressed: List[str]) -> None
             f"전체 플랫폼 처리 완료 (0건 회귀: {', '.join(regressed)})",
         )
     else:
-        finish_run(run_id, "success", tally.total_saved, "전체 플랫폼 처리 완료")
+        summary = "전체 플랫폼 처리 완료"
+        if tally.article_failed:
+            summary += f"; 원문 추출 실패 {sum(tally.article_failed.values())}건 (대체 텍스트 포함)"
+        finish_run(run_id, "success", tally.total_saved, summary)
     typer.echo(f"\n완료: 총 {tally.total_saved}개 저장 (run #{run_id})")
 
 
@@ -883,15 +902,19 @@ def _doctor_read_db(
             for row in conn.execute(
                 f"""
                 SELECT platform, COUNT(*) AS total,
-                       SUM(CASE WHEN COALESCE(content_markdown, '') = '' THEN 1 ELSE 0 END) AS thin,
+                       SUM(CASE WHEN COALESCE(content_markdown, '') = ''
+                                AND COALESCE(json_extract({_EXTRA_JSON_SQL}, '$.content_status'), '') != 'source_empty'
+                           THEN 1 ELSE 0 END) AS thin,
                        SUM(CASE WHEN {FRAGMENT_BODY_SQL} THEN 1 ELSE 0 END) AS fragment,
-                       SUM(CASE WHEN {PARTIAL_STATUS_SQL} THEN 1 ELSE 0 END) AS partial
+                       SUM(CASE WHEN {PARTIAL_STATUS_SQL} THEN 1 ELSE 0 END) AS partial,
+                       SUM(CASE WHEN json_extract({_EXTRA_JSON_SQL}, '$.enrichment_method') = 'failed' THEN 1 ELSE 0 END) AS article_failed,
+                       SUM(CASE WHEN json_extract({_EXTRA_JSON_SQL}, '$.content_status') = 'source_empty' THEN 1 ELSE 0 END) AS source_empty
                 FROM posts
                 WHERE crawled_at >= datetime('now', '-{RECENT_THIN_LOOKBACK_DAYS} days')
                   AND NOT (platform = 'youtube' AND summary IS NULL)
                   {"AND platform = ?" if platform else ""}
                 GROUP BY platform
-                HAVING thin > 0 OR fragment > 0 OR partial > 0
+                HAVING thin > 0 OR fragment > 0 OR partial > 0 OR article_failed > 0 OR source_empty > 0
                 ORDER BY thin DESC
                 """,
                 params,
@@ -1086,6 +1109,8 @@ def _echo_recent_bodies(report: dict) -> None:
         ("thin", "missing body"),
         ("fragment", "feed fragment only"),
         ("partial", "partial body"),
+        ("article_failed", "article extraction failed (fallback text may exist)"),
+        ("source_empty", "source has no body or comments"),
     ):
         rows = [row for row in recent if row.get(key)]
         if rows:

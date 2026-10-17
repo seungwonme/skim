@@ -784,6 +784,7 @@ def _save_posts_rows(
                            WHEN (
                                 posts.extra IS NULL
                                 OR TRIM(posts.extra) = ''
+                                OR json_extract(posts.extra, '$.content_status') = 'source_empty'
                                 OR json_extract(posts.extra, '$.subtitle_lang') = 'summary'
                                 OR json_extract(posts.extra, '$.enrichment_method') = 'failed'
                            )

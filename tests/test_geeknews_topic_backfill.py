@@ -104,6 +104,25 @@ class _DbCase(unittest.TestCase):
 
 
 class TargetTests(_DbCase):
+    def test_explicit_ids_select_only_the_requested_backlog(self):
+        first = self._insert(1, extra={"content_status": "partial"})
+        self._insert(2, extra={"content_status": "partial"})
+        self.assertEqual(
+            [row["id"] for row in backfill.fetch_targets(self.conn, ids=[first])],
+            [first],
+        )
+
+    def test_budget_wait_does_not_send_requests_or_spend_budget(self):
+        with (
+            patch.object(backfill, "topic_budget_left", side_effect=[0, 1, 2]),
+            patch.object(backfill, "topic_pause_reason", return_value="not ready"),
+            patch.object(backfill.time, "sleep") as sleep,
+            patch.object(backfill, "fetch_topic") as request,
+        ):
+            backfill.wait_for_budget(2)
+        self.assertEqual(sleep.call_count, 2)
+        request.assert_not_called()
+
     def test_body_first_then_comments_then_metrics(self):
         failed = {"enrichment_method": "failed"}
         fragment = self._insert(1, extra=failed, timestamp="2026-09-01T00:00:00+00:00")
