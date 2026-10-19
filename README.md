@@ -94,6 +94,7 @@ Inspect and package local data:
 uv run skim doctor
 uv run skim doctor --platform reddit
 uv run skim doctor --strict            # exit 1 on any warning (for cron)
+uv run skim doctor --check-sessions    # one "who am I" request per SNS session
 uv run skim backup --keep 3            # online backup + quick_check
 uv run skim refresh-plan --days 1
 uv run skim coverage --days 7 --emit json
@@ -112,6 +113,8 @@ uv run skim source import sources.opml --platform blogs
 ```
 
 An execution status of `success` means the crawl finished. Inspect the article-failure and partial-body counts in `skim doctor` as well: comments or a product tagline can be stored while the original article is unavailable. `source_empty` identifies a source that returned neither a body nor comments.
+
+When an SNS platform (threads, x, linkedin, reddit) fails or returns nothing, the crawl sends one account request with the saved session and records the likely cause in the run summary: an expired login, a changed response with a live login, a rate limit, or a network failure.
 
 Repair reviewed rows through the maintenance commands. Start with `--dry-run`; recovery preserves existing comments and skips rows changed by another writer during extraction.
 

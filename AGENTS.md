@@ -67,6 +67,7 @@ uv run skim coverage --by-day --days 7                      # 플랫폼별 로�
 # 운영
 uv run skim backup --keep 3     # 온라인 백업 + quick_check
 uv run skim doctor --strict     # warning 있으면 exit 1
+uv run skim doctor --check-sessions   # SNS 세션마다 계정 확인 요청 1건 (로그인이 살아 있는지)
 uv run python scripts/backfill_geeknews_topics.py --dry-run    # GN 요약, 댓글이 빠진 행 수
 uv run python scripts/backfill_geeknews_topics.py --limit 100  # 남은 토픽 한도만큼 채움
 uv run python scripts/backfill_github_releases.py --dry-run   # GitHub 릴리스 노트, PDF 본문 재수집 대상 (#46)
@@ -218,6 +219,15 @@ everyto가 거의 매일 회귀로 잡혀 run이 상시 `degraded`였고, 그 �
 - 그보다 많으면 원래 창이 비는 날이 있는 소스다. 마지막 글 이후 침묵이 60일 최장
   공백보다 길 때만 회귀다.
 - SNS는 최근 N건을 받으므로 0건이면 늘 회귀다.
+- SNS가 0건 회귀하거나 실패하면 저장된 세션으로 계정 확인 요청을 1건 보내 원인을 가른다
+  (`session_check.py`, #103). 계정이 확인되면 응답 구조나 쿼리 변경, 안 되면 로그인
+  만료다. 결과는 `계정 확인:` 아래 `[!]` 줄과 run summary의 `계정 확인:` 항목에 남는다.
+  hycli `check`의 판정 방식이다. 예외나 0건만 보고는 둘을 구분하지 못해, 10/8~9
+  threads 0건(응답 구조 변경)에서 재로그인할지 코드를 고칠지 정하지 못했다.
+- 계정 확인 요청도 그 계정으로 식별되므로 수집이 잘된 플랫폼에는 보내지 않는다.
+  헤더, 특히 User-Agent는 그 플랫폼 크롤러와 같은 값을 쓴다. 2026-10-20 LinkedIn
+  세션이 크롤러와 다른 User-Agent로 보낸 시험 요청 뒤 30분 안에 끊겼다(원인 미확정).
+  새 플랫폼의 확인 요청을 만들 때도 크롤러의 상수를 가져다 쓴다.
 - 수~금의 arxiv(2일 창)는 주말 공백 때문에 뜸한 소스로 분류된다. 장애로 생긴 공백도
   60일 동안 최장 공백에 남아, 그동안은 그보다 짧은 다음 장애를 정상 공백으로 본다.
   arxiv 전면 실패는 예외로 올라오므로(아래 폴백 절) 이 판정에 기대지 않는다.
@@ -369,6 +379,8 @@ everyto가 거의 매일 회귀로 잡혀 run이 상시 `degraded`였고, 그 �
   서식 안의 서식이나 `<br>`은 trafilatura가 문단 뒷부분을 잃게 해서 넘기기 전에 푼다(#89). 문서는 `_load`로만 읽는다.
   `lxml.html.fromstring`은 `<body>` 없는 압축 문서의 본문을 head에 넣고, trafilatura의 `load_html`은 첫 `/ >`까지 지운다
 - `packages/skim-core/src/skim_core/comments.py`: 플랫폼 중립 `Comment`와 본문 댓글 섹션 합성
+- `packages/skim-core/src/skim_core/session_check.py`: SNS 세션의 계정 확인. 요청은 `_http_get` 한 곳으로만 나가고,
+  테스트는 `conftest.py`가 이 함수를 막고 세션 경로를 임시 폴더로 돌린다
 - `packages/skim-core/src/skim_core/feed_utils.py`: RSS/Atom 파싱, KST 변환. `FEED_HEADERS`의 Chrome 버전은 news.hada.io가 UA 문자열 단위 요청량으로 토픽 페이지를 막을 때 걸린다. 버전을 올리는 건 임시방편이고, 차단은 쓰지 않으면 몇십 분에 풀리므로 물러나는 쪽이 정답이다 (geeknews 크롤러의 간격·서킷브레이커). `CHALLENGE_MARKER`는 2026-09 차단의 형태였던 Turnstile 브라우저 확인 페이지의 표지다
 - `packages/skim-core/src/skim_core/feed_config.py`: RSS URL, YouTube 채널 ID, API endpoint 설정
 - `apps/desktop/`: SwiftUI desktop reader for local `data/skim.db`

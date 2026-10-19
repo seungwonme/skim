@@ -56,6 +56,13 @@ from skim_core.research.serializer import (
     utc_now_iso,
 )
 from skim_core.research.types import SearchStats
+from skim_core.session_check import (
+    CAUSES,
+    CHECKED_PLATFORMS,
+    VERIFIED,
+    check_identity,
+    describe,
+)
 from skim_core.source_health import scan_source_health
 from skim_core.source_probe import format_probe_result, probe_source
 from skim_core.source_registry import registry_platforms, seed_rows_for
@@ -284,6 +291,8 @@ class _CrawlTally:
     # 플랫폼 -> (본문이 빈 글 수, 수집한 글 수)
     thin: dict = field(default_factory=dict)
     article_failed: dict = field(default_factory=dict)
+    # 실패하거나 0건 회귀한 SNS 플랫폼 -> 계정 확인 결과(IdentityCheck)
+    identity: dict = field(default_factory=dict)
 
 
 def _day_start(moment: datetime) -> datetime:
@@ -550,6 +559,39 @@ def _report_crawl_warnings(tally: _CrawlTally) -> List[str]:
     return regressed
 
 
+def _check_failed_sessions(tally: _CrawlTally, regressed: List[str]) -> None:
+    """실패하거나 0건 회귀한 SNS 플랫폼의 계정을 확인해 원인을 가른다 (#103).
+
+    예외나 0건만으로는 로그인 만료와 응답 구조 변경을 구분하지 못한다. 계정 확인
+    요청도 그 계정으로 식별되므로 수집이 잘된 플랫폼에는 보내지 않는다.
+    """
+    targets = [
+        p for p in dict.fromkeys([*tally.failed, *regressed]) if p in SNS_PLATFORMS
+    ]
+    if not targets:
+        return
+    typer.echo("\n계정 확인:")
+    for platform in targets:
+        try:
+            check = check_identity(platform)
+        except Exception as exc:  # 진단이 실패해도 회차 기록은 끝까지 남긴다
+            typer.echo(f"  [!] {platform}: 계정 확인 실패: {exc}")
+            continue
+        tally.identity[platform] = check
+        typer.echo(f"  [!] {platform}: {describe(check)}")
+
+
+def _identity_summary(tally: _CrawlTally) -> str:
+    """run summary 끝에 붙일 계정 확인 결과. 확인한 플랫폼이 없으면 빈 문자열."""
+    if not tally.identity:
+        return ""
+    causes = ", ".join(
+        f"{platform} {CAUSES[check.status]}"
+        for platform, check in tally.identity.items()
+    )
+    return f"; 계정 확인: {causes}"
+
+
 def _finish_crawl(run_id: int, tally: _CrawlTally, regressed: List[str]) -> None:
     """run 상태를 닫는다. 실패한 플랫폼이 있으면 exit 1."""
     if tally.failed:
@@ -558,6 +600,7 @@ def _finish_crawl(run_id: int, tally: _CrawlTally, regressed: List[str]) -> None
             summary += f"; 완료 플랫폼: {', '.join(tally.completed)}"
         if regressed:
             summary += f"; 0건 회귀: {', '.join(regressed)}"
+        summary += _identity_summary(tally)
         finish_run(run_id, "failed", tally.total_saved, summary)
         typer.echo(
             f"\n완료: 총 {tally.total_saved}개 저장 "
@@ -573,7 +616,8 @@ def _finish_crawl(run_id: int, tally: _CrawlTally, regressed: List[str]) -> None
             run_id,
             "degraded",
             tally.total_saved,
-            f"전체 플랫폼 처리 완료 (0건 회귀: {', '.join(regressed)})",
+            f"전체 플랫폼 처리 완료 (0건 회귀: {', '.join(regressed)})"
+            + _identity_summary(tally),
         )
     else:
         summary = "전체 플랫폼 처리 완료"
@@ -679,6 +723,7 @@ def crawl(
         raise
 
     regressed = _report_crawl_warnings(tally)
+    _check_failed_sessions(tally, regressed)
     _finish_crawl(run_id, tally, regressed)
 
 
@@ -1016,6 +1061,11 @@ def doctor(
     runs: int = typer.Option(
         5, "--runs", min=1, help="recent runs에 보일 회차 수 (경고 판정은 이와 무관)"
     ),
+    check_sessions: bool = typer.Option(
+        False,
+        "--check-sessions",
+        help="SNS 세션마다 계정 확인 요청을 1건 보내 로그인이 살아 있는지 본다",
+    ),
 ):
     """DB, 수집 run, session 상태를 점검합니다. 사람이 읽는 출력의 시각은 로컬 시각입니다."""
     _validate_platform(platform)
@@ -1055,10 +1105,30 @@ def doctor(
     _check_tools(report)
     report["warnings"].extend(_geeknews_topic_warnings())
     _check_integrity(report, db_path)
+    if check_sessions:
+        _check_sessions_live(report, _session_dir_for(db_path), platform)
     report["warnings"].extend(_attention_warnings(report, platform))
     _emit_doctor(report, emit, runs)
     if strict and report["warnings"]:
         raise typer.Exit(1)
+
+
+def _check_sessions_live(
+    report: dict, session_dir: Path, platform: Optional[str]
+) -> None:
+    """세션 파일이 있는지가 아니라 그 세션이 지금도 계정으로 인식되는지 본다 (#103).
+
+    요청이 계정으로 식별되므로 사람이 `--check-sessions`로 물을 때만 보낸다.
+    """
+    checks = [
+        check_identity(name, session_dir)
+        for name in CHECKED_PLATFORMS
+        if not platform or name == platform
+    ]
+    report["session_checks"] = [asdict(check) for check in checks]
+    for check in checks:
+        if check.status != VERIFIED:
+            report["warnings"].append(f"{check.platform} 세션: {describe(check)}")
 
 
 def _playwright_status() -> dict:
@@ -1131,6 +1201,11 @@ def _echo_environment(report: dict) -> None:
     if report["sessions"]:
         present = [s["platform"] for s in report["sessions"] if s["exists"]]
         typer.echo(f"sessions: {', '.join(present) if present else 'none'}")
+    if report.get("session_checks"):
+        typer.echo("session checks:")
+        for check in report["session_checks"]:
+            note = check["account"] or check["detail"]
+            typer.echo(f"  {check['platform']}: {check['status']} {note}".rstrip())
 
 
 def _echo_runs(report: dict, runs_limit: int) -> None:
