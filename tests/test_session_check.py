@@ -13,6 +13,7 @@ from typer.testing import CliRunner
 
 import skim_cli.cli as main
 from skim_core import db, session_check
+from skim_core.crawlers.browser_profile import ProfileBrowserError
 from skim_core.db import PostCadence
 from skim_core.models import Post
 from skim_core.session_check import (
@@ -23,17 +24,16 @@ from skim_core.session_check import (
     VERIFIED,
     IdentityCheck,
     check_identity,
+    threads_identity,
 )
 
 COOKIES = {
     "x": {"ct0": "c" * 32, "auth_token": "a" * 40, "twid": "u%3D42"},
-    "threads": {"ds_user_id": "777", "sessionid": "s"},
     "linkedin": {"li_at": "l", "JSESSIONID": '"ajax:1"'},
     "reddit": {"reddit_session": "r"},
 }
 DOMAINS = {
     "x": ".x.com",
-    "threads": ".threads.com",
     "linkedin": ".linkedin.com",
     "reddit": ".reddit.com",
 }
@@ -78,10 +78,41 @@ def _check(tmp_path, monkeypatch, platform, response):
 
 def test_missing_session_file_is_signed_out_without_a_request(tmp_path):
     # conftest가 요청을 막아 두었으므로 요청을 보내면 이 테스트가 실패한다.
-    check = check_identity("threads", tmp_path / "sessions")
+    check = check_identity("x", tmp_path / "sessions")
 
     assert check.status == SIGNED_OUT
     assert "세션 파일 없음" in check.detail
+
+
+def test_threads_without_profile_is_signed_out_without_chrome():
+    # threads는 쿠키 파일이 아니라 전용 프로필 브라우저로 확인한다 (#105). conftest가
+    # 프로필 경로를 빈 폴더로 두고 Chrome 실행을 막아 두었다.
+    check = check_identity("threads")
+
+    assert check.status == SIGNED_OUT
+    assert "전용 프로필 없음" in check.detail
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (ProfileBrowserError("Chrome이 바로 종료됐습니다"), UNVERIFIED),
+        (
+            RuntimeError("Page.goto: net::ERR_INTERNET_DISCONNECTED\nCall log:"),
+            UNREACHABLE,
+        ),
+    ],
+)
+def test_threads_browser_failures(monkeypatch, error, expected):
+    async def broken():
+        raise error
+
+    monkeypatch.setattr(session_check, "_threads_home", broken)
+
+    check = check_identity("threads")
+
+    assert check.status == expected
+    assert "\n" not in check.detail
 
 
 def test_x_account_list_matching_twid_is_verified(tmp_path, monkeypatch):
@@ -110,11 +141,11 @@ def test_probes_use_the_crawler_user_agent(tmp_path, monkeypatch):
     # pylint: disable-next=import-outside-toplevel
     from twitter.util import get_headers
 
-    from skim_core.crawlers.api import linkedin, reddit, threads
+    from skim_core.crawlers.api import linkedin, reddit
 
+    # threads는 전용 프로필 브라우저로 확인해 User-Agent를 Chrome이 정한다.
     crawler_agents = {
         "x": get_headers(type("S", (), {"cookies": {}})())["user-agent"],
-        "threads": threads.WEB_USER_AGENT,
         "linkedin": linkedin.LINKEDIN_USER_AGENT,
         "reddit": reddit.REDDIT_USER_AGENT,
     }
@@ -132,28 +163,26 @@ def test_x_401_is_signed_out(tmp_path, monkeypatch):
     assert check.status == SIGNED_OUT
 
 
-def test_threads_viewer_matching_cookie_is_verified(tmp_path, monkeypatch):
+def test_threads_viewer_matching_cookie_is_verified():
     html = '..."viewer":{"fbid":"178","id":"777"},"USER_ID":"0"...'
 
-    check, _ = _check(tmp_path, monkeypatch, "threads", _response(200, html))
-
-    assert check.status == VERIFIED
+    assert threads_identity(html, "777").status == VERIFIED
 
 
-def test_threads_null_viewer_is_signed_out(tmp_path, monkeypatch):
-    # 로그인이 풀려도 200이다. USER_ID는 로그인해도 "0"이라 표지가 아니다.
+def test_threads_null_viewer_is_signed_out():
+    # 로그인이 풀려도 페이지는 열린다. USER_ID는 로그인해도 "0"이라 표지가 아니다.
     html = '..."viewer":null,"USER_ID":"0"...'
 
-    check, _ = _check(tmp_path, monkeypatch, "threads", _response(200, html))
-
-    assert check.status == SIGNED_OUT
+    assert threads_identity(html, "777").status == SIGNED_OUT
 
 
-def test_threads_page_without_marker_is_unverified(tmp_path, monkeypatch):
+def test_threads_page_without_marker_is_unverified():
     # 페이지 구조가 바뀌어 표지를 못 찾으면 로그인 만료로 단정하지 않는다.
-    check, _ = _check(tmp_path, monkeypatch, "threads", _response(200, "<html/>"))
+    assert threads_identity("<html/>", "777").status == UNVERIFIED
 
-    assert check.status == UNVERIFIED
+
+def test_threads_without_session_cookie_is_signed_out():
+    assert threads_identity("<html/>", "").status == SIGNED_OUT
 
 
 def test_linkedin_me_is_verified(tmp_path, monkeypatch):

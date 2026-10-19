@@ -10,6 +10,7 @@ import sys
 import pytest
 
 from skim_core import db, session_check
+from skim_core.crawlers import browser_profile
 from skim_core.crawlers.feed import geeknews
 from skim_core.paths import DATA_DIR
 
@@ -96,3 +97,23 @@ def _no_account_requests(tmp_path, monkeypatch):
     yield
     if sent:
         pytest.fail(f"테스트가 계정 확인 요청을 보냈습니다: {', '.join(sent)}")
+
+
+@pytest.fixture(autouse=True)
+def _no_profile_browser(tmp_path, monkeypatch):
+    """전용 Chrome 프로필 경로를 빈 임시 폴더로 두고 Chrome 실행을 막는다.
+
+    운영 프로필(~/.skim/chrome-profile)을 열면 테스트가 운영 계정으로 요청하고,
+    로그인 쿠키를 갱신해 버린다.
+    """
+    launched: list[str] = []
+
+    def refuse(profile):
+        launched.append(str(profile))
+        raise RuntimeError(f"테스트가 Chrome을 띄우려 했습니다: {profile}")
+
+    monkeypatch.setattr(browser_profile, "PROFILE_DIR", tmp_path / "chrome-profile")
+    monkeypatch.setattr(browser_profile, "_launch_chrome", refuse)
+    yield
+    if launched:
+        pytest.fail(f"테스트가 Chrome을 띄우려 했습니다: {', '.join(launched)}")

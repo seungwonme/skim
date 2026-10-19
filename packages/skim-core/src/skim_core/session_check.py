@@ -18,12 +18,13 @@ User-Agent로 보낸 시험 요청 뒤 30분 안에 끊겼다(원인 미확정).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Optional, Tuple
 
 import requests
 
@@ -33,7 +34,7 @@ from .crawlers.api.linkedin import (
     _classify_redirect,
 )
 from .crawlers.api.reddit import REDDIT_USER_AGENT, VERIFICATION_TITLE
-from .crawlers.api.threads import WEB_USER_AGENT
+from .crawlers.browser_profile import ProfileBrowserError, ProfileMissing, open_profile
 from .paths import SESSIONS_DIR
 
 PROBE_TIMEOUT = 20
@@ -64,7 +65,6 @@ REDDIT_ME_URL = "https://www.reddit.com/api/me.json"
 # 세션 파일에서 플랫폼 쿠키를 고르는 도메인. 크롤러의 _load_cookies와 같다.
 _COOKIE_DOMAINS = {
     "x": ("x.com", "twitter.com"),
-    "threads": ("threads", "instagram"),
     "linkedin": ("linkedin",),
     "reddit": ("reddit",),
 }
@@ -146,33 +146,42 @@ def _check_x(cookies: Dict[str, str]) -> IdentityCheck:
     return IdentityCheck("x", VERIFIED, account=f"@{handle}" if handle else "")
 
 
-def _check_threads(cookies: Dict[str, str]) -> IdentityCheck:
-    user_id = cookies.get("ds_user_id", "")
+def threads_identity(html: str, user_id: str) -> IdentityCheck:
+    """threads 홈 문서와 프로필의 ds_user_id 쿠키로 판정한다."""
     if not user_id:
         return IdentityCheck("threads", SIGNED_OUT, "ds_user_id 쿠키 없음")
-    response = _http_get(
-        THREADS_HOME_URL,
-        headers={"User-Agent": WEB_USER_AGENT, "Accept-Language": "en-US,en;q=0.9"},
-        cookies=cookies,
-    )
-    status = _common_status(response)
-    if status:
-        return IdentityCheck("threads", status, f"HTTP {response.status_code}")
-    if response.status_code in (301, 302, 303, 307, 308):
-        location = response.headers.get("location") or ""
-        if "login" in location:
-            return IdentityCheck("threads", SIGNED_OUT, "로그인 페이지로 리다이렉트")
-        return IdentityCheck("threads", UNVERIFIED, f"HTTP {response.status_code}")
-    if response.status_code != 200:
-        return IdentityCheck("threads", UNVERIFIED, f"HTTP {response.status_code}")
-    viewer = _THREADS_VIEWER.search(response.text)
+    viewer = _THREADS_VIEWER.search(html)
     if viewer and viewer.group(1) == user_id:
         return IdentityCheck("threads", VERIFIED)
     if viewer:
         return IdentityCheck("threads", UNVERIFIED, "세션과 다른 계정으로 보임")
-    if '"viewer":null' in response.text:
+    if '"viewer":null' in html:
         return IdentityCheck("threads", SIGNED_OUT, "비로그인 페이지")
     return IdentityCheck("threads", UNVERIFIED, "페이지에서 계정 표지를 찾지 못함")
+
+
+async def _threads_home() -> Tuple[str, str]:
+    async with open_profile() as context:
+        page = await context.new_page()
+        await page.goto(THREADS_HOME_URL, wait_until="domcontentloaded", timeout=60000)
+        html = await page.content()
+        cookies = await context.cookies(THREADS_HOME_URL)
+    user_id = next((c["value"] for c in cookies if c["name"] == "ds_user_id"), "")
+    return html, user_id
+
+
+def _check_threads() -> IdentityCheck:
+    """크롤러와 같은 전용 프로필 브라우저로 홈을 연다. 쿠키 파일은 보지 않는다 (#105)."""
+    try:
+        html, user_id = asyncio.run(_threads_home())
+    except ProfileMissing:
+        return IdentityCheck("threads", SIGNED_OUT, "전용 프로필 없음")
+    except ProfileBrowserError as exc:
+        return IdentityCheck("threads", UNVERIFIED, str(exc))
+    except Exception as exc:  # playwright의 시간 초과와 네트워크 오류
+        first_line = (str(exc).splitlines() or [type(exc).__name__])[0]
+        return IdentityCheck("threads", UNREACHABLE, first_line[:120])
+    return threads_identity(html, user_id)
 
 
 def _check_linkedin(cookies: Dict[str, str]) -> IdentityCheck:
@@ -232,20 +241,23 @@ def _check_reddit(cookies: Dict[str, str]) -> IdentityCheck:
     return IdentityCheck("reddit", VERIFIED, account=f"u/{name}")
 
 
+# 세션 파일의 쿠키로 확인하는 플랫폼. 전용 프로필로 옮긴 플랫폼은 _PROFILE_CHECKS에 있다.
 _CHECKS: Dict[str, Callable[[Dict[str, str]], IdentityCheck]] = {
     "x": _check_x,
-    "threads": _check_threads,
     "linkedin": _check_linkedin,
     "reddit": _check_reddit,
 }
-CHECKED_PLATFORMS = tuple(_CHECKS)
+_PROFILE_CHECKS: Dict[str, Callable[[], IdentityCheck]] = {"threads": _check_threads}
+CHECKED_PLATFORMS = ("x", "threads", "linkedin", "reddit")
 
 
 def check_identity(platform: str, session_dir: Optional[Path] = None) -> IdentityCheck:
-    """저장된 세션으로 계정 확인 요청을 1건 보내 판정한다.
+    """그 플랫폼 크롤러와 같은 경로로 계정 확인 요청을 1건 보내 판정한다.
 
     세션 경로는 부를 때 모듈 속성에서 읽는다. 테스트가 바꾼 경로를 따르게 하려는 것이다.
     """
+    if platform in _PROFILE_CHECKS:
+        return _PROFILE_CHECKS[platform]()
     cookies = _load_cookies(platform, session_dir or SESSIONS_DIR)
     if cookies is None:
         return IdentityCheck(platform, SIGNED_OUT, "세션 파일 없음")

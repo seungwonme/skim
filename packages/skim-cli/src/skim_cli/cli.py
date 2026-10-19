@@ -645,7 +645,10 @@ def crawl(
         False, "--no-content", help="콘텐츠 enrichment 스킵"
     ),
     user_id: Optional[str] = typer.Option(
-        None, "--user-id", "-u", help="특정 사용자 ID/screen name"
+        None,
+        "--user-id",
+        "-u",
+        help="특정 사용자 ID/screen name (threads는 사용자 이름)",
     ),
     subreddit: Optional[str] = typer.Option(
         None, "--subreddit", help="reddit 전용 subreddit slug (예: python)"
@@ -668,7 +671,7 @@ def crawl(
     예시:
         uv run skim crawl hackernews --count 10
         uv run skim crawl all --days 1 --no-content
-        uv run skim crawl threads --user-id 314216 --count 5
+        uv run skim crawl threads --user-id @zuck --count 5
         uv run skim crawl hackernews geeknews --days 1
         uv run skim crawl all --days 1 --catch-up
     """
