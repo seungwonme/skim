@@ -134,7 +134,7 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
 | linkedin | `## LinkedIn Comments` | 게시글당 1건 (Voyager `feed/comments`) |
 | youtube | `## YouTube Comments` | 영상당 yt-dlp 1회 |
 | producthunt | `## Product Hunt Comments` | 제품당 1건 (PH 제품 페이지) |
-| threads | `## Threads Replies` | 답글 1개 이상인 게시물 전부, 게시물당 1건(스레드 25개씩, 4쪽까지). 로그인 브라우저로 게시물 페이지를 한 번 열어 웹앱으로 부른다 |
+| threads | `## Threads Replies` | 답글 1개 이상인 게시물 전부, 게시물당 1건(스레드 25개씩, 4쪽까지). 피드를 받은 전용 프로필 브라우저에서 게시물 페이지를 한 번 열어 웹앱으로 부른다 |
 | lobsters | `## Lobsters Comments` | 게시물당 1건 (초당 1요청). 같은 응답의 `description_plain`이 본문 폴백 |
 | huggingface | `## Hugging Face Comments` | 논문당 1건. 페이지 SSR 페이로드(`data-props`)라 로그인 불필요 |
 
@@ -159,6 +159,7 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
   없이 받던 게시물 문서의 SSR 페이로드에서 답글이 빠졌다. 2026-08-10에는 계정 안전을 이유로
   계정 요청을 쓰지 않기로 했지만, 로그인 없이는 답글이 오지 않게 되자 2026-09-30에 사용자가
   계정 요청을 쓰기로 결정했다(#26). 9/8부터 9/30까지 저장된 threads 글에는 답글이 없다.
+  2026-10-20부터는 피드와 같은 브라우저에서 받는다(#105, 아래 크롤러 절).
 - **답글은 웹앱의 네트워크 계층으로만 부른다.** 게시물 페이지를 한 번 열고, React fiber를
   타고 올라가 Relay 환경을 찾은 뒤 `BarcelonaPostPageDirectRepliesRefetchQuery.graphql`
   모듈의 `params`로 `getNetwork().execute()`를 부른다. 같은 `doc_id`, 변수, provider
@@ -166,7 +167,7 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
   오류 없이 `direct_replies: null`로 온다(2026-09-30 실측). 원인을 못 찾았으므로 손으로 만든
   요청으로 돌아가지 않는다. 모듈 이름으로 부르므로 `doc_id`와 플래그는 웹앱이 재배포돼도
   따라간다. 모듈이나 Relay 환경을 못 찾으면 부팅 단계에서 멈추고 본문만 저장한다.
-- 스크롤로 웹앱이 다음 쪽을 부르게 하는 방식은 쓰지 않는다. 같은 스크립트가 어떤 때는
+- 답글 다음 쪽을 스크롤로 웹앱이 부르게 하는 방식은 쓰지 않는다(피드는 스크롤로 받는다). 같은 스크립트가 어떤 때는
   요청을 보내고 어떤 때는 안 보내서 재현되지 않았다. 로그인 문서를 `fetch`로 받으면
   답글이 빠진 다른 문서가 온다(페이지 이동으로 받은 문서에만 첫 10개 스레드가 있다).
 - 한 요청에 최상위 스레드 25개를 받는다. 웹앱은 4개씩 받지만 서버는 큰 값도 받아 준다.
@@ -228,6 +229,8 @@ everyto가 거의 매일 회귀로 잡혀 run이 상시 `degraded`였고, 그 �
   헤더, 특히 User-Agent는 그 플랫폼 크롤러와 같은 값을 쓴다. 2026-10-20 LinkedIn
   세션이 크롤러와 다른 User-Agent로 보낸 시험 요청 뒤 30분 안에 끊겼다(원인 미확정).
   새 플랫폼의 확인 요청을 만들 때도 크롤러의 상수를 가져다 쓴다.
+  threads는 쿠키 파일 대신 전용 프로필 브라우저로 홈을 열어 `viewer` 표지를 본다(#105).
+  User-Agent를 Chrome이 정하므로 크롤러와 저절로 같다.
 - 수~금의 arxiv(2일 창)는 주말 공백 때문에 뜸한 소스로 분류된다. 장애로 생긴 공백도
   60일 동안 최장 공백에 남아, 그동안은 그보다 짧은 다음 장애를 정상 공백으로 본다.
   arxiv 전면 실패는 예외로 올라오므로(아래 폴백 절) 이 판정에 기대지 않는다.
@@ -349,13 +352,28 @@ everyto가 거의 매일 회귀로 잡혀 run이 상시 `degraded`였고, 그 �
 떨어진 후보는 `docs/TODO.md`의 "Rejected Sources"에 이유와 함께 남긴다.
 
 - Feed 크롤러: `since` 유무에 따라 RSS/API 모드 자동 전환
-- API 크롤러: `data/sessions/{platform}_session.json` 세션 쿠키 재사용
-- **threads For You 타임라인과 답글은 브라우저를 태운다.** Meta가 2026-09-08부터 클라이언트
-  지문으로 거른다. 브라우저가 방금 7건을 받은 요청을 payload와 헤더까지 그대로 즉시
-  재전송해도 edges가 0으로 오고 오류도 없다(2026-09-22 실측). 요청을 더 정교하게
-  흉내내는 방향으로는 못 고치므로, 같은 증상을 만나면 그쪽으로 시간을 쓰지 않는다.
-  같은 날 `X-IG-App-ID` 헤더도 거부 대상이 됐다(error 1357054). 이 헤더는 세션 기본
-  헤더에 두지 않는다. 문서 GET은 통과하고 GraphQL만 죽어서 세션 만료처럼 보인다.
+- API 크롤러: `data/sessions/{platform}_session.json` 세션 쿠키 재사용 (threads 제외)
+- **threads는 `skim login`이 로그인해 둔 전용 Chrome 프로필(`~/.skim/chrome-profile`) 안에서
+  받는다(#105).** 타임라인과 프로필 피드는 페이지를 열고 스크롤할 때 웹앱이 보내는 쿼리의
+  응답을 읽고, 답글은 같은 브라우저에 탭을 하나 더 연다. 쿠키를 꺼내 HTTP나 다른
+  브라우저에서 쓰지 않는다. SNS 네 플랫폼을 이 방식으로 옮기는 중이다.
+- 이렇게 바꾼 이유는 Meta가 2026-09-08부터 클라이언트 지문으로 거르기 때문이다. 브라우저가
+  방금 7건을 받은 요청을 payload와 헤더까지 그대로 즉시 재전송해도 edges가 0으로 오고
+  오류도 없다(2026-09-22 실측). 요청을 더 정교하게 흉내내는 방향으로는 못 고치므로, 같은
+  증상을 만나면 그쪽으로 시간을 쓰지 않는다. 같은 날 `X-IG-App-ID` 헤더도 거부 대상이
+  됐다(error 1357054). 문서 GET은 통과하고 GraphQL만 죽어서 세션 만료처럼 보인다.
+- 피드 응답은 URL이 아니라 쿼리 이름(`fb_api_req_friendly_name`)으로 고른다. 2026-10 초에
+  웹앱이 경로를 바꿔 URL로 거르던 크롤러가 전부 버렸다(#74). 프로필 피드는 사용자
+  이름으로 페이지를 연다. 숫자 ID는 열 페이지가 없어 Chrome을 띄우기 전에 거절한다.
+- 전용 프로필은 `crawlers/browser_profile.py`의 `open_profile()`로만 연다. Playwright의
+  `launch_persistent_context`를 쓰지 않는다. macOS에서 `--use-mock-keychain`을 붙여 실제
+  키체인으로 암호화된 로그인 쿠키를 못 읽고, `navigator.webdriver`도 참이 된다.
+  `skim login`과 같은 플래그로 Chrome을 띄우고 CDP로 붙는다.
+- 헤드리스로 띄우되 User-Agent는 같은 버전 Chrome이 창을 띄울 때 값으로 준다. 기본
+  헤드리스 UA에는 `HeadlessChrome`이 들어간다. 끝낼 때는 CDP `Browser.close`로 닫고
+  기다린다. 프로세스를 바로 끊으면 그 사이 갱신된 쿠키가 디스크에 안 남는다.
+- 같은 프로필을 연 Chrome이 이미 있으면(`skim login` 창 등) 새 Chrome이 바로 끝나므로
+  크롤이 실패한다. 로그인 창을 닫고 다시 돌린다.
 - Reddit API 크롤러: subreddit listing은 verification challenge 해제 후 JSON endpoint 호출, 홈 피드는 로그인 세션 기반 `best.json` 호출
 
 ### 주요 모듈
@@ -379,6 +397,8 @@ everyto가 거의 매일 회귀로 잡혀 run이 상시 `degraded`였고, 그 �
   서식 안의 서식이나 `<br>`은 trafilatura가 문단 뒷부분을 잃게 해서 넘기기 전에 푼다(#89). 문서는 `_load`로만 읽는다.
   `lxml.html.fromstring`은 `<body>` 없는 압축 문서의 본문을 head에 넣고, trafilatura의 `load_html`은 첫 `/ >`까지 지운다
 - `packages/skim-core/src/skim_core/comments.py`: 플랫폼 중립 `Comment`와 본문 댓글 섹션 합성
+- `packages/skim-core/src/skim_core/crawlers/browser_profile.py`: 전용 Chrome 프로필을 헤드리스로 띄워 CDP로 붙는다.
+  SNS 크롤러와 계정 확인이 함께 쓴다. 테스트는 `conftest.py`가 프로필 경로를 임시 폴더로 돌리고 Chrome 실행을 막는다
 - `packages/skim-core/src/skim_core/session_check.py`: SNS 세션의 계정 확인. 요청은 `_http_get` 한 곳으로만 나가고,
   테스트는 `conftest.py`가 이 함수를 막고 세션 경로를 임시 폴더로 돌린다
 - `packages/skim-core/src/skim_core/feed_utils.py`: RSS/Atom 파싱, KST 변환. `FEED_HEADERS`의 Chrome 버전은 news.hada.io가 UA 문자열 단위 요청량으로 토픽 페이지를 막을 때 걸린다. 버전을 올리는 건 임시방편이고, 차단은 쓰지 않으면 몇십 분에 풀리므로 물러나는 쪽이 정답이다 (geeknews 크롤러의 간격·서킷브레이커). `CHALLENGE_MARKER`는 2026-09 차단의 형태였던 Turnstile 브라우저 확인 페이지의 표지다

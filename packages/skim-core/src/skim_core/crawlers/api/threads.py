@@ -2,27 +2,24 @@
 @file threads_api.py
 @description Threads 크롤러
 
-For You 타임라인과 답글은 실제 브라우저로 받습니다. 2026-09-08부터 Meta가 클라이언트
-지문으로 걸러, requests로는 브라우저와 똑같은 요청을 보내도 빈 결과가 옵니다.
-사용자 프로필 피드만 세션 쿠키를 얹은 requests를 씁니다.
+`skim login`이 로그인해 둔 전용 Chrome 프로필을 열어 웹앱이 스스로 보내는 요청의 응답을
+읽습니다(#105). 쿠키를 꺼내 다른 환경에서 쓰지 않습니다. 2026-09-08부터 Meta가 클라이언트
+지문으로 걸러, 브라우저가 보낸 요청을 헤더까지 그대로 재전송해도 빈 결과가 옵니다.
 
 주요 기능:
-1. 브라우저로 For You 타임라인 수집 (로그인 세션 재사용)
-2. 사용자 프로필 피드는 GraphQL persisted query 호출
+1. For You 타임라인: 홈을 열고 스크롤할 때 오는 타임라인 쿼리 응답
+2. 사용자 프로필 피드(--user-id): 프로필 페이지를 스크롤할 때 오는 프로필 쿼리 응답
 3. 스레드(self-reply chain) 내용 합치기
-4. 페이지네이션을 통한 대량 수집
-5. 로그인한 브라우저의 웹앱 네트워크 계층으로 답글 수집
+4. 답글: 같은 브라우저에서 게시물 페이지를 열고 웹앱의 네트워크 계층으로 부름
 
 @dependencies
-- playwright: 타임라인과 답글 수집용 브라우저
-- requests: HTTP 클라이언트
+- playwright: 전용 프로필 Chrome에 CDP로 붙는다
 - typer: CLI 출력
 """
 
 import asyncio
 import contextlib
 import json
-import re
 from datetime import datetime, timezone
 from typing import (
     Any,
@@ -36,22 +33,15 @@ from typing import (
 )
 from urllib.parse import parse_qs
 
-import requests
 import typer
 
 from ...comments import Comment, append_comment_section, render_comment_section
 from ...models import Post
-from ...paths import SESSIONS_DIR
+from ..browser_profile import open_profile
 
-# Threads 웹 GraphQL 설정
 THREADS_BASE = "https://www.threads.com"
-GRAPHQL_URL = f"{THREADS_BASE}/graphql/query"
-WEB_USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
-)
 
-# 타임라인 스크롤 상한. 한 회에 6~7건씩 오므로 50건이면 10회 안쪽에서 채워진다.
+# 피드 스크롤 상한. 타임라인은 한 회에 6~7건씩 오므로 50건이면 10회 안쪽에서 채워진다.
 MAX_TIMELINE_SCROLLS = 15
 # 받은 답글은 전부 담는다. 15개로 자르던 때는 24개가 와도 9개를 버렸다.
 # 상한이 없으므로 인기 게시물은 본문이 길어진다.
@@ -133,61 +123,10 @@ async ({postID, after, first}) => {
 
 ReplyPageFetcher = Callable[[str, Optional[str]], Awaitable[List[Dict[str, Any]]]]
 
-# persisted query 좌표. Meta가 웹앱을 재배포하면 doc_id가 바뀌어 execution error가 난다.
-# 갱신하려면 브라우저로 threads.com을 열어 GraphQL 요청의 doc_id를 다시 읽는다.
-# 웹앱 요청은 2026-10부터 `/api/graphql`로 간다.
-TIMELINE_QUERY = {
-    "doc_id": "29069292379337431",
-    "friendly_name": "BarcelonaFeedPaginationDirectQuery",
-    "root_field": "xdt_api__v1__feed__text_post_app_timeline__connection",
-}
-PROFILE_QUERY = {
-    "doc_id": "27764675746529586",
-    "friendly_name": "BarcelonaProfileThreadsTabRefetchableDirectQuery",
-    "root_field": "xdt_api__v1__text_feed__user_id__profile__connection",
-}
-
-# 웹앱이 함께 보내는 Relay provider 플래그. 빠지면 서버가 execution error로 응답한다.
-# 타임라인과 프로필의 합집합이며 두 쿼리 사이에 값이 충돌하는 항목은 없다.
-_PROVIDERS_ON = (
-    "BarcelonaIsLoggedIn",
-    "BarcelonaHasDearAlgoConsumption",
-    "BarcelonaHasCommunities",
-    "BarcelonaHasGameScoreShare",
-    "BarcelonaHasPublicViewCountCard",
-    "BarcelonaHasCommunityEntityCard",
-    "BarcelonaHasScorecardCommunity",
-    "BarcelonaHasSportTeamAllegianceCard",
-    "BarcelonaHasMusic",
-    "BarcelonaHasMessaging",
-    "BarcelonaShouldFulfillLightboxQuery",
-    "BarcelonaHasViewerReplied",
-    "BarcelonaOptionalCookiesEnabled",
-    "BarcelonaShouldShowFediverseM075Features",
-    "BarcelonaHasProfileSelfReplyContext",
-)
-_PROVIDERS_OFF = (
-    "BarcelonaHasEventBadge",
-    "BarcelonaGenAIRepliesEnabled",
-    "BarcelonaIsSearchDiscoveryEnabled",
-    "BarcelonaHasNewspaperLinkStyle",
-    "BarcelonaHasPodcastV2Consumption",
-    "BarcelonaHasPodcastTranscriptConsumption",
-    "BarcelonaHasPrivateRepliesDeprecation",
-    "BarcelonaHasGhostPostEmojiActivation",
-    "BarcelonaHasDearAlgoWebProduction",
-    "BarcelonaHasWebFavicons",
-    "BarcelonaIsCrawler",
-    "BarcelonaHasCommunityTopContributors",
-    "BarcelonaCanSeeSponsoredContent",
-    "BarcelonaIsInternalUser",
-)
-RELAY_PROVIDERS: Dict[str, bool] = {
-    f"__relay_internal__pv__{name}relayprovider": True for name in _PROVIDERS_ON
-}
-RELAY_PROVIDERS.update(
-    {f"__relay_internal__pv__{name}relayprovider": False for name in _PROVIDERS_OFF}
-)
+# 웹앱이 피드를 넘길 때 보내는 쿼리 이름. 응답을 이 이름으로 골라 읽는다.
+# 프로필 쿼리는 2026-10-20 프로필 페이지 스크롤에서 확인했다.
+TIMELINE_QUERY_NAME = "BarcelonaFeedPaginationDirectQuery"
+PROFILE_QUERY_NAME = "BarcelonaProfileThreadsTabRefetchableDirectQuery"
 
 
 def parse_meta_response(text: str) -> Optional[Dict[str, Any]]:
@@ -206,8 +145,10 @@ def parse_meta_response(text: str) -> Optional[Dict[str, Any]]:
     return parsed if isinstance(parsed, dict) else None
 
 
-def is_timeline_request(post_data: Optional[str], headers: Mapping[str, str]) -> bool:
-    """브라우저 요청이 타임라인 쿼리인지 쿼리 이름으로 판정한다.
+def request_query_name(
+    post_data: Optional[str], headers: Mapping[str, str]
+) -> Optional[str]:
+    """브라우저 요청의 GraphQL 쿼리 이름.
 
     정확한 URL 경로로 거르지 않는다. 웹앱이 2026-10 초에 같은 쿼리를
     `/graphql/query`에서 `/api/graphql`로 옮겼을 때, `graphql/query`로 거르던 수집이
@@ -216,19 +157,44 @@ def is_timeline_request(post_data: Optional[str], headers: Mapping[str, str]) ->
     name = headers.get("x-fb-friendly-name")
     if not name and post_data:
         name = (parse_qs(post_data).get("fb_api_req_friendly_name") or [None])[0]
-    return name == TIMELINE_QUERY["friendly_name"]
+    return name
+
+
+def _connection_edges(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """응답의 유일한 최상위 연결에서 edges를 꺼낸다. 루트 필드 이름은 별칭이라 보지 않는다."""
+    data = payload.get("data") or {}
+    connection = next(iter(data.values()), None) or {}
+    return connection.get("edges") or []
 
 
 def timeline_threads(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """타임라인 응답에서 스레드 노드만 꺼낸다. 루트 필드 이름은 별칭이라 보지 않는다."""
-    data = payload.get("data") or {}
-    connection = next(iter(data.values()), None) or {}
+    """타임라인 응답에서 스레드 노드만 꺼낸다. 추천 사용자 슬롯이 섞여 온다."""
     threads = []
-    for edge in connection.get("edges") or []:
+    for edge in _connection_edges(payload):
         thread = (edge.get("node") or {}).get("text_post_app_thread")
         if thread:
             threads.append(thread)
     return threads
+
+
+def profile_threads(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """프로필 응답에서 스레드를 꺼낸다. 프로필은 node 자체가 스레드다."""
+    return [
+        edge["node"]
+        for edge in _connection_edges(payload)
+        if (edge.get("node") or {}).get("thread_items")
+    ]
+
+
+def profile_handle(user_id: str) -> str:
+    """`--user-id`로 받은 Threads 사용자 이름. 숫자 ID는 프로필 주소로 열 수 없다."""
+    handle = user_id.strip().lstrip("@")
+    if not handle or handle.isdigit():
+        raise ValueError(
+            "threads --user-id는 사용자 이름을 받습니다 (예: --user-id zuck). "
+            "숫자 ID로는 프로필 페이지를 열 수 없습니다"
+        )
+    return handle
 
 
 def shortcode_to_post_id(code: str) -> Optional[str]:
@@ -308,77 +274,35 @@ def parse_reply_page(
 
 class ThreadsAPICrawler:
     """
-    Threads API 기반 크롤러
+    Threads 크롤러
 
-    Instagram Private API를 사용하여 브라우저 없이 Threads 게시글을 수집합니다.
-    CDP로 추출한 세션 쿠키를 재사용합니다.
+    전용 Chrome 프로필을 한 번 띄워 타임라인(또는 프로필 피드)과 답글을 그 안에서 받는다.
     """
 
     platform = "threads"
+    # crawl()이 연 전용 프로필 브라우저의 컨텍스트. 크롤 한 번 동안만 산다.
+    # 클래스 속성으로 둬야 생성자를 우회해 만든 인스턴스(테스트)에서도 정의돼 있다.
+    _context: Any = None
 
     def __init__(self, debug_mode: bool = False):
         self.platform_name = "Threads"
         self.debug_mode = debug_mode
-        self.session_path = SESSIONS_DIR / "threads_session.json"
-        self.session = requests.Session()
-        self._setup_session()
-
-    def _setup_session(self) -> None:
-        """세션 쿠키 로드 및 HTTP 세션 설정"""
-        cookies = self._load_cookies()
-        if not cookies:
-            typer.echo("세션 쿠키가 없습니다. 먼저 로그인하세요:")
-            typer.echo("  uv run skim login threads")
-            raise typer.Exit(1)
-
-        self.my_user_id = cookies.get("ds_user_id")
-        self.csrf_token = cookies.get("csrftoken", "")
-        self._tokens: Optional[Dict[str, str]] = None
-
-        self.session.cookies.update(cookies)
-        # X-IG-App-ID를 붙이지 않는다. Meta가 2026-09-08부터 이 헤더가 달린 requests의
-        # graphql/query 요청을 error 1357054로 거부한다. 브라우저 웹앱은 이 헤더를
-        # 보내고도 통과한다(2026-09-30 확인). 세션 기본 헤더에 두면 토큰 추출용
-        # HTML GET은 통과하고 GraphQL만 죽어서, 세션 만료처럼 보인다.
-        self.session.headers.update(
-            {
-                "User-Agent": WEB_USER_AGENT,
-                "Accept-Language": "en-US,en;q=0.9",
-            }
-        )
-
-        if self.debug_mode:
-            typer.echo(f"쿠키 {len(cookies)}개 로드됨")
-            typer.echo(f"내 user_id: {self.my_user_id}")
-
-    def _load_cookies(self) -> Dict[str, str]:
-        """세션 파일에서 쿠키 로드"""
-        if not self.session_path.exists():
-            return {}
-
-        with open(self.session_path, "r", encoding="utf-8") as f:
-            storage_state = json.load(f)
-
-        cookies = {}
-        for cookie in storage_state.get("cookies", []):
-            domain = cookie.get("domain", "")
-            if "threads" in domain or "instagram" in domain:
-                cookies[cookie["name"]] = cookie["value"]
-
-        return cookies
 
     async def crawl(self, **options) -> List[Post]:
         count = options.get("count", 5)
         user_id = options.get("user_id")
         no_content = options.get("no_content", False)
-        try:
-            posts = await self._crawl_impl(count, user_id)
-            if not no_content:
-                await self.attach_replies(posts)
-            return posts
-        finally:
-            # 크롤러 인스턴스는 1회성이다. 세션 커넥션 풀을 정리한다.
-            self.session.close()
+        # 브라우저를 띄우기 전에 입력부터 확인한다.
+        handle = profile_handle(user_id) if user_id else None
+        async with open_profile() as context:
+            self._context = context
+            try:
+                posts = await self._crawl_impl(count, handle)
+                if not no_content:
+                    await self.attach_replies(posts)
+            finally:
+                self._context = None
+        return posts
 
     async def attach_replies(self, posts: List[Post]) -> None:
         """타인 답글을 정본 본문 뒤에 잇는다.
@@ -460,48 +384,30 @@ class ThreadsAPICrawler:
     async def _reply_fetcher(
         self, posts: List[Post]
     ) -> AsyncIterator[ReplyPageFetcher]:
-        """답글 쿼리를 부르는 함수를 내준다. 블록이 끝나면 브라우저를 닫는다.
+        """답글 쿼리를 부르는 함수를 내준다. 블록이 끝나면 답글용 탭을 닫는다.
 
-        게시물 페이지를 하나 열어 웹앱이 Relay 환경과 답글 쿼리 모듈을 올리게 한다.
-        첫 게시물이 지워졌으면 모듈이 안 올라올 수 있어 다음 게시물로 한 번 더 연다.
+        crawl()이 연 브라우저에 탭을 하나 더 연다. 게시물 페이지를 열어 웹앱이 Relay
+        환경과 답글 쿼리 모듈을 올리게 한다. 첫 게시물이 지워졌으면 모듈이 안 올라올 수
+        있어 다음 게시물로 한 번 더 연다.
         """
-        # pylint: disable-next=import-outside-toplevel
-        from playwright.async_api import async_playwright
+        page = await self._context.new_page()
+        try:
+            status = await self._boot_first_ready(page, [p.url for p in posts if p.url])
+            if status != "ok":
+                raise RuntimeError(f"웹앱 답글 쿼리를 준비하지 못했습니다 ({status})")
 
-        async with async_playwright() as pw:
-            browser = await pw.chromium.launch(channel="chrome", headless=True)
-            try:
-                context = await browser.new_context(
-                    storage_state=str(self.session_path),
-                    user_agent=WEB_USER_AGENT,
+            async def fetch(post_id: str, after: Optional[str]) -> List[Dict[str, Any]]:
+                return await asyncio.wait_for(
+                    page.evaluate(
+                        _FETCH_REPLIES_JS,
+                        {"postID": post_id, "after": after, "first": REPLY_PAGE_SIZE},
+                    ),
+                    timeout=REPLY_FETCH_TIMEOUT,
                 )
-                page = await context.new_page()
-                status = await self._boot_first_ready(
-                    page, [p.url for p in posts if p.url]
-                )
-                if status != "ok":
-                    raise RuntimeError(
-                        f"웹앱 답글 쿼리를 준비하지 못했습니다 ({status})"
-                    )
 
-                async def fetch(
-                    post_id: str, after: Optional[str]
-                ) -> List[Dict[str, Any]]:
-                    return await asyncio.wait_for(
-                        page.evaluate(
-                            _FETCH_REPLIES_JS,
-                            {
-                                "postID": post_id,
-                                "after": after,
-                                "first": REPLY_PAGE_SIZE,
-                            },
-                        ),
-                        timeout=REPLY_FETCH_TIMEOUT,
-                    )
-
-                yield fetch
-            finally:
-                await browser.close()
+            yield fetch
+        finally:
+            await page.close()
 
     @classmethod
     async def _boot_first_ready(cls, page: Any, urls: List[str]) -> str:
@@ -542,60 +448,22 @@ class ThreadsAPICrawler:
         return status
 
     async def _crawl_impl(
-        self, count: int = 5, user_id: Optional[str] = None
+        self, count: int = 5, handle: Optional[str] = None
     ) -> List[Post]:
-        """
-        Threads 게시글 크롤링
-
-        각 스레드의 self-reply chain을 하나의 Post로 합칩니다.
-
-        Args:
-            count: 수집할 게시글(스레드) 수
-            user_id: 특정 사용자 ID (없으면 For You 타임라인)
-
-        Returns:
-            크롤링된 게시글 목록
-        """
-        mode = f"사용자 {user_id}" if user_id else "For You 타임라인"
+        """타임라인이나 사용자 프로필 피드를 받아 스레드마다 Post 하나로 합친다."""
+        mode = f"사용자 @{handle}" if handle else "For You 타임라인"
         typer.echo(
-            f"[API 모드] {self.platform_name} 크롤링 시작 - {mode} (게시글 {count}개)"
+            f"[브라우저] {self.platform_name} 크롤링 시작 - {mode} (게시글 {count}개)"
         )
-
-        posts: List[Post] = []
-        max_id: Optional[str] = None
-
-        if not user_id:
-            # For You 타임라인은 requests로 받을 수 없다. 아래 메서드 주석 참고.
-            return self._parse_threads(
-                await self._collect_timeline_threads(count), count
+        if handle:
+            threads = await self._capture_threads(
+                f"{THREADS_BASE}/@{handle}", PROFILE_QUERY_NAME, profile_threads, count
             )
-
-        # 파싱 불가 스레드만 이어질 때 피드 끝까지 무한정 넘기지 않도록 페이지 상한을 둔다.
-        max_pages = 10
-        for _ in range(max_pages):
-            if len(posts) >= count:
-                break
-            threads, max_id = self._fetch_feed(user_id=user_id, max_id=max_id)
-
-            if not threads:
-                if self.debug_mode:
-                    typer.echo("  더 이상 게시글이 없습니다")
-                break
-
-            for thread in threads:
-                post = self._parse_thread(thread)
-                if post:
-                    posts.append(post)
-                    if self.debug_mode:
-                        typer.echo(f"  @{post.author}: {post.content[:60]}...")
-                    if len(posts) >= count:
-                        break
-
-            if not max_id:
-                break
-
-        typer.echo(f"총 {len(posts)}개의 게시글을 추출했습니다.")
-        return posts
+        else:
+            threads = await self._capture_threads(
+                THREADS_BASE + "/", TIMELINE_QUERY_NAME, timeline_threads, count
+            )
+        return self._parse_threads(threads, count)
 
     def _parse_threads(self, threads: List[Dict[str, Any]], count: int) -> List[Post]:
         """스레드 노드를 Post로 바꾼다. 같은 게시물이 두 번 오면 한 번만 센다."""
@@ -617,255 +485,72 @@ class ThreadsAPICrawler:
         typer.echo(f"총 {len(posts)}개의 게시글을 추출했습니다.")
         return posts
 
-    async def _collect_timeline_threads(self, count: int) -> List[Dict[str, Any]]:
-        """실제 브라우저로 For You 타임라인을 받아 스레드 노드를 모은다.
+    async def _capture_threads(
+        self,
+        url: str,
+        query_name: str,
+        extract: Callable[[Dict[str, Any]], List[Dict[str, Any]]],
+        count: int,
+    ) -> List[Dict[str, Any]]:
+        """페이지를 열고 스크롤하며, 웹앱이 보낸 피드 쿼리의 응답에서 스레드를 모은다.
 
-        requests로는 2026-09-08부터 빈 피드만 온다. 브라우저가 방금 7건을 받은
-        요청을 payload와 헤더까지 그대로 즉시 재전송해도 edges가 0으로 오고 오류도
-        없다(2026-09-22 실측). 클라이언트 지문 단계에서 걸러지는 것이라 요청을
-        흉내내는 방향으로는 못 고친다. 그래서 타임라인만 브라우저를 태운다.
-
-        게시물 페이지(답글)와 사용자 피드는 여전히 requests로 받는다.
+        요청을 직접 만들지 않는다. 브라우저가 방금 받은 요청을 payload와 헤더까지
+        그대로 재전송해도 edges가 0으로 오고 오류도 없었다(2026-09-22 실측). 클라이언트
+        지문 단계에서 걸러지는 것이라 요청을 흉내내는 방향으로는 못 고친다.
         """
-        # pylint: disable=import-outside-toplevel
-        # REGISTRY가 이 모듈을 항상 import하므로, playwright를 최상위에서 끌어오면
-        # 다른 플랫폼 크롤만 돌릴 때까지 브라우저 스택 로딩 비용을 물게 된다.
-        from playwright.async_api import async_playwright
-
         collected: List[Dict[str, Any]] = []
-        timeline_responses = 0
+        responses = 0
 
-        async with async_playwright() as pw:
-            # 번들 chromium 대신 시스템 Chrome을 쓴다. 로그인 경로와 같은 브라우저이고,
-            # `playwright install` 상태에 수집이 묶이지 않는다.
-            browser = await pw.chromium.launch(channel="chrome", headless=True)
+        async def on_response(response: Any) -> None:
+            nonlocal responses
+            # GraphQL이 아닌 요청은 본문을 열지 않는다. post_data는 본문을 UTF-8로
+            # 디코드하므로 로깅 비콘 같은 바이너리 본문에서 예외가 난다.
+            # 경로의 세부 형태(/graphql/query, /api/graphql)에는 기대지 않는다.
+            if "graphql" not in response.url:
+                return
+            request = response.request
             try:
-                context = await browser.new_context(
-                    storage_state=str(self.session_path),
-                    user_agent=WEB_USER_AGENT,
-                )
-                page = await context.new_page()
+                post_data = request.post_data
+            except UnicodeDecodeError:
+                return
+            if request_query_name(post_data, request.headers) != query_name:
+                return
+            responses += 1
+            try:
+                body = parse_meta_response(await response.text())
+            except Exception:  # noqa: BLE001 - 응답 본문을 못 읽어도 수집은 이어간다
+                return
+            if body:
+                collected.extend(extract(body))
 
-                async def on_response(response: Any) -> None:
-                    nonlocal timeline_responses
-                    # GraphQL이 아닌 요청은 본문을 열지 않는다. post_data는 본문을
-                    # UTF-8로 디코드하므로 로깅 비콘 같은 바이너리 본문에서 예외가 난다.
-                    # 경로의 세부 형태(/graphql/query, /api/graphql)에는 기대지 않는다.
-                    if "graphql" not in response.url:
-                        return
-                    request = response.request
-                    try:
-                        post_data = request.post_data
-                    except UnicodeDecodeError:
-                        return
-                    if not is_timeline_request(post_data, request.headers):
-                        return
-                    timeline_responses += 1
-                    try:
-                        body = parse_meta_response(await response.text())
-                    except Exception:  # noqa: BLE001 - 응답 본문을 못 읽어도 수집은 이어간다
-                        return
-                    if body:
-                        collected.extend(timeline_threads(body))
-
-                page.on("response", lambda r: asyncio.create_task(on_response(r)))
-
-                await page.goto(
-                    THREADS_BASE + "/", wait_until="domcontentloaded", timeout=60000
-                )
-                await page.wait_for_timeout(5000)
-
-                # 첫 화면은 서버 렌더링이라 GraphQL을 타지 않는다. 스크롤해야 피드가 온다.
-                for _ in range(MAX_TIMELINE_SCROLLS):
-                    if len(collected) >= count:
-                        break
-                    await page.mouse.wheel(0, 6000)
-                    await page.wait_for_timeout(2500)
-            finally:
-                await browser.close()
+        page = await self._context.new_page()
+        try:
+            page.on("response", lambda r: asyncio.create_task(on_response(r)))
+            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            await page.wait_for_timeout(5000)
+            # 첫 화면은 서버 렌더링이라 GraphQL을 타지 않는다. 스크롤해야 피드가 온다.
+            for _ in range(MAX_TIMELINE_SCROLLS):
+                if len(collected) >= count:
+                    break
+                await page.mouse.wheel(0, 6000)
+                await page.wait_for_timeout(2500)
+        finally:
+            await page.close()
 
         # 두 경우를 나눠 남긴다. 쿼리 응답이 아예 없으면 웹앱이 쿼리 이름을 바꿨거나
-        # 로그인이 풀린 것이고, 응답은 왔는데 비었으면 세션 만료나 응답 구조 변경이다.
-        if not collected and not timeline_responses:
+        # 로그인이 풀린 것이고, 응답은 왔는데 비었으면 응답 구조가 바뀐 것이다.
+        # 어느 쪽인지는 크롤이 끝난 뒤 계정 확인(#103)이 가린다.
+        if not collected and not responses:
             typer.echo(
-                f"  [!] 타임라인 쿼리({TIMELINE_QUERY['friendly_name']}) 응답이 "
-                "없었습니다. 웹앱의 쿼리 이름이 바뀌었거나 로그인이 풀렸는지 확인하세요:"
+                f"  [!] 피드 쿼리({query_name}) 응답이 없었습니다. "
+                "웹앱의 쿼리 이름이 바뀌었거나 로그인이 풀렸을 수 있습니다."
             )
-            typer.echo("      uv run skim login threads")
         elif not collected:
             typer.echo(
-                f"  [!] 타임라인 응답 {timeline_responses}건에 스레드가 없습니다. "
-                "세션이 만료됐거나 응답 구조가 바뀌었는지 확인하세요:"
+                f"  [!] 피드 쿼리 응답 {responses}건에 스레드가 없습니다. "
+                "응답 구조가 바뀌었을 수 있습니다."
             )
-            typer.echo("      uv run skim login threads")
         return collected
-
-    def _fetch_feed(
-        self,
-        user_id: Optional[str] = None,
-        max_id: Optional[str] = None,
-    ) -> tuple[List[Dict[str, Any]], Optional[str]]:
-        """피드 데이터 가져오기"""
-        try:
-            if user_id:
-                return self._fetch_user_feed(user_id, max_id)
-            else:
-                return self._fetch_timeline_feed(max_id)
-        except requests.RequestException as e:
-            typer.echo(f"API 요청 실패: {e}")
-            return [], None
-
-    def _fetch_tokens(self) -> Dict[str, str]:
-        """threads.com HTML에서 GraphQL 호출에 필요한 요청 토큰을 뽑는다."""
-        if self._tokens is not None:
-            return self._tokens
-
-        resp = self.session.get(THREADS_BASE + "/", timeout=20)
-        resp.raise_for_status()
-        html = resp.text
-
-        lsd = re.search(r'"LSD",\[\],\{"token":"([^"]+)"', html)
-        dtsg = re.search(r'"DTSGInitialData",\[\],\{"token":"([^"]+)"', html)
-        if not lsd or not dtsg:
-            typer.echo("세션이 만료되었습니다. 재로그인하세요:")
-            typer.echo("  uv run skim login threads")
-            self._tokens = {}
-            return self._tokens
-
-        self._tokens = {"lsd": lsd.group(1), "fb_dtsg": dtsg.group(1)}
-        if self.debug_mode:
-            typer.echo("  요청 토큰 확보 (lsd/fb_dtsg)")
-        return self._tokens
-
-    def _graphql(
-        self, query: Dict[str, str], variables: Dict[str, Any], label: str
-    ) -> tuple[List[Dict[str, Any]], Optional[str]]:
-        """persisted query를 호출하고 (edges, next_cursor)를 돌려준다."""
-        tokens = self._fetch_tokens()
-        if not tokens:
-            return [], None
-
-        payload = {
-            "lsd": tokens["lsd"],
-            "fb_dtsg": tokens["fb_dtsg"],
-            "__a": "1",
-            "__comet_req": "29",
-            "fb_api_caller_class": "RelayModern",
-            "fb_api_req_friendly_name": query["friendly_name"],
-            "server_timestamps": "true",
-            "variables": json.dumps({**variables, **RELAY_PROVIDERS}),
-            "doc_id": query["doc_id"],
-        }
-        headers = {
-            "x-fb-friendly-name": query["friendly_name"],
-            "x-fb-lsd": tokens["lsd"],
-            "x-root-field-name": query["root_field"],
-            "x-csrftoken": self.csrf_token,
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Origin": THREADS_BASE,
-            "Referer": THREADS_BASE + "/",
-        }
-
-        resp = self.session.post(GRAPHQL_URL, data=payload, headers=headers, timeout=25)
-
-        if resp.status_code in (401, 403):
-            typer.echo("세션이 만료되었습니다. 재로그인하세요:")
-            typer.echo("  uv run skim login threads")
-            return [], None
-
-        if resp.status_code != 200:
-            # rate limit/서버 오류를 정상 빈 피드처럼 숨기지 않는다.
-            typer.echo(f"  [!] {label} API 오류: HTTP {resp.status_code}")
-            return [], None
-
-        body = parse_meta_response(resp.text)
-        if body is None:
-            typer.echo(f"  [!] {label} 응답을 해석하지 못했습니다 (HTTP 200, 비JSON).")
-            return [], None
-
-        if body.get("errorSummary") or body.get("error"):
-            # Meta는 거부 사유를 GraphQL errors가 아니라 이 봉투로 돌려준다.
-            # 2026-09-08~09-21 동안 error 1357054가 매일 여기로 왔는데, 봉투를
-            # 안 벗겨서 JSONDecodeError로만 보였다.
-            code = body.get("error", "unknown")
-            summary = body.get("errorSummary") or body.get("errorDescription", "")
-            typer.echo(f"  [!] {label} 요청 거부: error {code} {summary}")
-            typer.echo("      헤더/토큰이 최신 웹앱과 어긋났을 수 있습니다.")
-            return [], None
-
-        if body.get("errors"):
-            # 웹앱 재배포로 doc_id가 낡으면 200 + errors로 온다. 빈 피드로 숨기지 않는다.
-            message = body["errors"][0].get("message", "unknown")
-            typer.echo(f"  [!] {label} GraphQL 오류: {message}")
-            typer.echo(f"      doc_id({query['doc_id']}) 갱신이 필요할 수 있습니다.")
-            return [], None
-
-        data = body.get("data") or {}
-        if not data:
-            return [], None
-
-        # 응답 alias(feedData/mediaData)는 쿼리마다 달라 유일한 최상위 키를 그대로 쓴다.
-        connection = next(iter(data.values())) or {}
-        edges = connection.get("edges") or []
-        page_info = connection.get("page_info") or {}
-        next_cursor = (
-            page_info.get("end_cursor") if page_info.get("has_next_page") else None
-        )
-
-        if self.debug_mode:
-            typer.echo(
-                f"  {label}: {len(edges)}개 edge 수신 "
-                f"(next_cursor: {'있음' if next_cursor else '없음'})"
-            )
-
-        return edges, next_cursor
-
-    def _fetch_timeline_feed(
-        self, max_id: Optional[str] = None
-    ) -> tuple[List[Dict[str, Any]], Optional[str]]:
-        """For You 타임라인 피드"""
-        variables = {
-            "after": max_id,
-            "before": None,
-            "data": {
-                "feed_view_info": "[]",
-                "pagination_source": "text_post_feed_threads",
-                "reason": "pagination" if max_id else "cold_start_fetch",
-            },
-            "first": 10,
-            "last": None,
-            "sort_by": None,
-            "variant": "for_you",
-        }
-        edges, next_cursor = self._graphql(TIMELINE_QUERY, variables, "타임라인")
-
-        # 타임라인 edge는 추천 사용자 슬롯도 섞여 오므로 스레드가 실린 노드만 남긴다.
-        threads = []
-        for edge in edges:
-            thread = (edge.get("node") or {}).get("text_post_app_thread")
-            if thread:
-                threads.append(thread)
-
-        return threads, next_cursor
-
-    def _fetch_user_feed(
-        self, user_id: str, max_id: Optional[str] = None
-    ) -> tuple[List[Dict[str, Any]], Optional[str]]:
-        """특정 사용자 프로필 피드"""
-        variables = {
-            "after": max_id,
-            "allow_page_info_for_lox_user": False,
-            "before": None,
-            "first": 10,
-            "last": None,
-            "userID": str(user_id),
-        }
-        edges, next_cursor = self._graphql(PROFILE_QUERY, variables, "사용자 피드")
-
-        # 프로필 응답은 node 자체가 스레드다.
-        threads = [edge["node"] for edge in edges if edge.get("node")]
-
-        return threads, next_cursor
 
     def _parse_thread(self, thread: Dict[str, Any]) -> Optional[Post]:
         """
