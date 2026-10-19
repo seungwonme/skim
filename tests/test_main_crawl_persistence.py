@@ -256,11 +256,13 @@ class CrawlPersistenceTests(unittest.TestCase):
         update_run_progress_mock.assert_any_call(
             102, "threads", "threads 크롤링 실패: boom"
         )
+        # 실패한 SNS는 계정을 확인해 원인을 붙인다(#103). 테스트의 세션 폴더는 비어
+        # 있어 로그인 만료로 나온다.
         finish_run_mock.assert_called_once_with(
             102,
             "failed",
             1,
-            "실패 플랫폼: threads; 완료 플랫폼: reddit",
+            "실패 플랫폼: threads; 완료 플랫폼: reddit; 계정 확인: threads 로그인 만료",
         )
         self.assertTrue(
             any(

@@ -9,7 +9,7 @@ import sys
 
 import pytest
 
-from skim_core import db
+from skim_core import db, session_check
 from skim_core.crawlers.feed import geeknews
 from skim_core.paths import DATA_DIR
 
@@ -76,3 +76,23 @@ def _isolated_geeknews_topic_budget(tmp_path, monkeypatch):
     monkeypatch.setattr(
         geeknews, "TOPIC_BUDGET_FILE", tmp_path / "geeknews_topic_budget.json"
     )
+
+
+@pytest.fixture(autouse=True)
+def _no_account_requests(tmp_path, monkeypatch):
+    """계정 확인 요청을 막고 세션 경로를 빈 임시 폴더로 둔다.
+
+    SNS가 0건이거나 실패하는 크롤 테스트는 계정 확인을 부른다. 실제 세션으로 나가면
+    테스트가 운영 계정으로 요청한다. 요청을 확인하려는 테스트는 `_http_get`을 직접 바꾼다.
+    """
+    sent: list[str] = []
+
+    def refuse(url, **_kwargs):
+        sent.append(url)
+        raise RuntimeError(f"테스트가 계정 확인 요청을 보냈습니다: {url}")
+
+    monkeypatch.setattr(session_check, "SESSIONS_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(session_check, "_http_get", refuse)
+    yield
+    if sent:
+        pytest.fail(f"테스트가 계정 확인 요청을 보냈습니다: {', '.join(sent)}")
