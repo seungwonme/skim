@@ -44,6 +44,7 @@ from skim_core.db import (
     update_run_progress,
     upsert_tracked_source,
 )
+from skim_core.enrichment import launch_render_browser
 from skim_core.feed_utils import probe_user_agent
 from skim_core.models import Post
 from skim_core.paths import DATA_DIR
@@ -1135,11 +1136,10 @@ def _check_sessions_live(
 
 
 def _playwright_status() -> dict:
-    """headless 브라우저를 실제로 띄워본다.
+    """렌더 폴백이 쓰는 헤드리스 브라우저를 실제로 띄워본다.
 
-    패키지가 올라가도 브라우저 바이너리는 따로 받아야 하고, playwright가 올라가면
-    필요한 빌드 번호가 바뀐다. 이게 없으면 403/JS 렌더링 페이지의 폴백이 통째로
-    죽는데 크롤은 성공으로 끝나 며칠씩 묻힌다.
+    이게 안 뜨면 403/JS 렌더링 페이지의 폴백이 통째로 죽는데 크롤은 성공으로 끝나
+    며칠씩 묻힌다. 크롤과 같은 `launch_render_browser`로 띄운다.
     """
     try:
         # 임포트 비용이 커서 doctor를 실행할 때만 올린다.
@@ -1151,18 +1151,15 @@ def _playwright_status() -> dict:
 
     try:
         with sync_playwright() as play:
-            browser = play.chromium.launch(headless=True)
+            browser = launch_render_browser(play)
             browser.close()
     except Exception as exc:  # pragma: no cover - 환경 의존
         first_line = (
             str(exc).strip().splitlines()[0] if str(exc).strip() else type(exc).__name__
         )
-        return {
-            "ok": False,
-            "detail": f"{first_line[:150]} (uv run playwright install)",
-        }
+        return {"ok": False, "detail": f"{first_line[:150]} (Google Chrome 확인)"}
 
-    return {"ok": True, "detail": "chromium headless 실행 가능"}
+    return {"ok": True, "detail": "Google Chrome headless 실행 가능"}
 
 
 def _echo_platform_rows(report: dict) -> None:

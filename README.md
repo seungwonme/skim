@@ -54,11 +54,10 @@ Skim collects posts from multiple public feeds and session-based social sources,
 ```bash
 pnpm install   # husky/commitlint git hooks
 uv sync
-uv run playwright install
 brew install just
 ```
 
-Python requires 3.12+. Tasks run through `just`; Python tooling uses `uv`.
+Python requires 3.12+. Google Chrome must be installed: login, SNS crawls, and rendered article extraction all run it. Skim does not download Playwright browsers. Tasks run through `just`; Python tooling uses `uv`.
 
 ## Usage
 
