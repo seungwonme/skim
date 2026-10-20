@@ -14,7 +14,7 @@
 헤더, 특히 User-Agent는 그 플랫폼 크롤러와 같은 값을 쓴다. 같은 쿠키가 다른 환경에서
 쓰이면 세션을 끊는 사이트가 있다. 2026-10-20 LinkedIn 세션이 크롤러와 다른
 User-Agent로 보낸 시험 요청 뒤 30분 안에 끊겼다(원인 미확정).
-전용 프로필로 옮긴 플랫폼(threads, linkedin, #105)은 크롤러와 같은 프로필 브라우저로
+전용 프로필로 옮긴 플랫폼(threads, linkedin, x, #105)은 크롤러와 같은 프로필 브라우저로
 확인한다. 쿠키 파일은 보지 않고 User-Agent는 Chrome이 정한다.
 """
 
@@ -25,7 +25,6 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Callable, Dict, Optional, Tuple
 
 import requests
@@ -39,6 +38,7 @@ from .crawlers.api.linkedin import (
     voyager_get,
 )
 from .crawlers.api.reddit import REDDIT_USER_AGENT, VERIFICATION_TITLE
+from .crawlers.api.x import ACCOUNT_SWITCHER, X_HOME_URL, login_wall, screen_name_from
 from .crawlers.browser_profile import ProfileBrowserError, ProfileMissing, open_profile
 from .paths import SESSIONS_DIR
 
@@ -60,15 +60,11 @@ CAUSES = {
     UNVERIFIED: "원인 판단 불가",
 }
 
-# 계정 전환 메뉴가 부르는 목록이다. v1.1 account/settings.json과
-# verify_credentials.json은 2026-10-20에 404(code 34)였다.
-X_ACCOUNT_URL = "https://x.com/i/api/1.1/account/multi/list.json"
 THREADS_HOME_URL = "https://www.threads.com/"
 REDDIT_ME_URL = "https://www.reddit.com/api/me.json"
 
 # 세션 파일에서 플랫폼 쿠키를 고르는 도메인. 크롤러의 _load_cookies와 같다.
 _COOKIE_DOMAINS = {
-    "x": ("x.com", "twitter.com"),
     "reddit": ("reddit",),
 }
 # 로그인한 페이지에는 viewer에 쿠키 ds_user_id와 같은 id가 있고, 풀리면 null이다.
@@ -120,35 +116,6 @@ def _common_status(status_code: int) -> Optional[str]:
     return None
 
 
-def _check_x(cookies: Dict[str, str]) -> IdentityCheck:
-    ct0 = cookies.get("ct0", "")
-    auth_token = cookies.get("auth_token", "")
-    if not ct0 or not auth_token:
-        return IdentityCheck("x", SIGNED_OUT, "ct0, auth_token 쿠키 없음")
-    # 크롤러(twitter-api-client)가 매 요청에 붙이는 헤더를 그대로 쓴다. 쿠키 헤더와
-    # 웹앱 공개 Bearer 토큰, User-Agent가 함께 들어 있다.
-    # pylint: disable-next=import-outside-toplevel
-    from twitter.util import get_headers
-
-    session = SimpleNamespace(cookies={"ct0": ct0, "auth_token": auth_token})
-    response = _http_get(X_ACCOUNT_URL, headers=get_headers(session))
-    status = _common_status(response.status_code)
-    if status:
-        return IdentityCheck("x", status, f"HTTP {response.status_code}")
-    if response.status_code != 200:
-        return IdentityCheck("x", UNVERIFIED, f"HTTP {response.status_code}")
-    users = response.json().get("users") or []
-    if not users:
-        return IdentityCheck("x", UNVERIFIED, "응답에 계정 목록이 없음")
-    twid = _X_TWID.search(cookies.get("twid", ""))
-    me = next(
-        (u for u in users if twid and str(u.get("user_id")) == twid.group(1)),
-        users[0],
-    )
-    handle = me.get("screen_name") or ""
-    return IdentityCheck("x", VERIFIED, account=f"@{handle}" if handle else "")
-
-
 def threads_identity(html: str, user_id: str) -> IdentityCheck:
     """threads 홈 문서와 프로필의 ds_user_id 쿠키로 판정한다."""
     if not user_id:
@@ -189,6 +156,41 @@ def _run_profile_check(platform: str, probe, judge) -> IdentityCheck:
 
 def _check_threads() -> IdentityCheck:
     return _run_profile_check("threads", _threads_home, threads_identity)
+
+
+def x_identity(page_url: str, twid: str, account_text: str) -> IdentityCheck:
+    """홈을 연 뒤의 주소, twid 쿠키, 계정 메뉴 글자로 판정한다."""
+    wall = login_wall(page_url)
+    if wall == "/account/access":
+        # 잠금 해제나 본인 확인을 요구하는 화면이다. 로그인은 살아 있다.
+        return IdentityCheck("x", BLOCKED, "계정 확인 화면 (/account/access)")
+    if wall:
+        return IdentityCheck("x", SIGNED_OUT, f"로그인 화면 ({wall})")
+    if not _X_TWID.search(twid or ""):
+        return IdentityCheck("x", SIGNED_OUT, "twid 쿠키 없음")
+    handle = screen_name_from(account_text)
+    if not handle:
+        return IdentityCheck("x", UNVERIFIED, "계정 메뉴에서 핸들을 찾지 못함")
+    return IdentityCheck("x", VERIFIED, account=f"@{handle}")
+
+
+async def _x_home() -> Tuple[str, str, str]:
+    async with open_profile() as context:
+        page = await context.new_page()
+        try:
+            await page.goto(X_HOME_URL, wait_until="domcontentloaded", timeout=60000)
+            await page.wait_for_timeout(4000)
+            switcher = page.locator(ACCOUNT_SWITCHER)
+            text = await switcher.first.inner_text() if await switcher.count() else ""
+            cookies = await context.cookies(X_HOME_URL)
+            twid = next((c["value"] for c in cookies if c["name"] == "twid"), "")
+            return page.url, twid, text
+        finally:
+            await page.close()
+
+
+def _check_x() -> IdentityCheck:
+    return _run_profile_check("x", _x_home, x_identity)
 
 
 def _linkedin_public_id(payload: dict) -> str:
@@ -271,10 +273,10 @@ def _check_reddit(cookies: Dict[str, str]) -> IdentityCheck:
 
 # 세션 파일의 쿠키로 확인하는 플랫폼. 전용 프로필로 옮긴 플랫폼은 _PROFILE_CHECKS에 있다.
 _CHECKS: Dict[str, Callable[[Dict[str, str]], IdentityCheck]] = {
-    "x": _check_x,
     "reddit": _check_reddit,
 }
 _PROFILE_CHECKS: Dict[str, Callable[[], IdentityCheck]] = {
+    "x": _check_x,
     "threads": _check_threads,
     "linkedin": _check_linkedin,
 }

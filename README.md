@@ -45,7 +45,7 @@ Skim collects posts from multiple public feeds and session-based social sources,
 | Feed | Blogs | Registered RSS feeds in `tracked_sources`; `PERSONAL_BLOGS` provides fallback seeds |
 | Feed | AI Labs | LangChain, DeepMind, Google Research, Hugging Face, Mistral |
 | API | Threads | Web app queries read inside the logged-in Chrome profile |
-| API | X | GraphQL via `twitter-api-client` |
+| API | X | Web app GraphQL responses read inside the logged-in Chrome profile |
 | API | LinkedIn | Voyager REST called from a feed page in the logged-in Chrome profile |
 | API | Reddit | JSON listing API |
 
@@ -113,7 +113,7 @@ uv run skim source import sources.opml --platform blogs
 
 An execution status of `success` means the crawl finished. Inspect the article-failure and partial-body counts in `skim doctor` as well: comments or a product tagline can be stored while the original article is unavailable. `source_empty` identifies a source that returned neither a body nor comments.
 
-When an SNS platform (threads, x, linkedin, reddit) fails or returns nothing, the crawl sends one account request with the saved session (Threads and LinkedIn check inside the logged-in Chrome profile instead) and records the likely cause in the run summary: an expired login, a changed response with a live login, a rate limit, or a network failure.
+When an SNS platform (threads, x, linkedin, reddit) fails or returns nothing, the crawl sends one account request with the saved session (Threads, LinkedIn, and X check inside the logged-in Chrome profile instead) and records the likely cause in the run summary: an expired login, a changed response with a live login, a rate limit, or a network failure.
 
 Repair reviewed rows through the maintenance commands. Start with `--dry-run`; recovery preserves existing comments and skips rows changed by another writer during extraction.
 
@@ -142,7 +142,7 @@ uv run skim login reddit
 printf '%s\n' "$PASSWORD" | uv run skim login threads --identifier user@example.com --password-stdin --save-credential
 ```
 
-`skim login` signs in inside a dedicated Chrome profile (`~/.skim/chrome-profile`). Threads and LinkedIn crawls open that same profile headlessly instead of copying its cookies, so close the login window before crawling: Chrome allows one process per profile. The login closes Chrome cleanly so the new login cookies stay in the profile.
+`skim login` signs in inside a dedicated Chrome profile (`~/.skim/chrome-profile`). Threads, LinkedIn, and X crawls open that same profile headlessly instead of copying its cookies, so close the login window before crawling: Chrome allows one process per profile. The login closes Chrome cleanly so the new login cookies stay in the profile.
 
 ## Desktop App
 

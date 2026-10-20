@@ -27,14 +27,13 @@ from skim_core.session_check import (
     check_identity,
     linkedin_identity,
     threads_identity,
+    x_identity,
 )
 
 COOKIES = {
-    "x": {"ct0": "c" * 32, "auth_token": "a" * 40, "twid": "u%3D42"},
     "reddit": {"reddit_session": "r"},
 }
 DOMAINS = {
-    "x": ".x.com",
     "reddit": ".reddit.com",
 }
 
@@ -78,7 +77,7 @@ def _check(tmp_path, monkeypatch, platform, response):
 
 def test_missing_session_file_is_signed_out_without_a_request(tmp_path):
     # conftest가 요청을 막아 두었으므로 요청을 보내면 이 테스트가 실패한다.
-    check = check_identity("x", tmp_path / "sessions")
+    check = check_identity("reddit", tmp_path / "sessions")
 
     assert check.status == SIGNED_OUT
     assert "세션 파일 없음" in check.detail
@@ -115,51 +114,53 @@ def test_threads_browser_failures(monkeypatch, error, expected):
     assert "\n" not in check.detail
 
 
-def test_x_account_list_matching_twid_is_verified(tmp_path, monkeypatch):
-    body = json.dumps(
-        {
-            "users": [
-                {"user_id": "1", "screen_name": "someone"},
-                {"user_id": "42", "screen_name": "me"},
-            ]
-        }
-    )
-
-    check, calls = _check(tmp_path, monkeypatch, "x", _response(200, body))
+def test_x_home_with_account_menu_is_verified():
+    check = x_identity("https://x.com/home", "u%3D42", "Aiden\n@me")
 
     assert (check.status, check.account) == (VERIFIED, "@me")
-    url, kwargs = calls[0]
-    assert url == session_check.X_ACCOUNT_URL
-    headers = kwargs["headers"]
-    # 세션 파일의 다른 도메인 쿠키가 섞이지 않는다.
-    assert headers["x-csrf-token"] == COOKIES["x"]["ct0"]
-    assert "other" not in headers["cookie"]
+
+
+def test_x_login_flow_is_signed_out():
+    url = "https://x.com/i/flow/login?redirect_after_login=%2Fhome"
+
+    assert x_identity(url, "", "").status == SIGNED_OUT
+
+
+def test_x_account_access_is_blocked_not_signed_out():
+    # 잠금 해제나 본인 확인 화면이다. 재로그인으로는 풀리지 않는다.
+    check = x_identity("https://x.com/account/access", "u%3D42", "")
+
+    assert check.status == BLOCKED
+
+
+def test_x_without_twid_is_signed_out():
+    assert x_identity("https://x.com/home", "", "@me").status == SIGNED_OUT
+
+
+def test_x_without_account_menu_is_unverified():
+    # 화면 구조가 바뀌어 메뉴를 못 찾으면 로그인 만료로 단정하지 않는다.
+    assert x_identity("https://x.com/home", "u%3D42", "").status == UNVERIFIED
+
+
+def test_x_without_profile_is_signed_out_without_chrome():
+    check = check_identity("x")
+
+    assert check.status == SIGNED_OUT
+    assert "전용 프로필 없음" in check.detail
 
 
 def test_probes_use_the_crawler_user_agent(tmp_path, monkeypatch):
     # 같은 쿠키를 다른 User-Agent로 쓰면 세션을 끊는 사이트가 있다 (2026-10-20 LinkedIn).
-    # pylint: disable-next=import-outside-toplevel
-    from twitter.util import get_headers
-
     from skim_core.crawlers.api import reddit
 
-    # threads, linkedin은 전용 프로필 브라우저로 확인해 User-Agent를 Chrome이 정한다.
+    # x, threads, linkedin은 전용 프로필 브라우저로 확인해 User-Agent를 Chrome이 정한다.
     crawler_agents = {
-        "x": get_headers(type("S", (), {"cookies": {}})())["user-agent"],
         "reddit": reddit.REDDIT_USER_AGENT,
     }
     for platform, agent in crawler_agents.items():
         _, calls = _check(tmp_path, monkeypatch, platform, _response(200, "{}"))
         headers = {k.lower(): v for k, v in calls[0][1]["headers"].items()}
         assert headers["user-agent"] == agent, platform
-
-
-def test_x_401_is_signed_out(tmp_path, monkeypatch):
-    body = '{"errors":[{"message":"Could not authenticate you","code":32}]}'
-
-    check, _ = _check(tmp_path, monkeypatch, "x", _response(401, body))
-
-    assert check.status == SIGNED_OUT
 
 
 def test_threads_viewer_matching_cookie_is_verified():
@@ -269,7 +270,9 @@ def test_common_status_codes(tmp_path, monkeypatch, status, expected):
 
 
 def test_connection_error_is_unreachable(tmp_path, monkeypatch):
-    check, _ = _check(tmp_path, monkeypatch, "x", requests.ConnectionError("no route"))
+    check, _ = _check(
+        tmp_path, monkeypatch, "reddit", requests.ConnectionError("no route")
+    )
 
     assert check.status == UNREACHABLE
 

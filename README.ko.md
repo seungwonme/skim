@@ -44,9 +44,9 @@ Skim은 여러 public feed와 세션 기반 social source에서 post를 수집�
 | Feed | Every.to | RSS feeds |
 | Feed | Blogs | `tracked_sources`에 등록된 RSS 피드. `PERSONAL_BLOGS`는 폴백과 초기 목록 |
 | Feed | AI Labs | LangChain, DeepMind, Google Research, Hugging Face, Mistral |
-| API | Threads | Instagram Private API |
-| API | X | `twitter-api-client` 기반 GraphQL |
-| API | LinkedIn | Voyager GraphQL |
+| API | Threads | 로그인한 Chrome 프로필 안에서 읽는 웹앱 쿼리 응답 |
+| API | X | 로그인한 Chrome 프로필 안에서 읽는 웹앱 GraphQL 응답 |
+| API | LinkedIn | 로그인한 Chrome 프로필의 피드 페이지 안에서 부르는 Voyager REST |
 | API | Reddit | JSON listing API |
 
 ## 설치
