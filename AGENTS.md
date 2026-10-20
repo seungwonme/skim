@@ -128,7 +128,7 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
 |--------|-----------|-----------|
 | hackernews | `## Hacker News Comments` | Algolia item API 1건 |
 | geeknews | `## GeekNews Comments` | 없음. GN 요약과 같은 토픽 페이지 1건에서 받는다. 지표와 원문 링크는 `/newest` 목록 |
-| x | `## X Replies` | 스레드는 없음(TweetDetail 재사용). 단독 트윗은 답글 3개 이상인 것만, 회차당 20건까지 |
+| x | `## X Replies` | 스레드는 없음(TweetDetail 재사용). 단독 트윗은 답글 3개 이상인 것만, 회차당 20건까지. 타임라인을 받은 탭에서 웹앱 안 이동으로 트윗을 열어 웹앱이 받는 TweetDetail을 읽는다 |
 | reddit | `## Reddit Comments` | 게시글당 1건 (초당 1요청 간격) |
 | linkedin | `## LinkedIn Comments` | 게시글당 1건 (Voyager `feed/comments`, 전용 프로필로 연 피드 페이지 안에서) |
 | youtube | `## YouTube Comments` | 영상당 yt-dlp 1회 |
@@ -232,8 +232,9 @@ everyto가 거의 매일 회귀로 잡혀 run이 상시 `degraded`였고, 그 �
   같은 계정에 브라우저 밖에서 보낸 요청이므로, 원인이 어느 쪽이든 skim 밖의 도구도 계정을
   흔들 수 있다. 새 플랫폼의 확인 요청을 만들 때도 크롤러의 상수를 가져다 쓴다.
   threads는 쿠키 파일 대신 전용 프로필 브라우저로 홈을 열어 `viewer` 표지를 보고, linkedin은
-  그 프로필로 피드를 연 페이지 안에서 `/voyager/api/me`를 부른다(#105). User-Agent를 Chrome이
-  정하므로 크롤러와 저절로 같다.
+  그 프로필로 피드를 연 페이지 안에서 `/voyager/api/me`를 부른다(#105). x는 홈을 열어
+  `twid` 쿠키와 왼쪽 계정 메뉴의 `@핸들`을 본다. 요청을 따로 만들지 않는다. User-Agent를
+  Chrome이 정하므로 크롤러와 저절로 같다.
 - 수~금의 arxiv(2일 창)는 주말 공백 때문에 뜸한 소스로 분류된다. 장애로 생긴 공백도
   60일 동안 최장 공백에 남아, 그동안은 그보다 짧은 다음 장애를 정상 공백으로 본다.
   arxiv 전면 실패는 예외로 올라오므로(아래 폴백 절) 이 판정에 기대지 않는다.
@@ -355,7 +356,7 @@ everyto가 거의 매일 회귀로 잡혀 run이 상시 `degraded`였고, 그 �
 떨어진 후보는 `docs/TODO.md`의 "Rejected Sources"에 이유와 함께 남긴다.
 
 - Feed 크롤러: `since` 유무에 따라 RSS/API 모드 자동 전환
-- API 크롤러: `data/sessions/{platform}_session.json` 세션 쿠키 재사용 (threads, linkedin 제외)
+- API 크롤러: `data/sessions/{platform}_session.json` 세션 쿠키 재사용 (threads, linkedin, x 제외)
 - **threads는 `skim login`이 로그인해 둔 전용 Chrome 프로필(`~/.skim/chrome-profile`) 안에서
   받는다(#105).** 타임라인과 프로필 피드는 페이지를 열고 스크롤할 때 웹앱이 보내는 쿼리의
   응답을 읽고, 답글은 같은 브라우저에 탭을 하나 더 연다. 쿠키를 꺼내 HTTP나 다른
@@ -390,6 +391,20 @@ everyto가 거의 매일 회귀로 잡혀 run이 상시 `degraded`였고, 그 �
   Components 스트림)로 받는다. 화면 조각을 직렬화한 형식이라 파싱하지 않는다. 웹앱은 다른
   데이터(`/voyager/api/me`, 알림, 메시지)에 여전히 Voyager를 쓴다. 이 점에서 linkedin은
   웹앱의 응답을 읽는 threads와 다르다.
+- **x도 같은 프로필 안에서 받는다(#105).** threads처럼 요청을 만들지 않고 웹앱의 응답을
+  읽는다. 홈을 열고 스크롤하며 `HomeTimeline`(`--user-id`면 프로필 페이지의 `UserTweets`)
+  응답을 모은다. GraphQL 주소의 마지막 경로가 쿼리 이름이다. 스레드 병합과 답글에 쓸
+  `TweetDetail`은 같은 탭에서 `history.pushState`와 `popstate`로 웹앱 안에서 트윗을 열어
+  받는다. 트윗마다 페이지를 새로 받으면 사이드바와 계정 쿼리가 함께 나가 20건 크롤의
+  GraphQL 요청이 약 210건이 됐다. 웹앱 안 이동은 36건이다(2026-10-20 실측). 웹앱이 그
+  이동에 응답하지 않으면 남은 트윗은 페이지를 새로 받아 연다.
+- x에서 어느 대화에 `TweetDetail`이 필요한지(스레드인지, 답글 3개 이상 단독 트윗인지)는
+  `_parse_tweets` 한 곳이 정한다. 같은 함수를 계획 단계로 한 번 돌려 열 트윗을 모으고, 응답을
+  받은 뒤 다시 돌려 글을 만든다. 기준을 두 곳에 두지 않는다. 스크롤로 받은 뒤쪽 응답에
+  앞에서 본 트윗이 다시 실리므로 트윗 id로 한 번만 남긴다(50건 실측에서 1건 중복).
+- x 로그인이 풀리면 웹앱이 `/i/flow/login`으로, 잠금이나 본인 확인이 걸리면
+  `/account/access`로 보낸다. 앞은 재로그인, 뒤는 브라우저에서 계정 확인을 풀어야 한다.
+  twitter-api-client와 그 하위 의존성은 지웠다.
 - Reddit API 크롤러: subreddit listing은 verification challenge 해제 후 JSON endpoint 호출, 홈 피드는 로그인 세션 기반 `best.json` 호출
 
 ### 주요 모듈
@@ -488,7 +503,7 @@ everyto가 거의 매일 회귀로 잡혀 run이 상시 `degraded`였고, 그 �
 ## Runtime Auth
 
 - `SKIM_WORKSPACE_ROOT` can override the workspace root when needed.
-- Login sessions live under `data/sessions/{platform}_session.json`. threads and linkedin no longer read them; they run inside the dedicated Chrome profile `~/.skim/chrome-profile` (#105).
+- Login sessions live under `data/sessions/{platform}_session.json`. threads, linkedin, and x no longer read them; they run inside the dedicated Chrome profile `~/.skim/chrome-profile` (#105).
 - macOS credentials live in Keychain; SQLite stores only `platform_credentials` references.
 - Use `uv run skim login <platform> --identifier <id>` to read a saved Keychain credential, or add `--password-stdin --save-credential` to store one from CLI.
 

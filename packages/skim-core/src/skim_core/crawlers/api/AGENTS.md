@@ -6,6 +6,6 @@ API or session-backed crawlers.
 
 - Supported API crawlers: `threads`, `linkedin`, `x`, `reddit`.
 - Use saved sessions under `data/sessions/` when a platform requires login state.
-- Exception: `threads` and `linkedin` read inside the dedicated Chrome profile through `crawlers/browser_profile.py` and do not load cookie files (#105). LinkedIn calls Voyager with `fetch` from its feed page. The other SNS crawlers are moving to the same path one PR at a time.
+- Exception: `threads`, `linkedin`, and `x` read inside the dedicated Chrome profile through `crawlers/browser_profile.py` and do not load cookie files (#105). LinkedIn calls Voyager with `fetch` from its feed page. X reads the web app's own `HomeTimeline`, `UserTweets`, and `TweetDetail` responses and opens tweets with in-app navigation from the same tab. Reddit still uses its session file.
 - Preserve stable `external_id` and ISO timestamp behavior; update `tests/test_social_api_metadata.py` or platform-specific tests when changing metadata.
 - Reddit is HTTP/API based in this repo. Do not route it through removed browser crawler code.

@@ -1,227 +1,269 @@
 """
 @file x_api.py
-@description X (Twitter) API 기반 크롤러 (브라우저 없이 동작)
+@description X (Twitter) 크롤러
 
-twitter-api-client 라이브러리를 사용하여 X 게시글을 수집합니다.
-CDP로 추출한 세션 쿠키를 재사용하여 인증합니다.
+`skim login`이 로그인해 둔 전용 Chrome 프로필을 열어 웹앱이 스스로 보내는 GraphQL 응답을
+읽습니다(#105). 쿠키를 꺼내 다른 환경에서 쓰지 않습니다. twitter-api-client로 세션 파일의
+쿠키를 실어 요청을 직접 만들던 경로는 지웠습니다.
 
 주요 기능:
-1. 브라우저 없이 For You 타임라인 피드 수집
-2. 특정 사용자 트윗 수집
-3. 페이지네이션 지원
+1. For You 타임라인: 홈을 열고 스크롤할 때 오는 HomeTimeline 응답
+2. 사용자 트윗(--user-id): 프로필 페이지를 스크롤할 때 오는 UserTweets 응답
+3. 스레드 병합과 답글: 같은 탭에서 웹앱 안 이동으로 트윗을 열 때 오는 TweetDetail 응답
 
 @dependencies
-- twitter-api-client: X GraphQL API 클라이언트
+- playwright: 전용 프로필 Chrome에 CDP로 붙는다
 - typer: CLI 출력
 """
 
 import asyncio
-import json
+import re
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from typing import Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 import typer
+from playwright.async_api import TimeoutError as PlaywrightTimeout
 
 from ...comments import Comment, append_comment_section, render_comment_section
 from ...models import Post
-from ...paths import SESSIONS_DIR
+from ..browser_profile import open_profile
 
-SESSION_PATH = SESSIONS_DIR / "x_session.json"
+X_BASE = "https://x.com"
+X_HOME_URL = f"{X_BASE}/home"
+TIMELINE_QUERY = "HomeTimeline"
+USER_TWEETS_QUERY = "UserTweets"
+DETAIL_QUERY = "TweetDetail"
+# 홈 왼쪽 메뉴의 계정 버튼. 표시 이름과 @핸들이 들어 있다.
+ACCOUNT_SWITCHER = "[data-testid='SideNav_AccountSwitcher_Button']"
 MAX_REPLIES = 15
 # 스레드는 TweetDetail을 이미 부르므로 답글이 공짜다. 단독 트윗은 요청이 추가로 드는데
 # 실측 3~9초/건이라 무제한으로 두면 크롤이 몇 배 길어진다. 반응이 있는 것만, 회차 상한 안에서.
 MIN_REPLIES_FOR_FETCH = 3
 MAX_REPLY_FETCHES_PER_RUN = 20
+# 피드 스크롤 상한. HomeTimeline 한 번에 트윗 20개 안팎이 온다.
+MAX_SCROLLS = 15
+# 트윗 페이지를 연달아 열 때 사이에 두는 간격(초).
+DETAIL_INTERVAL_SECONDS = 1.0
+DETAIL_TIMEOUT_MS = 30000
+# 웹앱 안에서 주소만 바꿔 트윗을 연다. 그러면 TweetDetail 1건만 나간다. 문서를 새로 받으면
+# 사이드바와 계정 쿼리가 트윗마다 8건쯤 함께 나간다(2026-10-20 실측, 20건 크롤에 약 210건).
+OPEN_STATUS_SCRIPT = """id => {
+    history.pushState({}, '', '/i/status/' + id);
+    dispatchEvent(new PopStateEvent('popstate', {state: {}}));
+}"""
+# 로그인이 풀렸거나 계정 확인이 걸리면 웹앱이 이 경로로 보낸다.
+LOGIN_WALL_PATHS = ("/i/flow/login", "/login", "/logout", "/account/access")
+_SCREEN_NAME = re.compile(r"@(\w{1,15})")
+
+
+def graphql_query_name(url: str) -> str:
+    """GraphQL 주소의 마지막 경로가 쿼리 이름이다 (/i/api/graphql/<id>/HomeTimeline)."""
+    path = urlparse(url).path
+    return path.rsplit("/", 1)[-1] if "/graphql/" in path else ""
+
+
+def login_wall(page_url: str) -> Optional[str]:
+    """페이지가 로그인이나 계정 확인 화면으로 넘어갔으면 그 경로, 아니면 None."""
+    path = urlparse(page_url).path
+    return next((wall for wall in LOGIN_WALL_PATHS if path.startswith(wall)), None)
+
+
+def screen_name_from(text: str) -> str:
+    """계정 메뉴 글자에서 @핸들을 찾는다. 없으면 빈 문자열."""
+    match = _SCREEN_NAME.search(text or "")
+    return match.group(1) if match else ""
 
 
 class XAPICrawler:
-    """
-    X (Twitter) API 기반 크롤러
-
-    twitter-api-client를 사용하여 브라우저 없이 X 게시글을 수집합니다.
-    CDP로 추출한 세션 쿠키를 재사용합니다.
-    """
+    """X 크롤러. 전용 프로필 브라우저에서 웹앱의 GraphQL 응답을 읽는다."""
 
     platform = "x"
     # 단독 트윗 답글은 요청이 추가로 드는 유일한 경로라 --no-content로 끌 수 있다.
     # 클래스 속성으로 둬야 생성자를 우회해 만든 인스턴스(테스트)에서도 정의돼 있다.
     _skip_extra_reply_fetch = False
+    # crawl()이 연 전용 프로필 브라우저의 컨텍스트. 크롤 한 번 동안만 산다.
+    _context: Any = None
+    # 미리 받아 둔 TweetDetail 트윗 목록(대화 id별). _parse_tweets가 여기서 읽는다.
+    _details: Optional[Dict[str, list[dict]]] = None
+    # 계획 단계에서 TweetDetail이 필요한 대화를 적는 목록. 계획 단계가 아니면 None이다.
+    _wanted: Optional[List[str]] = None
 
     def __init__(self, debug_mode: bool = False):
         self.platform_name = "X"
         self.debug_mode = debug_mode
-        self.session_path = SESSION_PATH
-        self._scraper = None
-        self._setup_client()
-
-    def _setup_client(self) -> None:
-        """세션 쿠키 로드 및 API 클라이언트 설정"""
-        cookies = self._load_cookies()
-        if not cookies:
-            typer.echo("세션 쿠키가 없습니다. 먼저 로그인하세요:")
-            typer.echo("  uv run skim login x")
-            raise typer.Exit(1)
-
-        ct0 = cookies.get("ct0")
-        auth_token = cookies.get("auth_token")
-
-        if not ct0 or not auth_token:
-            typer.echo("필수 쿠키(ct0, auth_token)가 없습니다. 재로그인하세요:")
-            typer.echo("  uv run skim login x")
-            raise typer.Exit(1)
-
-        try:
-            # pylint: disable-next=import-outside-toplevel
-            from twitter.account import Account
-
-            self.account = Account(
-                cookies={"ct0": ct0, "auth_token": auth_token},
-                debug=1 if self.debug_mode else 0,
-                save=False,
-            )
-        except Exception as e:
-            typer.echo(f"X API 클라이언트 초기화 실패: {e}")
-            typer.echo("세션이 만료되었을 수 있습니다. 재로그인하세요:")
-            typer.echo("  uv run skim login x")
-            raise typer.Exit(1)
-
-        if self.debug_mode:
-            # 시크릿 값은 일부라도 로그에 남기지 않는다.
-            typer.echo(f"ct0: {len(ct0)}자, auth_token: {len(auth_token)}자 로드됨")
-
-    def _load_cookies(self) -> Dict[str, str]:
-        """세션 파일에서 쿠키 로드"""
-        if not self.session_path.exists():
-            return {}
-
-        with open(self.session_path, "r", encoding="utf-8") as f:
-            storage_state = json.load(f)
-
-        cookies = {}
-        for cookie in storage_state.get("cookies", []):
-            domain = cookie.get("domain", "")
-            if "x.com" in domain or "twitter.com" in domain:
-                cookies[cookie["name"]] = cookie["value"]
-
-        return cookies
 
     async def crawl(self, **options) -> List[Post]:
         count = options.get("count", 10)
         user_id = options.get("user_id")
         self._skip_extra_reply_fetch = options.get("no_content", False)
-        return await self._crawl_impl(count, user_id)
+        handle = str(user_id).lstrip("@") if user_id else None
+        async with open_profile() as context:
+            self._context = context
+            try:
+                return await self._crawl_impl(count, handle)
+            finally:
+                self._context = None
+                self._details = None
 
     async def _crawl_impl(
-        self, count: int = 10, user_id: Optional[str] = None
+        self, count: int = 10, handle: Optional[str] = None
     ) -> List[Post]:
-        """
-        X 게시글 크롤링
-
-        Args:
-            count: 수집할 게시글 수
-            user_id: 특정 사용자 screen name (없으면 For You 타임라인)
-
-        Returns:
-            크롤링된 게시글 목록
-        """
-        mode = f"사용자 @{user_id}" if user_id else "For You 타임라인"
+        """타임라인이나 사용자 트윗을 받고, 필요한 대화만 TweetDetail로 연 뒤 파싱한다."""
+        mode = f"사용자 @{handle}" if handle else "For You 타임라인"
         typer.echo(
-            f"[API 모드] {self.platform_name} 크롤링 시작 - {mode} (게시글 {count}개)"
+            f"[브라우저] {self.platform_name} 크롤링 시작 - {mode} (게시글 {count}개)"
         )
-
+        # 타임라인과 트윗 상세를 한 탭에서 받는다. 트윗은 웹앱 안에서 주소만 바꿔 연다.
+        page = await self._context.new_page()
         try:
-            if user_id:
-                raw_data = self._fetch_user_tweets(user_id, count)
+            if handle:
+                raw_data = await self._capture(
+                    page, f"{X_BASE}/{handle}", USER_TWEETS_QUERY, count
+                )
             else:
-                raw_data = self._fetch_timeline(count)
-        except Exception as e:
-            typer.echo(f"API 요청 실패: {e}")
-            if "401" in str(e) or "unauthorized" in str(e).lower():
-                typer.echo("세션이 만료되었습니다. 재로그인하세요:")
-                typer.echo("  uv run skim login x")
-            return []
+                raw_data = await self._capture(page, X_HOME_URL, TIMELINE_QUERY, count)
+            if not raw_data:
+                return []
+            self._details = await self._fetch_details(
+                page, self._detail_targets(raw_data, count)
+            )
+        finally:
+            await page.close()
 
         posts = self._parse_tweets(raw_data, count)
         typer.echo(f"총 {len(posts)}개의 게시글을 추출했습니다.")
         return posts
 
-    def _fetch_timeline(self, count: int) -> list[dict]:
-        """For You 타임라인 가져오기"""
-        if self.debug_mode:
-            typer.echo("  타임라인 요청 중...")
-        return self.account.home_timeline(limit=count)
+    async def _capture(self, page: Any, url: str, query: str, count: int) -> List[dict]:
+        """페이지를 열고 스크롤하며 웹앱이 받은 쿼리 응답을 모은다.
 
-    def _fetch_user_tweets(self, screen_name: str, count: int) -> list[dict]:
-        """특정 사용자의 트윗 가져오기"""
-        # pylint: disable-next=import-outside-toplevel
-        from twitter.scraper import Scraper
+        요청을 직접 만들지 않는다. 로그인 화면으로 넘어가면 빈 목록이다.
+        리트윗과 같은 대화의 조각이 Post 하나로 줄어드므로 트윗은 넉넉히 모은다.
+        """
+        bodies: List[dict] = []
 
-        if self.debug_mode:
-            typer.echo(f"  @{screen_name} 트윗 요청 중...")
+        async def on_response(response: Any) -> None:
+            if graphql_query_name(response.url) != query:
+                return
+            try:
+                body = await response.json()
+            except Exception:  # noqa: BLE001 - 응답 본문을 못 읽어도 수집은 이어간다
+                return
+            if isinstance(body, dict):
+                bodies.append(body)
 
-        cookies = self._load_cookies()
-        scraper = Scraper(
-            cookies={"ct0": cookies["ct0"], "auth_token": cookies["auth_token"]},
-            debug=1 if self.debug_mode else 0,
-            save=False,
-        )
+        def handler(response: Any) -> None:
+            asyncio.create_task(on_response(response))
 
-        # screen_name → user_id 변환
-        users = self._run_off_loop(lambda: scraper.users([screen_name]))
-        if not users:
-            typer.echo(f"  사용자 @{screen_name}을 찾을 수 없습니다")
-            return []
-
-        user_data = users[0]
-        uid = self._extract_user_id(user_data)
-        if not uid:
-            typer.echo("  사용자 ID를 추출할 수 없습니다")
-            return []
-
-        if self.debug_mode:
-            typer.echo(f"  user_id: {uid}")
-
-        return self._run_off_loop(lambda: scraper.tweets([uid], limit=count))
-
-    def _run_off_loop(self, fn: Callable):
-        """Scraper._run은 asyncio.run()을 쓰므로 실행 중인 이벤트 루프 안(예: CLI의
-        asyncio.run → crawl)에서 직접 호출하면 RuntimeError가 난다. 루프가 돌고
-        있으면 별도 스레드에서 실행해 격리한다."""
+        page.on("response", handler)
         try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return fn()
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            return executor.submit(fn).result()
+            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            await page.wait_for_timeout(5000)
+            wall = login_wall(page.url)
+            if wall:
+                typer.echo(f"   ❌ X가 로그인 화면으로 넘어갔습니다 ({wall})")
+                typer.echo(
+                    "   세션이 만료되었습니다. 다시 로그인하세요: uv run skim login x"
+                )
+                return []
+            for _ in range(MAX_SCROLLS):
+                if self._tweet_count(bodies) >= count * 2:
+                    break
+                await page.mouse.wheel(0, 6000)
+                await page.wait_for_timeout(2500)
+        finally:
+            # 같은 탭에서 트윗을 열 때 늦게 온 응답이 목록을 바꾸지 않게 뗀다.
+            page.remove_listener("response", handler)
 
-    def _extract_user_id(self, user_data: dict) -> Optional[int]:
-        """중첩된 응답에서 user_id 추출"""
+        if not bodies:
+            typer.echo(
+                f"  [!] {query} 응답이 없었습니다. "
+                "웹앱의 쿼리 이름이 바뀌었거나 로그인이 풀렸을 수 있습니다."
+            )
+        return list(bodies)
+
+    def _tweet_count(self, bodies: List[dict]) -> int:
+        return sum(len(self._extract_tweet_results(body)) for body in bodies)
+
+    def _detail_targets(self, raw_data: list[dict], count: int) -> List[str]:
+        """파싱을 요청 없이 한 번 돌려 TweetDetail이 필요한 대화를 모은다.
+
+        스레드인지, 답글을 채울 단독 트윗인지 고르는 기준이 _parse_tweets 안에 있다.
+        기준을 두 곳에 두지 않으려고 같은 함수를 계획 단계로 돌린다.
+        """
+        self._details = None
+        self._wanted = []
         try:
-            # 재귀적으로 rest_id 찾기
-            return int(self._find_key(user_data, "rest_id"))
-        except (ValueError, TypeError):
+            self._parse_tweets(raw_data, count)
+            return list(dict.fromkeys(self._wanted))
+        finally:
+            self._wanted = None
+
+    async def _fetch_details(
+        self, page: Any, conv_ids: List[str]
+    ) -> Dict[str, list[dict]]:
+        """대화마다 트윗을 열어 웹앱이 받은 TweetDetail의 트윗 목록을 모은다.
+
+        웹앱 안에서 주소만 바꿔 연다. 웹앱이 그 이동에 반응하지 않아 응답이 안 오면
+        남은 트윗은 페이지를 새로 받아 연다. 요청은 늘지만 답글은 계속 받는다.
+        """
+        details: Dict[str, list[dict]] = {}
+        in_app = True
+        for index, conv_id in enumerate(conv_ids):
+            if index:
+                await asyncio.sleep(DETAIL_INTERVAL_SECONDS)
+            try:
+                body = await self._open_detail(page, conv_id, in_app)
+            except PlaywrightTimeout:
+                if not in_app:
+                    continue
+                in_app = False
+                typer.echo(
+                    "   [!] X 웹앱 안 이동에 TweetDetail 응답이 없어 "
+                    "남은 트윗은 페이지를 새로 받아 엽니다"
+                )
+                body = await self._open_detail_safely(page, conv_id, in_app)
+            except Exception as exc:  # noqa: BLE001 - 네트워크, JSON 아님
+                self._debug_detail_failure(exc)
+                continue
+            tweets = self._extract_tweet_results(body) if body else []
+            if tweets:
+                details[conv_id] = tweets
+        missing = len(conv_ids) - len(details)
+        if missing:
+            typer.echo(
+                f"   [!] X 상세 조회 실패 {missing}건 (응답 내 조각으로 대체, 답글 없음)"
+            )
+        return details
+
+    async def _open_detail(self, page: Any, conv_id: str, in_app: bool) -> Any:
+        """트윗을 열고 웹앱이 받은 TweetDetail 본문을 돌려준다. 응답이 없으면 시간 초과."""
+        async with page.expect_response(
+            lambda r: graphql_query_name(r.url) == DETAIL_QUERY,
+            timeout=DETAIL_TIMEOUT_MS,
+        ) as info:
+            if in_app:
+                await page.evaluate(OPEN_STATUS_SCRIPT, conv_id)
+            else:
+                await page.goto(
+                    f"{X_BASE}/i/status/{conv_id}",
+                    wait_until="domcontentloaded",
+                    timeout=60000,
+                )
+        return await (await info.value).json()
+
+    async def _open_detail_safely(self, page: Any, conv_id: str, in_app: bool) -> Any:
+        try:
+            return await self._open_detail(page, conv_id, in_app)
+        except Exception as exc:  # noqa: BLE001 - 시간 초과, 네트워크, JSON 아님
+            self._debug_detail_failure(exc)
             return None
 
-    def _find_key(self, obj, key: str):
-        """딕셔너리에서 재귀적으로 키 찾기"""
-        if isinstance(obj, dict):
-            if key in obj:
-                val = obj[key]
-                # rest_id는 숫자 문자열이어야 함
-                if key == "rest_id" and isinstance(val, str) and val.isdigit():
-                    return val
-            for v in obj.values():
-                result = self._find_key(v, key)
-                if result is not None:
-                    return result
-        elif isinstance(obj, list):
-            for item in obj:
-                result = self._find_key(item, key)
-                if result is not None:
-                    return result
-        return None
+    def _debug_detail_failure(self, exc: Exception) -> None:
+        if self.debug_mode:
+            typer.echo(f"  스레드 상세 조회 실패(응답 내 조각으로 폴백): {exc}")
 
     def _parse_tweets(self, raw_data: list[dict], count: int) -> List[Post]:
         """API 응답을 Post 모델로 변환
@@ -234,11 +276,14 @@ class XAPICrawler:
         for entry in raw_data:
             tweets.extend(self._extract_tweet_results(entry))
 
-        # 트윗별 메타(작성자/대화 id/self-reply 여부) 부착, RT·파싱불가 제외
+        # 트윗별 메타(작성자/대화 id/self-reply 여부) 부착, RT·파싱불가 제외.
+        # 스크롤로 받은 뒤쪽 응답에 앞에서 본 트윗이 다시 실리기도 해서 id로 한 번만 남긴다.
         parsed: list[tuple[dict, dict]] = []
+        seen_ids: set[str] = set()
         for tweet in tweets:
             meta = self._tweet_meta(tweet)
-            if meta and not meta["is_rt"]:
+            if meta and not meta["is_rt"] and meta["id"] not in seen_ids:
+                seen_ids.add(meta["id"])
                 parsed.append((tweet, meta))
 
         # conversation(스레드) 단위로 응답 내 조각을 모은다
@@ -453,38 +498,11 @@ class XAPICrawler:
         )
 
     def _fetch_thread_detail(self, conv_id: str) -> Optional[list[dict]]:
-        """TweetDetail로 conversation 전체를 재조회해 트윗 객체 목록을 반환한다."""
-        try:
-            scraper = self._get_scraper()
-            if scraper is None:
-                return None
-            detail = self._run_off_loop(lambda: scraper.tweets_details([int(conv_id)]))
-        except Exception as e:  # noqa: BLE001 - 재조회 실패는 폴백으로 흡수
-            if self.debug_mode:
-                typer.echo(f"  스레드 상세 조회 실패(응답 내 조각으로 폴백): {e}")
+        """미리 받아 둔 TweetDetail의 트윗 목록. 계획 단계에서는 필요한 대화만 적는다."""
+        if self._wanted is not None:
+            self._wanted.append(conv_id)
             return None
-        tweets: list[dict] = []
-        for entry in detail or []:
-            tweets.extend(self._extract_tweet_results(entry))
-        return tweets or None
-
-    def _get_scraper(self):
-        """TweetDetail 재조회용 Scraper (세션 쿠키 재사용, lazy 생성)"""
-        if getattr(self, "_scraper", None) is not None:
-            return self._scraper
-        try:
-            # pylint: disable-next=import-outside-toplevel
-            from twitter.scraper import Scraper
-
-            cookies = self._load_cookies()
-            self._scraper = Scraper(
-                cookies={"ct0": cookies["ct0"], "auth_token": cookies["auth_token"]},
-                debug=1 if self.debug_mode else 0,
-                save=False,
-            )
-        except Exception:  # noqa: BLE001 - Scraper 불가 시 재조회 스킵
-            self._scraper = None
-        return self._scraper
+        return (self._details or {}).get(conv_id)
 
     def _extract_tweet_results(self, entry: dict) -> list[dict]:
         """중첩된 응답에서 tweet result 객체 추출"""
