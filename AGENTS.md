@@ -130,7 +130,7 @@ CLI (uv run skim ...) → skim_cli.cli → skim_core.crawlers.REGISTRY lookup
 | geeknews | `## GeekNews Comments` | 없음. GN 요약과 같은 토픽 페이지 1건에서 받는다. 지표와 원문 링크는 `/newest` 목록 |
 | x | `## X Replies` | 스레드는 없음(TweetDetail 재사용). 단독 트윗은 답글 3개 이상인 것만, 회차당 20건까지 |
 | reddit | `## Reddit Comments` | 게시글당 1건 (초당 1요청 간격) |
-| linkedin | `## LinkedIn Comments` | 게시글당 1건 (Voyager `feed/comments`) |
+| linkedin | `## LinkedIn Comments` | 게시글당 1건 (Voyager `feed/comments`, 전용 프로필로 연 피드 페이지 안에서) |
 | youtube | `## YouTube Comments` | 영상당 yt-dlp 1회 |
 | producthunt | `## Product Hunt Comments` | 제품당 1건 (PH 제품 페이지) |
 | threads | `## Threads Replies` | 답글 1개 이상인 게시물 전부, 게시물당 1건(스레드 25개씩, 4쪽까지). 피드를 받은 전용 프로필 브라우저에서 게시물 페이지를 한 번 열어 웹앱으로 부른다 |
@@ -226,10 +226,14 @@ everyto가 거의 매일 회귀로 잡혀 run이 상시 `degraded`였고, 그 �
   threads 0건(응답 구조 변경)에서 재로그인할지 코드를 고칠지 정하지 못했다.
 - 계정 확인 요청도 그 계정으로 식별되므로 수집이 잘된 플랫폼에는 보내지 않는다.
   헤더, 특히 User-Agent는 그 플랫폼 크롤러와 같은 값을 쓴다. 2026-10-20 LinkedIn
-  세션이 크롤러와 다른 User-Agent로 보낸 시험 요청 뒤 30분 안에 끊겼다(원인 미확정).
-  새 플랫폼의 확인 요청을 만들 때도 크롤러의 상수를 가져다 쓴다.
-  threads는 쿠키 파일 대신 전용 프로필 브라우저로 홈을 열어 `viewer` 표지를 본다(#105).
-  User-Agent를 Chrome이 정하므로 크롤러와 저절로 같다.
+  세션이 크롤러와 다른 User-Agent로 보낸 시험 요청 뒤 30분 안에 끊겼다. 같은 시간대
+  (04:05)에 다른 도구(hycli)도 다른 Chrome 프로필의 쿠키로 같은 계정의 `/voyager/api/me`를
+  불러 403을 받았다(다른 에이전트 세션의 기록). 어느 쪽이 원인인지는 가리지 못했다. 둘 다
+  같은 계정에 브라우저 밖에서 보낸 요청이므로, 원인이 어느 쪽이든 skim 밖의 도구도 계정을
+  흔들 수 있다. 새 플랫폼의 확인 요청을 만들 때도 크롤러의 상수를 가져다 쓴다.
+  threads는 쿠키 파일 대신 전용 프로필 브라우저로 홈을 열어 `viewer` 표지를 보고, linkedin은
+  그 프로필로 피드를 연 페이지 안에서 `/voyager/api/me`를 부른다(#105). User-Agent를 Chrome이
+  정하므로 크롤러와 저절로 같다.
 - 수~금의 arxiv(2일 창)는 주말 공백 때문에 뜸한 소스로 분류된다. 장애로 생긴 공백도
   60일 동안 최장 공백에 남아, 그동안은 그보다 짧은 다음 장애를 정상 공백으로 본다.
   arxiv 전면 실패는 예외로 올라오므로(아래 폴백 절) 이 판정에 기대지 않는다.
@@ -351,7 +355,7 @@ everyto가 거의 매일 회귀로 잡혀 run이 상시 `degraded`였고, 그 �
 떨어진 후보는 `docs/TODO.md`의 "Rejected Sources"에 이유와 함께 남긴다.
 
 - Feed 크롤러: `since` 유무에 따라 RSS/API 모드 자동 전환
-- API 크롤러: `data/sessions/{platform}_session.json` 세션 쿠키 재사용 (threads 제외)
+- API 크롤러: `data/sessions/{platform}_session.json` 세션 쿠키 재사용 (threads, linkedin 제외)
 - **threads는 `skim login`이 로그인해 둔 전용 Chrome 프로필(`~/.skim/chrome-profile`) 안에서
   받는다(#105).** 타임라인과 프로필 피드는 페이지를 열고 스크롤할 때 웹앱이 보내는 쿼리의
   응답을 읽고, 답글은 같은 브라우저에 탭을 하나 더 연다. 쿠키를 꺼내 HTTP나 다른
@@ -373,6 +377,19 @@ everyto가 거의 매일 회귀로 잡혀 run이 상시 `degraded`였고, 그 �
   기다린다. 프로세스를 바로 끊으면 그 사이 갱신된 쿠키가 디스크에 안 남는다.
 - 같은 프로필을 연 Chrome이 이미 있으면(`skim login` 창 등) 새 Chrome이 바로 끝나므로
   크롤이 실패한다. 로그인 창을 닫고 다시 돌린다.
+- `skim login`도 Chrome을 `Browser.close`로 닫는다(`cdp.close_chrome`). `terminate()`로
+  끝내던 때는 새 로그인 쿠키가 디스크에 쓰이기 전에 Chrome이 죽어, 2026-10-20 12:55
+  LinkedIn 로그인이 세션 파일에만 남았다. 프로필에는 7월에 받은 만료된 `li_at`이 그대로
+  있었고 피드는 로그인 화면으로 넘어갔다. 세션 파일로만 확인하던 동안은 드러나지 않았다.
+- **linkedin도 같은 프로필 안에서 받는다(#105).** 피드 페이지(`/feed/`)를 한 번 열고, Voyager
+  `feed/updatesV2`, `feed/comments`를 그 페이지 안의 `fetch`로 부른다. 웹앱처럼
+  `JSESSIONID`(httpOnly 아님)를 `csrf-token`으로 보내고, 쿠키와 User-Agent는 브라우저가 붙인다.
+  피드가 로그인 화면으로 넘어가면 Voyager를 부르지 않고 멈춘다.
+- linkedin 웹앱은 2026-10 현재 피드를 Voyager가 아니라 서버 주도 UI
+  (`POST /flagship-web/rsc-action/actions/pagination?sduiid=...mainFeed`, React Server
+  Components 스트림)로 받는다. 화면 조각을 직렬화한 형식이라 파싱하지 않는다. 웹앱은 다른
+  데이터(`/voyager/api/me`, 알림, 메시지)에 여전히 Voyager를 쓴다. 이 점에서 linkedin은
+  웹앱의 응답을 읽는 threads와 다르다.
 - Reddit API 크롤러: subreddit listing은 verification challenge 해제 후 JSON endpoint 호출, 홈 피드는 로그인 세션 기반 `best.json` 호출
 
 ### 주요 모듈
@@ -471,7 +488,7 @@ everyto가 거의 매일 회귀로 잡혀 run이 상시 `degraded`였고, 그 �
 ## Runtime Auth
 
 - `SKIM_WORKSPACE_ROOT` can override the workspace root when needed.
-- Login sessions live under `data/sessions/{platform}_session.json`.
+- Login sessions live under `data/sessions/{platform}_session.json`. threads and linkedin no longer read them; they run inside the dedicated Chrome profile `~/.skim/chrome-profile` (#105).
 - macOS credentials live in Keychain; SQLite stores only `platform_credentials` references.
 - Use `uv run skim login <platform> --identifier <id>` to read a saved Keychain credential, or add `--password-stdin --save-credential` to store one from CLI.
 

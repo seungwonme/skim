@@ -16,10 +16,10 @@ from skim_core.crawlers.browser_profile import (
     ProfileBrowserError,
     ProfileMissing,
     _launch_chrome,
-    _stop,
     _wait_for_devtools,
     chrome_version,
     open_profile,
+    stop_chrome,
     user_agent_for,
 )
 
@@ -124,7 +124,7 @@ def test_chrome_that_exits_at_once_is_reported(monkeypatch):
 def test_stop_waits_for_a_clean_exit_after_close():
     process = FakeProcess()
 
-    _stop(process, closing=True)
+    stop_chrome(process, closing=True)
 
     assert not process.terminated, "정상 종료 중인 Chrome을 끊으면 쿠키가 안 남는다"
 
@@ -132,7 +132,7 @@ def test_stop_waits_for_a_clean_exit_after_close():
 def test_stop_ends_chrome_that_never_got_the_close_command():
     process = FakeProcess(exits_on_wait=False)
 
-    _stop(process, closing=False)
+    stop_chrome(process, closing=False)
 
     assert process.terminated
 
@@ -141,7 +141,7 @@ def test_stop_ends_chrome_that_ignores_the_close_command(monkeypatch):
     monkeypatch.setattr(browser_profile, "SHUTDOWN_TIMEOUT", 0)
     process = FakeProcess(exits_on_wait=False)
 
-    _stop(process, closing=True)
+    stop_chrome(process, closing=True)
 
     assert process.terminated
 

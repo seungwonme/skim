@@ -4,12 +4,18 @@ fetch_comment_section은 요청·파싱 실패에 None, 응답은 정상인데 �
 빈 문자열을 돌려준다. 네트워크는 쓰지 않는다.
 """
 
+import asyncio
+import json
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 from skim_core.crawlers.api import linkedin as linkedin_mod
 from skim_core.crawlers.api import reddit as reddit_mod
-from skim_core.crawlers.api.linkedin import LinkedInAPICrawler
+from skim_core.crawlers.api.linkedin import (
+    VOYAGER_COMMENTS_URL,
+    LinkedInAPICrawler,
+    VoyagerResponse,
+)
 from skim_core.crawlers.api.reddit import (
     MAX_CONSECUTIVE_COMMENT_FAILURES,
     RedditAPICrawler,
@@ -40,9 +46,11 @@ def _reddit_payload(*bodies):
 
 
 def _linkedin_response(included, status=200):
-    response = MagicMock(status_code=status)
-    response.json.return_value = {"included": included}
-    return response
+    return VoyagerResponse(
+        status=status,
+        url=VOYAGER_COMMENTS_URL,
+        text=json.dumps({"included": included}),
+    )
 
 
 def _reddit_crawler():
@@ -51,8 +59,7 @@ def _reddit_crawler():
 
 
 def _linkedin_crawler():
-    with patch.object(LinkedInAPICrawler, "_load_session_cookies", return_value=None):
-        return LinkedInAPICrawler()
+    return LinkedInAPICrawler()
 
 
 class RedditFetchTests(unittest.TestCase):
@@ -138,10 +145,9 @@ class RedditAttachTests(unittest.TestCase):
 class LinkedInFetchTests(unittest.TestCase):
     def _fetch(self, response=None, error=None):
         crawler = _linkedin_crawler()
-        with patch.object(
-            crawler.session, "get", return_value=response, side_effect=error
-        ):
-            return crawler.fetch_comment_section("7492224454731714560")
+        get = AsyncMock(return_value=response, side_effect=error)
+        with patch.object(crawler, "_get", get):
+            return asyncio.run(crawler.fetch_comment_section("7492224454731714560"))
 
     @staticmethod
     def _comment(text="", parent=None):
@@ -174,8 +180,13 @@ class LinkedInFetchTests(unittest.TestCase):
         self.assertIsNone(self._fetch(_linkedin_response([], status=403)))
 
     def test_invalid_json_is_none(self):
-        response = MagicMock(status_code=200)
-        response.json.side_effect = ValueError("not json")
+        response = VoyagerResponse(200, VOYAGER_COMMENTS_URL, "<html>not json")
+        self.assertIsNone(self._fetch(response))
+
+    def test_redirect_to_login_is_none(self):
+        response = VoyagerResponse(
+            200, "https://www.linkedin.com/uas/login", "<html>", redirected=True
+        )
         self.assertIsNone(self._fetch(response))
 
 
@@ -187,12 +198,14 @@ class LinkedInAttachTests(unittest.TestCase):
             patch.object(
                 crawler,
                 "fetch_comment_section",
-                side_effect=["", None, "## LinkedIn Comments\n\n- **a**: hi"],
+                AsyncMock(
+                    side_effect=["", None, "## LinkedIn Comments\n\n- **a**: hi"]
+                ),
             ),
-            patch.object(linkedin_mod.time, "sleep"),
+            patch.object(linkedin_mod.asyncio, "sleep", AsyncMock()),
             patch.object(linkedin_mod.typer, "echo") as echo,
         ):
-            crawler.attach_comments(posts)
+            asyncio.run(crawler.attach_comments(posts))
 
         lines = [call.args[0] for call in echo.call_args_list]
         self.assertTrue(any("수집 실패 1건 (본문만 저장)" in line for line in lines))

@@ -6,8 +6,9 @@
 
 import asyncio
 import contextlib
+import json
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from bs4 import BeautifulSoup
 
@@ -16,7 +17,11 @@ from skim_core.comments import (
     append_comment_section,
     render_comment_section,
 )
-from skim_core.crawlers.api.linkedin import LinkedInAPICrawler
+from skim_core.crawlers.api.linkedin import (
+    VOYAGER_COMMENTS_URL,
+    LinkedInAPICrawler,
+    VoyagerResponse,
+)
 from skim_core.crawlers.api.reddit import RedditAPICrawler
 from skim_core.crawlers.api.threads import (
     MAX_REPLY_PAGES,
@@ -228,18 +233,16 @@ LINKEDIN_PAYLOAD = {
 
 
 class LinkedInCommentTests(unittest.TestCase):
-    def _crawler(self):
-        with patch.object(
-            LinkedInAPICrawler, "_load_session_cookies", return_value=None
-        ):
-            return LinkedInAPICrawler()
+    def _fetch(self, response):
+        crawler = LinkedInAPICrawler()
+        with patch.object(crawler, "_get", AsyncMock(return_value=response)):
+            return asyncio.run(crawler.fetch_comment_section("7492224454731714560"))
 
     def test_reads_included_and_skips_replies(self):
-        crawler = self._crawler()
-        response = MagicMock(status_code=200)
-        response.json.return_value = LINKEDIN_PAYLOAD
-        with patch.object(crawler.session, "get", return_value=response):
-            section = crawler.fetch_comment_section("7492224454731714560")
+        response = VoyagerResponse(
+            200, VOYAGER_COMMENTS_URL, json.dumps(LINKEDIN_PAYLOAD)
+        )
+        section = self._fetch(response)
 
         self.assertIn("- **Jane Doe**", section)
         self.assertIn("top level", section)
@@ -247,11 +250,8 @@ class LinkedInCommentTests(unittest.TestCase):
         self.assertNotIn("a reply", section)
 
     def test_non_200_returns_none(self):
-        crawler = self._crawler()
-        with patch.object(
-            crawler.session, "get", return_value=MagicMock(status_code=403)
-        ):
-            self.assertIsNone(crawler.fetch_comment_section("7492224454731714560"))
+        response = VoyagerResponse(403, VOYAGER_COMMENTS_URL, "")
+        self.assertIsNone(self._fetch(response))
 
 
 PRODUCTHUNT_HTML = """

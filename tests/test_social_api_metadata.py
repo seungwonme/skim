@@ -311,9 +311,7 @@ class SocialAPIMetadataTests(unittest.TestCase):
         self.assertIsNone(post)
 
     def test_linkedin_classify_redirect_detects_session_rejection(self):
-        from types import SimpleNamespace
-
-        from skim_core.crawlers.api.linkedin import _classify_redirect
+        from skim_core.crawlers.api.linkedin import _classify_location
 
         cases = [
             ("https://www.linkedin.com/uas/login?session_redirect=...", "login"),
@@ -325,12 +323,11 @@ class SocialAPIMetadataTests(unittest.TestCase):
             ),
             ("https://www.linkedin.com/feed/", "redirect"),
         ]
+        current = "https://www.linkedin.com/voyager/api/feed/updatesV2"
         for location, expected in cases:
-            response = SimpleNamespace(
-                headers={"location": location},
-                url="https://www.linkedin.com/voyager/api/feed/updatesV2",
+            self.assertEqual(
+                _classify_location(current, location), expected, msg=location
             )
-            self.assertEqual(_classify_redirect(response), expected, msg=location)
 
     def test_linkedin_parse_relative_timestamp_supports_accessibility_copy(self):
         crawler = LinkedInAPICrawler.__new__(LinkedInAPICrawler)
