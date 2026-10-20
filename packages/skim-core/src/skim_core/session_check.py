@@ -14,6 +14,8 @@
 헤더, 특히 User-Agent는 그 플랫폼 크롤러와 같은 값을 쓴다. 같은 쿠키가 다른 환경에서
 쓰이면 세션을 끊는 사이트가 있다. 2026-10-20 LinkedIn 세션이 크롤러와 다른
 User-Agent로 보낸 시험 요청 뒤 30분 안에 끊겼다(원인 미확정).
+전용 프로필로 옮긴 플랫폼(threads, linkedin, #105)은 크롤러와 같은 프로필 브라우저로
+확인한다. 쿠키 파일은 보지 않고 User-Agent는 Chrome이 정한다.
 """
 
 from __future__ import annotations
@@ -29,9 +31,12 @@ from typing import Callable, Dict, Optional, Tuple
 import requests
 
 from .crawlers.api.linkedin import (
-    LINKEDIN_USER_AGENT,
     SESSION_REJECTED_REASONS,
-    _classify_redirect,
+    VOYAGER_ME_URL,
+    VoyagerResponse,
+    _classify_location,
+    open_feed_page,
+    voyager_get,
 )
 from .crawlers.api.reddit import REDDIT_USER_AGENT, VERIFICATION_TITLE
 from .crawlers.browser_profile import ProfileBrowserError, ProfileMissing, open_profile
@@ -59,13 +64,11 @@ CAUSES = {
 # verify_credentials.json은 2026-10-20에 404(code 34)였다.
 X_ACCOUNT_URL = "https://x.com/i/api/1.1/account/multi/list.json"
 THREADS_HOME_URL = "https://www.threads.com/"
-LINKEDIN_ME_URL = "https://www.linkedin.com/voyager/api/me"
 REDDIT_ME_URL = "https://www.reddit.com/api/me.json"
 
 # 세션 파일에서 플랫폼 쿠키를 고르는 도메인. 크롤러의 _load_cookies와 같다.
 _COOKIE_DOMAINS = {
     "x": ("x.com", "twitter.com"),
-    "linkedin": ("linkedin",),
     "reddit": ("reddit",),
 }
 # 로그인한 페이지에는 viewer에 쿠키 ds_user_id와 같은 id가 있고, 풀리면 null이다.
@@ -105,14 +108,14 @@ def _load_cookies(platform: str, session_dir: Path) -> Optional[Dict[str, str]]:
     }
 
 
-def _common_status(response: requests.Response) -> Optional[str]:
+def _common_status(status_code: int) -> Optional[str]:
     """플랫폼과 상관없이 상태 코드만으로 정해지는 판정."""
-    if response.status_code == 401:
+    if status_code == 401:
         return SIGNED_OUT
-    if response.status_code == 429:
+    if status_code == 429:
         return BLOCKED
     # 999(LinkedIn 차단)처럼 표준 밖 코드는 플랫폼별 판정에 넘긴다.
-    if 500 <= response.status_code < 600:
+    if 500 <= status_code < 600:
         return UNREACHABLE
     return None
 
@@ -129,7 +132,7 @@ def _check_x(cookies: Dict[str, str]) -> IdentityCheck:
 
     session = SimpleNamespace(cookies={"ct0": ct0, "auth_token": auth_token})
     response = _http_get(X_ACCOUNT_URL, headers=get_headers(session))
-    status = _common_status(response)
+    status = _common_status(response.status_code)
     if status:
         return IdentityCheck("x", status, f"HTTP {response.status_code}")
     if response.status_code != 200:
@@ -170,62 +173,87 @@ async def _threads_home() -> Tuple[str, str]:
     return html, user_id
 
 
-def _check_threads() -> IdentityCheck:
-    """크롤러와 같은 전용 프로필 브라우저로 홈을 연다. 쿠키 파일은 보지 않는다 (#105)."""
+def _run_profile_check(platform: str, probe, judge) -> IdentityCheck:
+    """크롤러와 같은 전용 프로필 브라우저로 확인한다. 쿠키 파일은 보지 않는다 (#105)."""
     try:
-        html, user_id = asyncio.run(_threads_home())
+        result = asyncio.run(probe())
     except ProfileMissing:
-        return IdentityCheck("threads", SIGNED_OUT, "전용 프로필 없음")
+        return IdentityCheck(platform, SIGNED_OUT, "전용 프로필 없음")
     except ProfileBrowserError as exc:
-        return IdentityCheck("threads", UNVERIFIED, str(exc))
+        return IdentityCheck(platform, UNVERIFIED, str(exc))
     except Exception as exc:  # playwright의 시간 초과와 네트워크 오류
         first_line = (str(exc).splitlines() or [type(exc).__name__])[0]
-        return IdentityCheck("threads", UNREACHABLE, first_line[:120])
-    return threads_identity(html, user_id)
+        return IdentityCheck(platform, UNREACHABLE, first_line[:120])
+    return judge(*result)
 
 
-def _check_linkedin(cookies: Dict[str, str]) -> IdentityCheck:
-    if not cookies.get("li_at") or not cookies.get("JSESSIONID"):
-        return IdentityCheck("linkedin", SIGNED_OUT, "li_at, JSESSIONID 쿠키 없음")
-    response = _http_get(
-        LINKEDIN_ME_URL,
-        headers={
-            "Accept": "application/json",
-            "Csrf-Token": cookies["JSESSIONID"].strip('"'),
-            "User-Agent": LINKEDIN_USER_AGENT,
-            "X-Restli-Protocol-Version": "2.0.0",
-        },
-        cookies=cookies,
-    )
-    status = _common_status(response)
-    if status:
-        return IdentityCheck("linkedin", status, f"HTTP {response.status_code}")
-    if response.status_code == 999:
-        # LinkedIn이 자동 요청으로 보고 막을 때 쓰는 비표준 코드다.
-        return IdentityCheck("linkedin", BLOCKED, "HTTP 999")
-    if response.status_code in (301, 302, 303, 307, 308):
-        reason = _classify_redirect(response)
+def _check_threads() -> IdentityCheck:
+    return _run_profile_check("threads", _threads_home, threads_identity)
+
+
+def _linkedin_public_id(payload: dict) -> str:
+    """/me 응답에서 공개 식별자를 찾는다. 정규화 응답이면 included에 있다."""
+    profile = payload.get("miniProfile")
+    if isinstance(profile, dict) and profile.get("publicIdentifier"):
+        return profile["publicIdentifier"]
+    for entry in payload.get("included") or []:
+        if isinstance(entry, dict) and entry.get("publicIdentifier"):
+            return entry["publicIdentifier"]
+    return ""
+
+
+def linkedin_identity(
+    response: Optional[VoyagerResponse], rejected: Optional[str]
+) -> IdentityCheck:
+    """피드 페이지 이동 결과와 그 페이지 안에서 부른 /voyager/api/me로 판정한다."""
+    if rejected or response is None:
+        return IdentityCheck("linkedin", SIGNED_OUT, f"로그인 화면 ({rejected})")
+    if response.redirected:
+        reason = _classify_location(VOYAGER_ME_URL, response.url)
         if reason in SESSION_REJECTED_REASONS:
             return IdentityCheck("linkedin", SIGNED_OUT, f"리다이렉트 ({reason})")
         return IdentityCheck("linkedin", UNVERIFIED, f"리다이렉트 ({reason})")
-    if response.status_code == 403:
+    status = _common_status(response.status)
+    if status:
+        return IdentityCheck("linkedin", status, f"HTTP {response.status}")
+    if response.status == 999:
+        # LinkedIn이 자동 요청으로 보고 막을 때 쓰는 비표준 코드다.
+        return IdentityCheck("linkedin", BLOCKED, "HTTP 999")
+    if response.status == 403:
         # 크롤러도 403을 인증 거부로 다룬다 (_fetch_feed_page).
         return IdentityCheck("linkedin", SIGNED_OUT, "HTTP 403")
-    if response.status_code != 200:
-        return IdentityCheck("linkedin", UNVERIFIED, f"HTTP {response.status_code}")
-    profile = response.json().get("miniProfile") or {}
-    if not profile:
+    if response.status != 200:
+        return IdentityCheck("linkedin", UNVERIFIED, f"HTTP {response.status}")
+    try:
+        payload = response.json()
+    except ValueError:
+        return IdentityCheck("linkedin", UNVERIFIED, "응답을 JSON으로 읽지 못함")
+    public_id = _linkedin_public_id(payload)
+    if not public_id:
         return IdentityCheck("linkedin", UNVERIFIED, "응답에 miniProfile이 없음")
-    return IdentityCheck(
-        "linkedin", VERIFIED, account=profile.get("publicIdentifier") or ""
-    )
+    return IdentityCheck("linkedin", VERIFIED, account=public_id)
+
+
+async def _linkedin_me() -> Tuple[Optional[VoyagerResponse], Optional[str]]:
+    async with open_profile() as context:
+        page, rejected = await open_feed_page(context)
+        try:
+            if rejected:
+                return None, rejected
+            return await voyager_get(page, VOYAGER_ME_URL, {}), None
+        finally:
+            await page.close()
+
+
+def _check_linkedin() -> IdentityCheck:
+    return _run_profile_check("linkedin", _linkedin_me, linkedin_identity)
 
 
 def _check_reddit(cookies: Dict[str, str]) -> IdentityCheck:
     response = _http_get(
         REDDIT_ME_URL, headers={"User-Agent": REDDIT_USER_AGENT}, cookies=cookies
     )
-    status = _common_status(response)
+    status = _common_status(response.status_code)
     if status:
         return IdentityCheck("reddit", status, f"HTTP {response.status_code}")
     if VERIFICATION_TITLE in response.text.lower():
@@ -244,10 +272,12 @@ def _check_reddit(cookies: Dict[str, str]) -> IdentityCheck:
 # 세션 파일의 쿠키로 확인하는 플랫폼. 전용 프로필로 옮긴 플랫폼은 _PROFILE_CHECKS에 있다.
 _CHECKS: Dict[str, Callable[[Dict[str, str]], IdentityCheck]] = {
     "x": _check_x,
-    "linkedin": _check_linkedin,
     "reddit": _check_reddit,
 }
-_PROFILE_CHECKS: Dict[str, Callable[[], IdentityCheck]] = {"threads": _check_threads}
+_PROFILE_CHECKS: Dict[str, Callable[[], IdentityCheck]] = {
+    "threads": _check_threads,
+    "linkedin": _check_linkedin,
+}
 CHECKED_PLATFORMS = ("x", "threads", "linkedin", "reddit")
 
 

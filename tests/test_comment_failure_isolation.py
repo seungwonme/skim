@@ -8,7 +8,7 @@ AGENTS.md의 계약이지만 실제로는 지켜지지 않았다. try가 HTTP �
 import asyncio
 import contextlib
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from skim_core.crawlers.api.linkedin import LinkedInAPICrawler
 from skim_core.crawlers.api.reddit import RedditAPICrawler
@@ -79,22 +79,21 @@ class RedditIsolationTests(unittest.TestCase):
 
 class LinkedInIsolationTests(unittest.TestCase):
     def _crawler(self):
-        with patch.object(
-            LinkedInAPICrawler, "_load_session_cookies", return_value=None
-        ):
-            return LinkedInAPICrawler()
+        return LinkedInAPICrawler()
 
     def test_parse_failure_keeps_the_body(self):
         crawler = self._crawler()
         posts = [_post(platform="linkedin", external_id="1")]
         with (
             patch.object(
-                crawler, "fetch_comment_section", side_effect=KeyError("included")
+                crawler,
+                "fetch_comment_section",
+                AsyncMock(side_effect=KeyError("included")),
             ),
-            patch("skim_core.crawlers.api.linkedin.time.sleep"),
+            patch("skim_core.crawlers.api.linkedin.asyncio.sleep", AsyncMock()),
             patch("skim_core.crawlers.api.linkedin.typer.echo"),
         ):
-            crawler.attach_comments(posts)
+            asyncio.run(crawler.attach_comments(posts))
 
         self.assertEqual(posts[0].content, "original body")
 
@@ -102,11 +101,11 @@ class LinkedInIsolationTests(unittest.TestCase):
         crawler = self._crawler()
         posts = [_post(platform="linkedin", external_id="1", comments=0)]
         with (
-            patch.object(crawler, "fetch_comment_section") as fetch,
-            patch("skim_core.crawlers.api.linkedin.time.sleep"),
+            patch.object(crawler, "fetch_comment_section", AsyncMock()) as fetch,
+            patch("skim_core.crawlers.api.linkedin.asyncio.sleep", AsyncMock()),
             patch("skim_core.crawlers.api.linkedin.typer.echo"),
         ):
-            crawler.attach_comments(posts)
+            asyncio.run(crawler.attach_comments(posts))
 
         fetch.assert_not_called()
 

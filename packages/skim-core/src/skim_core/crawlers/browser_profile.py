@@ -130,7 +130,7 @@ async def _wait_for_devtools(process: subprocess.Popen, port: int) -> None:
     )
 
 
-def _stop(process: subprocess.Popen, closing: bool) -> None:
+def stop_chrome(process: subprocess.Popen, closing: bool) -> None:
     """정상 종료 명령을 보냈으면 끝나기를 기다리고, 안 보냈거나 안 끝나면 끊는다."""
     if closing:
         try:
@@ -171,10 +171,10 @@ async def open_profile(profile_dir: Optional[Path] = None) -> AsyncIterator[Any]
             try:
                 yield browser.contexts[0]
             finally:
-                # Chrome이 닫히며 연결이 끊겨 send가 예외로 끝날 수 있다. 종료는 _stop이 확인한다.
+                # Chrome이 닫히며 연결이 끊겨 send가 예외로 끝날 수 있다. 종료는 stop_chrome이 확인한다.
                 with contextlib.suppress(Exception):
                     session = await browser.new_browser_cdp_session()
                     closing = True
                     await session.send("Browser.close")
     finally:
-        _stop(process, closing)
+        stop_chrome(process, closing)

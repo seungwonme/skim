@@ -11,7 +11,11 @@ Chrome DevTools Protocol을 사용하여 SNS 플랫폼 로그인 쿠키를 추�
 3. 사용자가 수동 로그인
 4. Network.getCookies로 쿠키 추출
 5. data/sessions/{platform}_session.json에 저장
-6. Chrome 종료
+6. Browser.close로 Chrome을 정상 종료해 로그인 쿠키를 프로필에 남김
+
+6은 전용 프로필로 수집하는 플랫폼(#105)에 필요하다. terminate()로 끝내던 때는 Chrome이
+메모리에 든 새 쿠키를 디스크에 쓰기 전에 죽어, 2026-10-20 12:55 LinkedIn 로그인이 세션
+파일에만 남고 프로필에는 7월에 받은 만료된 li_at이 그대로 있었다.
 """
 
 import json
@@ -520,6 +524,40 @@ def find_available_port(
     )
 
 
+def close_chrome(debugger_url: Optional[str]) -> bool:
+    """브라우저 WebSocket으로 Browser.close를 보낸다. 보냈으면 True.
+
+    Chrome이 닫히며 연결을 끊으므로 응답은 기다리지 않는다. 끝나기를 기다리는 건
+    browser_profile.stop_chrome이 한다.
+    """
+    if not debugger_url:
+        return False
+    try:
+        import websocket  # pylint: disable=import-outside-toplevel
+    except ImportError:
+        return False
+    try:
+        ws = websocket.create_connection(debugger_url, timeout=10)
+    except Exception:  # noqa: BLE001 - 못 보내면 호출자가 프로세스를 끊는다
+        return False
+    try:
+        ws.send(json.dumps({"id": 1, "method": "Browser.close"}))
+    except Exception:  # noqa: BLE001
+        ws.close()
+        return False
+    try:
+        # 응답이나 연결 끊김을 기다린다. 보내자마자 닫으면 Chrome이 명령을 읽기 전일 수 있다.
+        ws.recv()
+    except Exception:  # noqa: BLE001 - Chrome이 닫히며 끊는 게 정상이다
+        pass
+    finally:
+        try:
+            ws.close()
+        except Exception:  # noqa: BLE001
+            pass
+    return True
+
+
 def execute_cdp_command(
     ws_url: str, method: str, params: Optional[dict] = None
 ) -> dict:
@@ -634,9 +672,9 @@ def login(  # noqa: C901
     )
     time.sleep(3)
 
+    debugger_url = None
     try:
         # WebSocket URL 얻기
-        debugger_url = None
         for _ in range(10):
             try:
                 resp = requests.get(f"http://localhost:{port}/json/version", timeout=3)
@@ -746,12 +784,9 @@ def login(  # noqa: C901
         typer.echo(f"세션 저장 완료: {session_path} ({len(filtered_cookies)}개 쿠키)")
 
     finally:
-        try:
-            process.terminate()
-            process.wait(timeout=5)
-        except Exception:
-            try:
-                process.kill()
-            except Exception:
-                pass
+        # browser_profile이 이 모듈을 불러오므로 맨 위에서 들여오면 순환한다.
+        # pylint: disable-next=import-outside-toplevel
+        from ..browser_profile import stop_chrome
+
+        stop_chrome(process, close_chrome(debugger_url))
         typer.echo("Chrome을 종료했습니다.")

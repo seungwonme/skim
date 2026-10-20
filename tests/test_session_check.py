@@ -13,6 +13,7 @@ from typer.testing import CliRunner
 
 import skim_cli.cli as main
 from skim_core import db, session_check
+from skim_core.crawlers.api.linkedin import VOYAGER_ME_URL, VoyagerResponse
 from skim_core.crawlers.browser_profile import ProfileBrowserError
 from skim_core.db import PostCadence
 from skim_core.models import Post
@@ -24,17 +25,16 @@ from skim_core.session_check import (
     VERIFIED,
     IdentityCheck,
     check_identity,
+    linkedin_identity,
     threads_identity,
 )
 
 COOKIES = {
     "x": {"ct0": "c" * 32, "auth_token": "a" * 40, "twid": "u%3D42"},
-    "linkedin": {"li_at": "l", "JSESSIONID": '"ajax:1"'},
     "reddit": {"reddit_session": "r"},
 }
 DOMAINS = {
     "x": ".x.com",
-    "linkedin": ".linkedin.com",
     "reddit": ".reddit.com",
 }
 
@@ -141,12 +141,11 @@ def test_probes_use_the_crawler_user_agent(tmp_path, monkeypatch):
     # pylint: disable-next=import-outside-toplevel
     from twitter.util import get_headers
 
-    from skim_core.crawlers.api import linkedin, reddit
+    from skim_core.crawlers.api import reddit
 
-    # threads는 전용 프로필 브라우저로 확인해 User-Agent를 Chrome이 정한다.
+    # threads, linkedin은 전용 프로필 브라우저로 확인해 User-Agent를 Chrome이 정한다.
     crawler_agents = {
         "x": get_headers(type("S", (), {"cookies": {}})())["user-agent"],
-        "linkedin": linkedin.LINKEDIN_USER_AGENT,
         "reddit": reddit.REDDIT_USER_AGENT,
     }
     for platform, agent in crawler_agents.items():
@@ -185,32 +184,56 @@ def test_threads_without_session_cookie_is_signed_out():
     assert threads_identity("<html/>", "").status == SIGNED_OUT
 
 
-def test_linkedin_me_is_verified(tmp_path, monkeypatch):
+def _me(status, body="", url=VOYAGER_ME_URL, redirected=False):
+    return VoyagerResponse(status, url, body, redirected=redirected)
+
+
+def test_linkedin_me_is_verified():
     body = json.dumps({"miniProfile": {"publicIdentifier": "me-123"}})
 
-    check, calls = _check(tmp_path, monkeypatch, "linkedin", _response(200, body))
+    check = linkedin_identity(_me(200, body), None)
 
     assert (check.status, check.account) == (VERIFIED, "me-123")
-    assert calls[0][1]["headers"]["Csrf-Token"] == "ajax:1"
 
 
-def test_linkedin_self_redirect_is_signed_out(tmp_path, monkeypatch):
-    # 만료된 쿠키는 같은 주소로 302를 받는다.
-    response = _response(
-        302,
-        url=session_check.LINKEDIN_ME_URL,
-        headers={"location": session_check.LINKEDIN_ME_URL},
+def test_linkedin_normalized_me_reads_included():
+    # 페이지 안 요청은 웹앱처럼 정규화 응답을 받아 프로필이 included에 온다.
+    body = json.dumps(
+        {
+            "data": {"miniProfile": "urn:li:fs_miniProfile:abc"},
+            "included": [{"$type": "MiniProfile", "publicIdentifier": "me-123"}],
+        }
     )
 
-    check, _ = _check(tmp_path, monkeypatch, "linkedin", response)
+    assert linkedin_identity(_me(200, body), None).account == "me-123"
+
+
+def test_linkedin_feed_page_on_login_screen_is_signed_out():
+    check = linkedin_identity(None, "login")
 
     assert check.status == SIGNED_OUT
 
 
-def test_linkedin_999_is_blocked(tmp_path, monkeypatch):
-    check, _ = _check(tmp_path, monkeypatch, "linkedin", _response(999))
+def test_linkedin_redirect_to_login_is_signed_out():
+    response = _me(200, "<html>", "https://www.linkedin.com/uas/login", True)
 
-    assert check.status == BLOCKED
+    assert linkedin_identity(response, None).status == SIGNED_OUT
+
+
+def test_linkedin_999_is_blocked():
+    assert linkedin_identity(_me(999), None).status == BLOCKED
+
+
+def test_linkedin_non_json_answer_is_unverified():
+    assert linkedin_identity(_me(200, "<html>"), None).status == UNVERIFIED
+
+
+def test_linkedin_without_profile_is_signed_out_without_chrome():
+    # conftest가 프로필 경로를 빈 폴더로 두고 Chrome 실행을 막아 두었다.
+    check = check_identity("linkedin")
+
+    assert check.status == SIGNED_OUT
+    assert "전용 프로필 없음" in check.detail
 
 
 def test_reddit_named_account_is_verified(tmp_path, monkeypatch):
@@ -252,7 +275,7 @@ def test_connection_error_is_unreachable(tmp_path, monkeypatch):
 
 
 def test_non_json_answer_is_unverified(tmp_path, monkeypatch):
-    check, _ = _check(tmp_path, monkeypatch, "linkedin", _response(200, "<html>"))
+    check, _ = _check(tmp_path, monkeypatch, "reddit", _response(200, "<html>"))
 
     assert check.status == UNVERIFIED
 
