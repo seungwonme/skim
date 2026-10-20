@@ -15,8 +15,7 @@ Shared AI working guide for this repository. `CLAUDE.md` imports this file.
 # 의존성 설치
 pnpm install   # husky/commitlint 훅용
 uv sync
-uv run playwright install
-brew install just
+brew install just   # Google Chrome도 필요하다 (로그인, SNS 수집, 렌더 추출). playwright 브라우저는 받지 않는다
 
 # 루트 품질 게이트 (justfile이 태스크 단일 진입점)
 just lint
@@ -430,13 +429,14 @@ everyto가 거의 매일 회귀로 잡혀 run이 상시 `degraded`였고, 그 �
 - `scripts/run_daily_feed.sh`가 하루 한 번 돈다. 이 맥에서는 launchd `com.seungwonan.skim-daily`
   (`~/Library/LaunchAgents/`, 매일 00:02)가 부른다. 등록이 저장소 밖이라 diff에 남지 않으므로
   일정이나 경로를 바꾸면 이 절도 함께 고친다.
-- 순서는 네트워크 대기(최대 10분), `skim backup --keep 3`, `playwright install chromium`,
+- 순서는 네트워크 대기(최대 10분), `skim backup --keep 3`,
   `crawl all --days 1 --catch-up`, 지표 백필, GeekNews 토픽 백필, `doctor --strict`다.
   `data/daily/.run.lock`으로 겹쳐 돌지 않는다.
-- 브라우저는 다른 프로젝트와 함께 쓰는 공유 캐시(`~/Library/Caches/ms-playwright`)에 있어서, 다른
-  프로젝트가 새 playwright를 설치할 때 이 버전의 빌드가 지워질 수 있다(2026-10-15). 그래서 데일리가
-  크롤 전에 `playwright install chromium`을 돌린다. 이미 있으면 몇 초 만에 아무것도 하지 않고 끝난다.
-  설치가 실패하면 `cron.log`에 `[!] playwright 브라우저 설치 실패`가 남는다.
+- 렌더 추출은 설치된 Google Chrome을 헤드리스로 띄운다(`enrichment.launch_render_browser`).
+  playwright가 받는 Chromium은 다른 프로젝트와 함께 쓰는 캐시(`~/Library/Caches/ms-playwright`)에
+  있어서 그쪽의 `playwright install`(2026-10-15)이나 캐시 폴더 삭제(2026-10-20 09:03 전)에
+  지워졌다. 데일리가 크롤 전에 `playwright install chromium`을 돌리던 때는 이 단계가 거꾸로
+  다른 프로젝트의 빌드를 지웠다(2026-10-20 00:02, 1248). 그래서 playwright 브라우저를 받지 않는다.
 - 회차 기록은 `data/daily/cron.log`에 `======= start <로컬 시각> =======`부터
   `======= end ... exit=N =======`까지 쌓인다. 10MB를 넘으면 `cron.log.1`로 돌린다.
 - `end` 줄의 `exit`는 크롤 결과다(네트워크 대기에서 포기해도 1). 백필과 doctor 결과는

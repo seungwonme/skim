@@ -7,6 +7,7 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -107,8 +108,28 @@ def _defuddle_html_file(html_path: str, timeout: int = 45) -> Optional[dict]:
     return None
 
 
+def launch_render_browser(playwright):
+    """설치된 Google Chrome을 헤드리스로 띄운다.
+
+    playwright가 받는 Chromium 빌드는 다른 프로젝트와 함께 쓰는 캐시
+    (~/Library/Caches/ms-playwright)에 있어 그쪽 설치나 정리에 지워진다. 2026-10-15에는
+    다른 프로젝트의 설치가, 2026-10-20에는 캐시 폴더 삭제가 렌더 폴백을 죽였다.
+    `skim login`과 SNS 크롤러가 쓰는 Chrome을 같이 쓰면 받을 빌드가 없다.
+    """
+    # crawlers 패키지는 enrichment를 불러오므로 맨 위에서 들여오면 순환한다.
+    # pylint: disable-next=import-outside-toplevel
+    from .crawlers.auth.cdp import get_chrome_path
+
+    chrome = get_chrome_path()
+    if not chrome:
+        raise RuntimeError("Google Chrome이 설치되어 있지 않습니다")
+    # Linux에서는 실행 파일 이름이 오므로 경로로 바꾼다.
+    executable = shutil.which(chrome) or chrome
+    return playwright.chromium.launch(executable_path=executable, headless=True)
+
+
 def _fetch_rendered_html_sync(url: str, timeout_ms: int = 30000) -> Optional[str]:
-    """Playwright headless Chromium으로 JS 렌더링된 최종 HTML을 반환."""
+    """설치된 Chrome을 헤드리스로 띄워 JS 렌더링된 최종 HTML을 반환."""
     try:
         # pylint: disable=import-outside-toplevel
         from playwright.sync_api import sync_playwright
@@ -117,7 +138,7 @@ def _fetch_rendered_html_sync(url: str, timeout_ms: int = 30000) -> Optional[str
 
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = launch_render_browser(p)
             try:
                 context = browser.new_context(user_agent=USER_AGENT)
                 page = context.new_page()

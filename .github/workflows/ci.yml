@@ -55,9 +55,6 @@ jobs:
         # 그건 사용자 전역 uv 설정이라 CI에는 없고, 그 차이만으로 재해석이 필요하다고 판정한다.
         run: uv sync --frozen
 
-      - name: Install Playwright browsers
-        run: uv run playwright install
-
       - name: Lint
         run: just lint
 
