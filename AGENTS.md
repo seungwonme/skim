@@ -72,6 +72,7 @@ uv run python scripts/backfill_geeknews_topics.py --limit 100  # 남은 토픽 �
 uv run python scripts/backfill_github_releases.py --dry-run   # GitHub 릴리스 노트, PDF 본문 재수집 대상 (#46)
 uv run python scripts/recover_geeknews_originals.py --dry-run # GN 조각 행 원문 복구 대상 (#33, 데일리 직후에 실행)
 uv run python scripts/reextract_trafilatura_rows.py --dry-run --limit 20  # #85 전 행의 목록, 굵은 글씨 재추출 (#86)
+uv run python scripts/compare_sns_crawl.py x --count 20   # SNS 크롤러를 바꾼 뒤 운영 회차와 비교 (운영 프로필, 임시 작업공간)
 
 # 기타
 uv run skim platforms           # 지원 플랫폼 목록
@@ -378,6 +379,15 @@ everyto가 거의 매일 회귀로 잡혀 run이 상시 `degraded`였고, 그 �
   기다린다. 프로세스를 바로 끊으면 그 사이 갱신된 쿠키가 디스크에 안 남는다.
 - 같은 프로필을 연 Chrome이 이미 있으면(`skim login` 창 등) 새 Chrome이 바로 끝나므로
   크롤이 실패한다. 로그인 창을 닫고 다시 돌린다.
+- **전용 프로필을 복사해 시험하지 않는다.** 사본에서 세션을 처음 쓰면 사이트가 로그인
+  쿠키를 다시 발급해 운영 프로필에 남은 값이 무효가 된다. 2026-10-20 LinkedIn 비교 실행에서
+  사본이 `li_at`을 새로 받아 운영 프로필의 로그인이 풀렸고, 재로그인으로 복구했다.
+  프로필 사이에 쿠키를 옮기지 않는다. 로그인이 풀리면 `skim login`으로 다시 로그인한다.
+- 크롤러를 바꾼 뒤에는 `scripts/compare_sns_crawl.py`로 운영 회차와 비교하고 머지한다.
+  운영 프로필을 그대로 열고 결과만 임시 작업공간(`SKIM_WORKSPACE_ROOT`)에 저장해 운영
+  DB를 건드리지 않는다. 글 수, 고유 id, 댓글 섹션, 요청 수를 나란히 본다. x의 첫 구현이
+  트윗마다 페이지를 새로 받아 20건에 GraphQL 약 210건(예전 약 16건)을 보낸 것과, 스크롤로
+  다시 실린 트윗이 두 번 저장된 것을 이 숫자로 찾았다.
 - `skim login`도 Chrome을 `Browser.close`로 닫는다(`cdp.close_chrome`). `terminate()`로
   끝내던 때는 새 로그인 쿠키가 디스크에 쓰이기 전에 Chrome이 죽어, 2026-10-20 12:55
   LinkedIn 로그인이 세션 파일에만 남았다. 프로필에는 7월에 받은 만료된 `li_at`이 그대로
