@@ -857,7 +857,7 @@ def backup(
     dest_dir: Optional[Path] = typer.Option(
         None, "--dest", help="백업 디렉터리 (기본 data/backups)"
     ),
-    keep: int = typer.Option(3, "--keep", help="보관할 백업 개수"),
+    keep: int = typer.Option(1, "--keep", help="보관할 백업 개수"),
 ):
     """DB를 온라인 백업하고 오래된 백업을 정리합니다.
 

@@ -94,7 +94,7 @@ uv run skim doctor
 uv run skim doctor --platform reddit
 uv run skim doctor --strict            # exit 1 on any warning (for cron)
 uv run skim doctor --check-sessions    # one "who am I" request per SNS session
-uv run skim backup --keep 3            # online backup + quick_check
+uv run skim backup --keep 1            # online backup + quick_check
 uv run skim refresh-plan --days 1
 uv run skim coverage --days 7 --emit json
 uv run skim coverage --by-day --days 7   # new rows per platform per local day

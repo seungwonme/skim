@@ -94,7 +94,7 @@ uv run skim research "agents" --max-chars 2000    # 자른 글에는 truncated�
 uv run skim doctor
 uv run skim doctor --platform reddit
 uv run skim doctor --strict            # warning이 있으면 exit 1 (cron 연동용)
-uv run skim backup --keep 3            # 온라인 백업 + quick_check
+uv run skim backup --keep 1            # 온라인 백업 + quick_check
 uv run skim refresh-plan --days 1
 uv run skim coverage --days 7 --emit json
 uv run skim bundle "AI video" --days 7
