@@ -69,7 +69,7 @@ caffeinate -i -w $$ &
 
 # 크롤 전에 백업한다. 스키마 변경이 전부 in-place라 되돌릴 수단이 이것뿐이다.
 # 실패해도 크롤은 계속한다 (백업이 수집을 막을 이유가 없다).
-uv run skim backup --keep 3 >>"$LOG" 2>&1 || echo "[!] 백업 실패" >>"$LOG"
+uv run skim backup --keep 1 >>"$LOG" 2>&1 || echo "[!] 백업 실패" >>"$LOG"
 
 # 렌더 추출은 설치된 Google Chrome을 쓰므로 playwright 브라우저를 받지 않는다.
 # 받던 때는 다른 프로젝트와 함께 쓰는 캐시(~/Library/Caches/ms-playwright)의 빌드가

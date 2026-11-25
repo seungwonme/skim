@@ -64,7 +64,7 @@ uv run skim mark 12 34 --state read                         # 소비 상태
 uv run skim coverage --by-day --days 7                      # 플랫폼별 로컬 날짜별 신규 행 수
 
 # 운영
-uv run skim backup --keep 3     # 온라인 백업 + quick_check
+uv run skim backup --keep 1     # 온라인 백업 + quick_check
 uv run skim doctor --strict     # warning 있으면 exit 1
 uv run skim doctor --check-sessions   # SNS 세션마다 계정 확인 요청 1건 (로그인이 살아 있는지)
 uv run python scripts/backfill_geeknews_topics.py --dry-run    # GN 요약, 댓글이 빠진 행 수
@@ -461,7 +461,7 @@ everyto가 거의 매일 회귀로 잡혀 run이 상시 `degraded`였고, 그 �
 - `scripts/run_daily_feed.sh`가 하루 한 번 돈다. 이 맥에서는 launchd `com.seungwonan.skim-daily`
   (`~/Library/LaunchAgents/`, 매일 00:02)가 부른다. 등록이 저장소 밖이라 diff에 남지 않으므로
   일정이나 경로를 바꾸면 이 절도 함께 고친다.
-- 순서는 네트워크 대기(최대 10분), `skim backup --keep 3`,
+- 순서는 네트워크 대기(최대 10분), `skim backup --keep 1`,
   `crawl all --days 1 --catch-up`, 지표 백필, GeekNews 토픽 백필, `doctor --strict`다.
   `data/daily/.run.lock`으로 겹쳐 돌지 않는다.
 - 렌더 추출은 설치된 Google Chrome을 헤드리스로 띄운다(`enrichment.launch_render_browser`).
